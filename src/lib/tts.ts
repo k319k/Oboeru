@@ -1,0 +1,100 @@
+/**
+ * TTS client backed by the /api/tts endpoint (Google Cloud TTS).
+ *
+ * No Web Speech API usage. Browser globals (Audio, URL) are only touched at
+ * call time so that importing this module in Node (e.g. vitest) never throws.
+ */
+
+import { resolveVoice, type TtsLang } from './tts-voices';
+
+export interface SpeakOptions {
+  /** Playback/synthesis rate (default 1.0). */
+  rate?: number;
+  /** Google voice name (e.g. 'ja-JP-Neural2-B'); falls back to the language default. */
+  voiceURI?: string | null;
+}
+
+const FETCH_TIMEOUT_MS = 10_000;
+const PLAYBACK_TIMEOUT_MS = 30_000;
+
+let activeAudio: HTMLAudioElement | null = null;
+
+/** Stop any in-progress speech synthesis playback. Safe to call anytime. */
+export function cancelSpeech(): void {
+  if (activeAudio) {
+    activeAudio.pause();
+    activeAudio.src = '';
+    activeAudio = null;
+  }
+}
+
+/**
+ * Speak via POST /api/tts → HTMLAudioElement playback.
+ * Resolves when playback ends; rejects on fetch/upstream/playback errors.
+ */
+export async function speak(
+  text: string,
+  lang: string,
+  options?: SpeakOptions,
+): Promise<void> {
+  const voice = resolveVoice(lang as TtsLang, options?.voiceURI);
+  const speakingRate = options?.rate ?? 1;
+
+  let blob: Blob;
+  const fetchController = new AbortController();
+  const fetchTimer = setTimeout(() => fetchController.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        lang,
+        voiceName: voice.name,
+        speakingRate,
+      }),
+      signal: fetchController.signal,
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(data?.error ?? `TTS エラー (${res.status})`);
+    }
+    blob = await res.blob();
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('TTS に接続できませんでした (タイムアウト)');
+    }
+    throw err;
+  } finally {
+    clearTimeout(fetchTimer);
+  }
+
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  activeAudio = audio;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const playbackTimer = setTimeout(() => {
+        audio.pause();
+        reject(new Error('音声の再生に失敗しました (タイムアウト)'));
+      }, PLAYBACK_TIMEOUT_MS);
+      audio.onended = () => {
+        clearTimeout(playbackTimer);
+        resolve();
+      };
+      audio.onerror = () => {
+        clearTimeout(playbackTimer);
+        audio.pause();
+        reject(new Error('音声の再生に失敗しました'));
+      };
+      void audio.play().catch((err: unknown) => {
+        clearTimeout(playbackTimer);
+        reject(err instanceof Error ? err : new Error('音声の再生に失敗しました'));
+      });
+    });
+  } finally {
+    activeAudio = null;
+    URL.revokeObjectURL(url);
+  }
+}
