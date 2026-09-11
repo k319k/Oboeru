@@ -1,0 +1,61 @@
+import { test, expect } from '@playwright/test';
+
+test.describe('App shell', () => {
+	test('skip link: first Tab focuses skip link, Enter moves focus to main content', async ({
+		page
+	}) => {
+		await page.goto('/');
+
+		const skipLink = page.getByRole('link', { name: 'メインコンテンツへ' });
+		await expect(skipLink).toBeVisible();
+
+		// First Tab press must land on the skip link (it is the first focusable element)
+		await page.keyboard.press('Tab');
+		await expect(skipLink).toBeFocused();
+
+		// Enter activates the in-page anchor → focus moves to <main>
+		await page.keyboard.press('Enter');
+		await expect(page.locator('#main-content')).toBeFocused();
+	});
+
+	test('favicon.svg is referenced and served without 404', async ({ page }) => {
+		const consoleErrors: string[] = [];
+		page.on('console', (msg) => {
+			if (msg.type() === 'error') consoleErrors.push(msg.text());
+		});
+		page.on('pageerror', (err) => consoleErrors.push(err.message));
+
+		await page.goto('/');
+
+		await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', /favicon\.svg/);
+
+		const response = await page.request.get('/favicon.svg');
+		expect(response.status()).toBe(200);
+
+		// Give the browser a moment to fetch the favicon, then assert no 404 surfaced
+		await page.waitForTimeout(500);
+		expect(consoleErrors.filter((e) => e.includes('404') || e.includes('favicon'))).toEqual([]);
+	});
+
+	test('active nav link color matches the --primary token', async ({ page }) => {
+		await page.goto('/');
+
+		const activeLink = page.getByRole('link', { name: 'おぼえる' });
+		await expect(activeLink).toHaveClass(/active/);
+
+		const matches = await page.evaluate(() => {
+			const link = document.querySelector('nav a.active');
+			if (!link) return false;
+			const primary = getComputedStyle(document.documentElement)
+				.getPropertyValue('--primary')
+				.trim();
+			return getComputedStyle(link).color === primary;
+		});
+		expect(matches).toBe(true);
+	});
+
+	test('theme toggle button is present with aria-label テーマ切替', async ({ page }) => {
+		await page.goto('/');
+		await expect(page.getByRole('button', { name: 'テーマ切替' })).toBeVisible();
+	});
+});
