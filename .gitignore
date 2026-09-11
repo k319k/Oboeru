@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# SvelteKit build output
+.svelte-kit/
+build/
+
+# Environment (API keys — never commit)
+.env
+.env.*
+!.env.example
+
+# Test output
+test-results/
+playwright-report/
+
+# OS / editor
+.DS_Store
