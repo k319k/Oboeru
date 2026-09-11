@@ -19,6 +19,33 @@ const PLAYBACK_TIMEOUT_MS = 30_000;
 
 let activeAudio: HTMLAudioElement | null = null;
 
+const AUTOPLAY_BLOCKED_MESSAGE =
+  '音声の再生がブロックされました。ページをタップまたはクリックしてから、もう一度お試しください';
+
+/**
+ * Call on the first user gesture (pointerdown/touchstart/keydown) to grant
+ * audio playback permission; muted play is exempt from the autoplay policy.
+ */
+export function unlockAudio(): void {
+  try {
+    const a = new Audio();
+    a.muted = true;
+    void a.play().catch(() => {});
+  } catch {
+    // Audio is unavailable (SSR/Node) — nothing to unlock.
+  }
+}
+
+function toPlaybackError(err: unknown): Error {
+  const isAutoplayBlocked =
+    (err instanceof Error && err.name === 'NotAllowedError') ||
+    (err instanceof Error && /not allowed|play/i.test(err.message));
+  if (isAutoplayBlocked) {
+    return new Error(AUTOPLAY_BLOCKED_MESSAGE);
+  }
+  return err instanceof Error ? err : new Error('音声の再生に失敗しました');
+}
+
 /** Stop any in-progress speech synthesis playback. Safe to call anytime. */
 export function cancelSpeech(): void {
   if (activeAudio) {
@@ -88,10 +115,17 @@ export async function speak(
         audio.pause();
         reject(new Error('音声の再生に失敗しました'));
       };
-      void audio.play().catch((err: unknown) => {
-        clearTimeout(playbackTimer);
-        reject(err instanceof Error ? err : new Error('音声の再生に失敗しました'));
-      });
+      // Muted autoplay is never blocked by the autoplay policy; unmute once
+      // playback has actually started.
+      audio.muted = true;
+      void audio.play()
+        .then(() => {
+          audio.muted = false;
+        })
+        .catch((err: unknown) => {
+          clearTimeout(playbackTimer);
+          reject(toPlaybackError(err));
+        });
     });
   } finally {
     activeAudio = null;

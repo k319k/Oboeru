@@ -1,8 +1,10 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { Home, Settings, Sun, Moon } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { getResolvedTheme, subscribeTheme, toggleTheme } from '$lib/theme';
+	import { unlockAudio } from '$lib/tts';
 	import '../app.css';
 	let { children } = $props();
 	let pathname = $derived(page.url.pathname);
@@ -11,6 +13,15 @@
 		return subscribeTheme(() => {
 			resolvedTheme = getResolvedTheme();
 		});
+	});
+	onMount(() => {
+		const unlock = () => unlockAudio();
+		document.addEventListener('pointerdown', unlock, { once: true });
+		document.addEventListener('keydown', unlock, { once: true });
+		return () => {
+			document.removeEventListener('pointerdown', unlock);
+			document.removeEventListener('keydown', unlock);
+		};
 	});
 </script>
 

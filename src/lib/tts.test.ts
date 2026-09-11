@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { speak, cancelSpeech } from './tts';
+import { speak, cancelSpeech, unlockAudio } from './tts';
 import { DEFAULT_VOICE } from './tts-voices';
 
 class FakeAudio {
   src = '';
+  muted = false;
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
   play = vi.fn(() => Promise.resolve());
@@ -135,6 +136,52 @@ describe('speak', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('plays muted first, then unmutes once playback starts (autoplay-safe)', async () => {
+    fetchMock.mockResolvedValue(okResponse());
+    let resolvePlay!: () => void;
+    lastAudio.play.mockImplementation(
+      () => new Promise<void>((resolve) => { resolvePlay = resolve; }),
+    );
+    const p = speak('hello', 'en');
+    await flush();
+    await flush();
+
+    // play() is still pending → audio must stay muted (muted autoplay is exempt).
+    expect(lastAudio.muted).toBe(true);
+
+    resolvePlay();
+    await flush();
+    expect(lastAudio.muted).toBe(false);
+
+    lastAudio.onended?.();
+    await p;
+  });
+
+  it('maps autoplay-blocked play() (NotAllowedError) to a friendly Japanese error', async () => {
+    fetchMock.mockResolvedValue(okResponse());
+    lastAudio.play.mockRejectedValue(
+      new DOMException(
+        'The play method is not allowed by the user agent or the platform in the current context',
+        'NotAllowedError',
+      ),
+    );
+    await expect(speak('hello', 'en')).rejects.toThrow('ブロック');
+  });
+});
+
+describe('unlockAudio', () => {
+  it('calls muted play on a fresh Audio', () => {
+    unlockAudio();
+    expect(lastAudio.muted).toBe(true);
+    expect(lastAudio.play).toHaveBeenCalled();
+  });
+
+  it('does not throw when play() rejects', async () => {
+    lastAudio.play.mockRejectedValue(new Error('blocked'));
+    expect(() => unlockAudio()).not.toThrow();
+    await flush();
   });
 });
 
