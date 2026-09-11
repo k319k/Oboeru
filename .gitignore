@@ -16,3 +16,8 @@ playwright-report/
 
 # OS / editor
 .DS_Store
+# Cloudflare Workers local dev state
+.wrangler/
+
+# Orchestration tool state (.omo)
+.omo/
