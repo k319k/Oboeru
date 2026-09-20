@@ -21,8 +21,8 @@ export type ModelLang = keyof typeof MODEL_ARCHIVE_NAMES;
  * once (see README); a null entry makes the proxy answer 503.
  */
 export const UPSTREAM_MODEL_URLS: Record<ModelLang, string | null> = {
-	ja: null,
-	en: null
+	ja: 'https://github.com/k319k/Oboeru/releases/download/stt-models/vosk-model-small-ja-0.22.zip',
+	en: 'https://github.com/k319k/Oboeru/releases/download/stt-models/vosk-model-small-en-us-0.15.zip'
 };
 
 /** Same-origin proxy URL the browser loads the model from. */
