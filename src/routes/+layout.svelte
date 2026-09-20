@@ -78,14 +78,10 @@
 </div>
 
 <style>
+	/* AA green for text on both themes (--primary #58cc02 is 2.09:1 on white,
+	   --success is 5.08:1 light / 6.04:1 dark). */
 	nav a.active {
-		color: var(--color-primary);
+		color: var(--success);
 		font-weight: 600;
-	}
-
-	/* --primary (#2563eb) is 3.83:1 on the dark background — use a lighter
-	   blue for the active link in dark mode (blue-400 = 7.79:1 on #0a0a0a). */
-	:global(.dark) nav a.active {
-		color: #60a5fa;
 	}
 </style>

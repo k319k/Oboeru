@@ -90,6 +90,35 @@ npx wrangler secret put GOOGLE_TTS_API_KEY
 
 `GROQ_API_KEY` はビルド時に埋め込まれず、実行時に Workers のシークレットから読み込まれます。キーが未設定のまま `/api/transcribe` を呼び出すと 503 が返ります。
 
+## ライブSTT (録音中のリアルタイム文字起こし)
+
+録音中に認識中の単語をリアルタイム表示する機能は、ブラウザ内で動く vosk-browser (WASM) を使用します。モデルアーカイブ (約50MB/言語) は同じオリジンの `/models/` プロキシ経由でダウンロードされ、Cache API に保存されるため2回目以降は即座に読み込めます。
+
+モデルはリポジトリにコミットされません。開発・デプロイ前に一度だけ以下を実行してください。
+
+1. モデルを取得します (alphacephei.com の公式 zip を `.stt-models/` に保存します):
+
+   ```bash
+   npm run stt:fetch
+   ```
+
+   vosk-browser の展開処理 (libarchive `archive_read_support_format_all`) は zip を直接読めるため、変換は不要です。
+
+2. GitHub Release にアップロードします (ユーザーごとに1回):
+
+   ```bash
+   gh release create stt-models .stt-models/*.zip --title "STT models" --notes "Vosk small models for live STT"
+   ```
+
+3. 作成された Release のアセット URL (`https://github.com/<owner>/<repo>/releases/download/stt-models/<ファイル名>`) を `src/lib/livestt/urls.ts` の `UPSTREAM_MODEL_URLS` に設定します。
+
+   Release アセットは CORS ヘッダを送らないため、ブラウザは `/models/[file]` プロキシルート経由で取得します。URL 未設定時はプロキシが 503 を返し、ライブ表示は自動でオフになります (録音採点機能には影響しません)。
+
+### ローカル開発
+
+- ローカルでは `npm run stt:fetch` だけでライブSTTが動作します（devサーバーが `.stt-models/` から直接モデルを配信します）。
+- 本番環境では追加で `npm run stt:upload` と `src/lib/livestt/urls.ts` へのURL設定が必要です。
+
 ## 使い方
 
 ### 練習する

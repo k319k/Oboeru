@@ -1,21 +1,24 @@
 import { test, expect, type Page } from '@playwright/test';
-import { writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { mkdirSync, appendFileSync } from 'node:fs';
 import { gotoWithSeed } from './helpers';
+import { mockTtsApi } from './tts-mock';
 
 // ---------------------------------------------------------------------------
-// Responsive layout (T10) — 390×844 mobile viewport
+// Responsive layout (oboeru-ui-ux-v2 T10) — 390×844 mobile viewport
 // ---------------------------------------------------------------------------
-// Verifies that /, /practice, /manage render without horizontal overflow at
-// 390px, that the header nav fits, that practice action buttons stack
-// full-width, that top cards are single-column, and that all visible
+// Verifies that /, /practice (show / recording with the ?e2e=1 mock live
+// stream / feedback) and /manage (all four tabs) render without horizontal
+// overflow at 390px, that the header nav fits, that practice action buttons
+// stack full-width, that top cards are single-column, and that all visible
 // interactive elements have a tap target >= 44px (WCAG 2.5.8). Layout fixes
 // are limited to Tailwind responsive utilities so desktop (1280px) is
 // unaffected.
 // ---------------------------------------------------------------------------
 
-const EVIDENCE_DIR = '.omo/evidence/oboeru-ui-ux';
-const EVIDENCE_FILE = `${EVIDENCE_DIR}/task-10-oboeru-ui-ux.txt`;
+const EVIDENCE_DIR = '.omo/evidence/oboeru-ui-ux-v2';
+const EVIDENCE_FILE = `${EVIDENCE_DIR}/task-10-oboeru-ui-ux-v2.txt`;
 const SCREENSHOT_DIR = `${EVIDENCE_DIR}/task-10-screenshots`;
+const PRACTICE_PREFS_KEY = 'oboeru:practice-ui:v1';
 
 const SEED = {
 	chapters: [
@@ -27,6 +30,25 @@ const SEED = {
 		{ id: 's-2', chapterId: 'child-1', text: 'お元気ですか。', language: 'ja', order: 2 }
 	]
 };
+
+// The mock live script needs multiple tokens to produce slots + a mismatch
+// chip; a single-token JA sentence yields none (budoux keeps こんにちは。 whole).
+const LIVE_SEED = {
+	chapters: [
+		{ id: 'parent-1', name: '親チャプター', parentId: null, order: 1 },
+		{ id: 'child-1', name: '子チャプター', parentId: 'parent-1', order: 1 }
+	],
+	sentences: [
+		{ id: 's-1', chapterId: 'child-1', text: 'Good morning everyone', language: 'en', order: 1 }
+	]
+};
+
+const MANAGE_TABS = [
+	{ id: 'chapters', label: 'チャプター' },
+	{ id: 'sentences', label: '文章' },
+	{ id: 'settings', label: '設定' },
+	{ id: 'data', label: 'データ' }
+] as const;
 
 function ensureDirs() {
 	mkdirSync(EVIDENCE_DIR, { recursive: true });
@@ -106,19 +128,63 @@ async function expectTapTargets(page: Page, label: string) {
 	);
 }
 
+/** Mock /api/transcribe with a fixed transcript. */
+async function mockTranscribe(page: Page, text: string) {
+	await page.route('**/api/transcribe', (route) =>
+		route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify({ text })
+		})
+	);
+}
+
+/** Turn auto-advance off so a feedback phase persists until manual action. */
+async function disableAutoAdvance(page: Page) {
+	await page.evaluate((key) => {
+		localStorage.setItem(
+			key,
+			JSON.stringify({ autoAdvance: false, correctDwellMs: 800, incorrectDwellMs: 2000 })
+		);
+	}, PRACTICE_PREFS_KEY);
+}
+
+/**
+ * T13 push-to-talk: hold Space to record. Waits for the ready state first —
+ * a keydown fired before hydration attaches the document listener is
+ * silently lost. End the hold with keyboard.up('Space').
+ */
+async function startHold(page: Page): Promise<void> {
+	await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+	await page.keyboard.down('Space');
+	await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 10000 });
+}
+
+/** startHold, wait until the on-screen timer reads >= 0.7s (past the 0.5s
+ *  short-tap guard), then release → transcribing → feedback. */
+async function holdAndRelease(page: Page): Promise<void> {
+	await startHold(page);
+	await page.waitForFunction(() => {
+		const m = document
+			.querySelector('[data-testid="recording-timer"]')
+			?.textContent?.match(/(\d+\.\d+)/);
+		return m ? parseFloat(m[1]) >= 0.7 : false;
+	});
+	await page.keyboard.up('Space');
+}
+
 test.describe('Responsive layout (390px)', () => {
 	test.use({ viewport: { width: 390, height: 844 } });
 
 	test.beforeAll(() => {
 		ensureDirs();
-		logEvidence(`# task-10-oboeru-ui-ux — ${new Date().toISOString()}`);
+		logEvidence(`\n########## task-10-oboeru-ui-ux-v2 (responsive) — ${new Date().toISOString()}`);
 		logEvidence('# command: npx playwright test tests/responsive.spec.ts');
 		logEvidence('# viewport: 390x844');
 	});
 
 	test('top page (empty) — no overflow, tap targets >= 44px, single column', async ({ page }) => {
 		await gotoWithSeed(page, { chapters: [], sentences: [] });
-		await page.waitForLoadState('networkidle');
 
 		await expectNoHorizontalOverflow(page, '/ empty');
 		await expectTapTargets(page, '/ empty');
@@ -136,7 +202,6 @@ test.describe('Responsive layout (390px)', () => {
 
 	test('top page (seeded) — no overflow, tap targets >= 44px, single column', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
-		await page.waitForLoadState('networkidle');
 
 		await expectNoHorizontalOverflow(page, '/ seeded');
 		await expectTapTargets(page, '/ seeded');
@@ -161,44 +226,114 @@ test.describe('Responsive layout (390px)', () => {
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/top-seeded.png`, fullPage: true });
 	});
 
-	test('practice page — no overflow, tap targets >= 44px, action buttons stacked full-width', async ({
+	test('practice show — no overflow, tap targets >= 44px, skip full-width + header exit', async ({
 		page
 	}) => {
 		await gotoWithSeed(page, SEED);
+		await mockTtsApi(page);
 		await page.goto('/practice?chapter=child-1');
-		await page.waitForLoadState('networkidle');
 
-		await expectNoHorizontalOverflow(page, '/practice');
-		await expectTapTargets(page, '/practice');
+		await expectNoHorizontalOverflow(page, '/practice show');
+		await expectTapTargets(page, '/practice show');
 
-		// Practice action buttons (skip/stop) are stacked full-width at 390px.
-		const stacked = await page.evaluate(() => {
+		// T6 layout: 終了 moved to the header row; スキップ stays as the
+		// full-width bottom action at 390px.
+		const layout = await page.evaluate(() => {
 			const skip = document.querySelector('[data-testid="skip-btn"]');
 			const stop = document.querySelector('[data-testid="stop-btn"]');
 			if (!skip || !stop) return null;
 			const skipRect = skip.getBoundingClientRect();
 			const stopRect = stop.getBoundingClientRect();
-			// Full-width: each button spans the container width (>= 80% of viewport).
+			// Full-width: skip spans the container width (>= 80% of viewport).
 			const fullWidth = skipRect.width >= 0.8 * window.innerWidth;
-			// Stacked: stop is below skip (different vertical position, same horizontal).
-			const stackedVertically = stopRect.top > skipRect.top + skipRect.height - 2;
-			return { fullWidth, stackedVertically };
+			// 終了 sits in the header row, above the bottom action.
+			const stopInHeader = stopRect.top < skipRect.top;
+			return { fullWidth, stopInHeader };
 		});
-		expect(stacked, '/practice: skip/stop buttons must be present').not.toBeNull();
-		expect(stacked!.fullWidth, '/practice: action buttons must be full-width').toBe(true);
-		expect(stacked!.stackedVertically, '/practice: action buttons must be stacked').toBe(true);
+		expect(layout, '/practice: skip/stop buttons must be present').not.toBeNull();
+		expect(layout!.fullWidth, '/practice: skip button must be full-width').toBe(true);
+		expect(layout!.stopInHeader, '/practice: 終了 must sit in the header row').toBe(true);
 
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/practice.png`, fullPage: true });
 	});
 
-	test('manage page — no overflow, tap targets >= 44px', async ({ page }) => {
+	test('practice recording (+mock live stream) — no overflow, tap targets >= 44px', async ({
+		page
+	}) => {
+		await gotoWithSeed(page, LIVE_SEED);
+		await mockTtsApi(page);
+		await page.goto('/practice?chapter=child-1&e2e=1');
+
+		// T13 push-to-talk: hold Space to enter (and stay in) the recording phase.
+		await startHold(page);
+		// Wait for the scripted stream to settle (all slots filled + chip).
+		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(3, {
+			timeout: 10000
+		});
+
+		await expectNoHorizontalOverflow(page, '/practice recording+live');
+		await expectTapTargets(page, '/practice recording+live');
+
+		await page.screenshot({ path: `${SCREENSHOT_DIR}/practice-recording.png`, fullPage: true });
+	});
+
+	test('practice feedback — no overflow, action buttons stacked full-width', async ({ page }) => {
+		await gotoWithSeed(page, SEED);
+		await disableAutoAdvance(page);
+		await mockTtsApi(page);
+		await mockTranscribe(page, 'こんにちは。');
+		await page.goto('/practice?chapter=child-1');
+
+		// T13 push-to-talk: hold Space past the 0.5s short-tap guard, release → score.
+		await holdAndRelease(page);
+		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
+
+		await expectNoHorizontalOverflow(page, '/practice feedback');
+		await expectTapTargets(page, '/practice feedback');
+
+		// 操作ボタン縦積み: もう一度聴く / 次へ stack vertically, each spanning
+		// the feedback container (the flex-col sm:flex-row pattern).
+		const stacked = await page.evaluate(() => {
+			const container = document.querySelector('[data-testid="feedback"]');
+			if (!container) return null;
+			const rects = Array.from(container.querySelectorAll('button'))
+				.map((b) => b.getBoundingClientRect())
+				.sort((a, b) => a.top - b.top);
+			if (rects.length < 2) return null;
+			const eachFullWidth = rects.every((r) => r.width >= 0.85 * container!.clientWidth);
+			const verticallyStacked = rects[1].top >= rects[0].bottom - 2;
+			return { eachFullWidth, verticallyStacked };
+		});
+		expect(stacked, '/practice feedback: buttons not found').not.toBeNull();
+		expect(
+			stacked!.verticallyStacked,
+			'/practice feedback: action buttons must stack vertically at 390px'
+		).toBe(true);
+		expect(
+			stacked!.eachFullWidth,
+			'/practice feedback: action buttons must span the container'
+		).toBe(true);
+		logEvidence('practice feedback: action buttons stacked vertically, container-width ✓');
+
+		await page.screenshot({ path: `${SCREENSHOT_DIR}/practice-feedback.png`, fullPage: true });
+	});
+
+	test('manage tabs ×4 — no overflow, tap targets >= 44px', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
 		await page.goto('/manage');
 		await page.waitForLoadState('networkidle');
 
-		await expectNoHorizontalOverflow(page, '/manage');
-		await expectTapTargets(page, '/manage');
+		for (const t of MANAGE_TABS) {
+			await page.getByRole('tab', { name: t.label }).click();
+			await expect(page.locator(`#tabpanel-${t.id}`)).toBeVisible();
 
-		await page.screenshot({ path: `${SCREENSHOT_DIR}/manage.png`, fullPage: true });
+			await expectNoHorizontalOverflow(page, `/manage tab=${t.label}`);
+			await expectTapTargets(page, `/manage tab=${t.label}`);
+
+			await page.screenshot({
+				path: `${SCREENSHOT_DIR}/manage-${t.id}.png`,
+				fullPage: true
+			});
+		}
 	});
 });

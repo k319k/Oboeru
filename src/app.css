@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn-svelte/tailwind.css";
+@import "@fontsource/m-plus-rounded-1c/400.css";
+@import "@fontsource/m-plus-rounded-1c/700.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -11,27 +13,43 @@
 	--card-foreground: oklch(0.145 0 0);
 	--popover: oklch(1 0 0);
 	--popover-foreground: oklch(0.145 0 0);
-	--primary: oklch(0.546 0.215 262.881);
-	--primary-foreground: oklch(0.985 0 0);
-	--secondary: oklch(0.97 0 0);
-	--secondary-foreground: oklch(0.205 0 0);
+	--primary: oklch(0.7478 0.2289 137.63); /* #58cc02 Duolingo green */
+	/* Dark text on the bright brand green: #58cc02 with white text is 2.09:1
+	   (WCAG AA fail). Near-black text gives 7.3:1 on the same green. */
+	--primary-foreground: oklch(0.145 0 0);
+	--secondary: oklch(0.97 0 0);	--secondary-foreground: oklch(0.205 0 0);
 	--muted: oklch(0.97 0 0);
 	--muted-foreground: oklch(0.53 0 0);
 	--accent: oklch(0.97 0 0);
 	--accent-foreground: oklch(0.205 0 0);
-	--destructive: oklch(0.577 0.215 27.325);
+	--destructive: oklch(0.5517 0.2051 24.53); /* #cf222e GitHub red (light) */
 	--destructive-foreground: oklch(0.985 0 0);
 	--border: oklch(0.922 0 0);
 	--input: oklch(0.922 0 0);
 	--ring: oklch(0.708 0 0);
-	--success: oklch(0.596 0.145 163.225);
+	--success: oklch(0.5244 0.1401 148.04); /* #1a7f37 GitHub green (light) */
 	--success-foreground: oklch(0.985 0 0);
+	/* Language badge tokens (oboeru-ui-ux-v2 task-13). Opaque pairs so badge
+	   contrast is exactly measurable; amber/blue-100 bg + amber/blue-800 fg.
+	   Measured (canvas/WCAG, see evidence task-13-consistency/token-math.txt):
+	   JA light 6.37:1 / EN light 7.15:1 — AA >= 4.5:1. */
+	--lang-ja: oklch(0.9619 0.058 95.62); /* amber-100 */
+	--lang-ja-foreground: oklch(0.4732 0.1247 46.2); /* amber-800 */
+	--lang-en: oklch(0.9319 0.0316 255.59); /* blue-100 */
+	--lang-en-foreground: oklch(0.4244 0.1809 265.64); /* blue-800 */
+	--correct: var(--success);
+	--incorrect: var(--destructive);
+	/* Motion tokens (oboeru-ui-ux-v2) */
+	--motion-press: 180ms;
+	--motion-transition: 320ms;
+	--ease-back-out: cubic-bezier(0.34, 1.56, 0.64, 1);
+	--ease-out-standard: cubic-bezier(0, 0, 0.2, 1);
 	--chart-1: oklch(0.87 0 0);
 	--chart-2: oklch(0.556 0 0);
 	--chart-3: oklch(0.439 0 0);
 	--chart-4: oklch(0.371 0 0);
 	--chart-5: oklch(0.269 0 0);
-	--radius: 0.5rem;
+	--radius: 0.75rem;
 	--sidebar: oklch(0.985 0 0);
 	--sidebar-foreground: oklch(0.145 0 0);
 	--sidebar-primary: oklch(0.205 0 0);
@@ -49,21 +67,32 @@
 	--card-foreground: oklch(0.985 0 0);
 	--popover: oklch(0.205 0 0);
 	--popover-foreground: oklch(0.985 0 0);
-	--primary: oklch(0.546 0.215 262.881);
-	--primary-foreground: oklch(0.985 0 0);
+	--primary: oklch(0.7478 0.2289 137.63); /* #58cc02 Duolingo green */
+	/* Same rationale as :root — dark text keeps primary buttons AA in dark. */
+	--primary-foreground: oklch(0.145 0 0);
 	--secondary: oklch(0.269 0 0);
 	--secondary-foreground: oklch(0.985 0 0);
 	--muted: oklch(0.269 0 0);
 	--muted-foreground: oklch(0.708 0 0);
 	--accent: oklch(0.269 0 0);
 	--accent-foreground: oklch(0.985 0 0);
-	--destructive: oklch(0.577 0.215 27.325);
-	--destructive-foreground: oklch(0.985 0 0);
+	--destructive: oklch(0.6651 0.2046 26.96); /* #f85149 GitHub red (dark) */
+	/* #f85149 is tuned as TEXT on the dark background; as a button background
+	   white text on it is only 3.35:1 — near-black text restores AA (4.57:1). */
+	--destructive-foreground: oklch(0.145 0 0);
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
 	--ring: oklch(0.556 0 0);
-	--success: oklch(0.596 0.145 163.225);
+	--success: oklch(0.6951 0.1809 145.62); /* #3fb950 GitHub green (dark) */
 	--success-foreground: oklch(0.985 0 0);
+	/* Dark badge pairs (task-13): amber/blue-900 bg + amber/blue-200 fg.
+	   Measured AA: JA dark 7.28:1 / EN dark 7.29:1 (token-math.txt). */
+	--lang-ja: oklch(0.4137 0.1054 45.9); /* amber-900 */
+	--lang-ja-foreground: oklch(0.9243 0.1151 95.75); /* amber-200 */
+	--lang-en: oklch(0.3791 0.1378 265.52); /* blue-900 */
+	--lang-en-foreground: oklch(0.8823 0.0571 254.13); /* blue-200 */
+	--correct: var(--success);
+	--incorrect: var(--destructive);
 	--chart-1: oklch(0.87 0 0);
 	--chart-2: oklch(0.556 0 0);
 	--chart-3: oklch(0.439 0 0);
@@ -80,7 +109,7 @@
 }
 
 @theme inline {
-	--font-sans: ui-sans-serif, system-ui, "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic UI", "Yu Gothic", Meiryo, "Noto Sans JP", sans-serif;
+	--font-sans: "M PLUS Rounded 1c", ui-sans-serif, system-ui, "Hiragino Maru Gothic ProN", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", Meiryo, sans-serif;
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -101,6 +130,10 @@
 	--color-destructive-foreground: var(--destructive-foreground);
 	--color-success: var(--success);
 	--color-success-foreground: var(--success-foreground);
+	--color-lang-ja: var(--lang-ja);
+	--color-lang-ja-foreground: var(--lang-ja-foreground);
+	--color-lang-en: var(--lang-en);
+	--color-lang-en-foreground: var(--lang-en-foreground);
 	--color-accent-foreground: var(--accent-foreground);
 	--color-accent: var(--accent);
 	--color-muted-foreground: var(--muted-foreground);
@@ -136,9 +169,53 @@
 	}
 }
 
+/* oboeru-ui-ux-v2 task-13: manage row action buttons — unified disabled
+   treatment. The shared Button base dims with disabled:opacity-50, which
+   nearly erases the outline variant's 1px border; row CRUD buttons dim less
+   and pre-compensate the border color so it stays readable through the
+   opacity blend. Unlayered on purpose: beats the utilities layer regardless
+   of source order. */
+.chapter-actions [data-slot='button']:disabled,
+.sentence-actions [data-slot='button']:disabled {
+	opacity: 0.65;
+	border-color: color-mix(in oklab, var(--border) 75%, var(--foreground) 25%);
+}
+
+/* oboeru-ui-ux-v2: celebration / reveal keyframes.
+   Usage:
+     animation: celebration-pop 400ms var(--ease-back-out) both;
+     animation: word-reveal 200ms var(--ease-out-standard) both;
+   Both are disabled by the prefers-reduced-motion block below. */
+@keyframes celebration-pop {
+	0% {
+		opacity: 0;
+		transform: scale(0.5);
+	}
+	60% {
+		opacity: 1;
+		transform: scale(1.1);
+	}
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+@keyframes word-reveal {
+	from {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
 /* WCAG 2.3.3 / prefers-reduced-motion: disable non-essential animation for
    users who request reduced motion. Essential transitions (focus visibility,
-   color changes) are kept; decorative motion is removed. */
+   color changes) are kept; decorative motion (including celebration-pop and
+   word-reveal) is removed. */
 @media (prefers-reduced-motion: reduce) {
 	*,
 	*::before,
@@ -147,5 +224,17 @@
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 		scroll-behavior: auto !important;
+	}
+
+	/* Decorative motion is removed outright (not just sped up): celebration
+	   pop, live word reveal and the recording pulse. Only pure-decoration
+	   animations are listed here — transition-driven components (dialogs,
+	   popovers) rely on their animationend/transitionend for presence, so
+	   they keep the duration clamp above. */
+	.score.celebrate,
+	.word-slot,
+	.word-chip,
+	.animate-pulse {
+		animation: none !important;
 	}
 }

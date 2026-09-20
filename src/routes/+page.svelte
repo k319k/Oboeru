@@ -1,11 +1,12 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { loadChapters, loadSentences, getChapterSentences } from '$lib/sentences';
-	import { ChevronRight } from '@lucide/svelte';
+	import { ChevronRight, Play } from '@lucide/svelte';
+	import { Button } from '$lib/components/ui/button';
 	import type { Chapter, Sentence } from '$lib/types';
 
 	let chapters = $state<Chapter[]>([]);
 	let sentences = $state<Sentence[]>([]);
-	let selectedChapterId = $state<string | null>(null);
 
 	// Collapsed chapter IDs. Default: all parents expanded.
 	let collapsedChapters = $state<Set<string>>(new Set());
@@ -14,12 +15,6 @@
 		chapters = loadChapters();
 		sentences = loadSentences();
 	});
-
-	let selectedChapter = $derived(chapters.find((c) => c.id === selectedChapterId));
-	let chapterSentenceCount = $derived(
-		selectedChapterId ? getChapterSentences(selectedChapterId, sentences).length : 0
-	);
-	let canStart = $derived(selectedChapterId !== null && chapterSentenceCount > 0);
 
 	// Build the tree from parentId (same pattern as manage/+page.svelte getChildren).
 	function getChildren(chapterId: string | null): Chapter[] {
@@ -46,10 +41,17 @@
 		collapsedChapters = next;
 	}
 
-	function startPractice() {
-		if (selectedChapterId) {
-			window.location.href = `/practice?chapter=${selectedChapterId}`;
+	// Display-layer aggregation: direct sentences + all descendants.
+	function getTotalSentenceCount(chapterId: string): number {
+		let total = getChapterSentences(chapterId, sentences).length;
+		for (const child of getChildren(chapterId)) {
+			total += getTotalSentenceCount(child.id);
 		}
+		return total;
+	}
+
+	function startPractice(chapterId: string) {
+		goto(`/practice?chapter=${chapterId}`);
 	}
 </script>
 
@@ -57,21 +59,24 @@
 	<title>おぼえる</title>
 </svelte:head>
 
-<h1 class="mb-2 text-2xl font-bold">おぼえる</h1>
-<p>文章を選んで練習を開始しましょう</p>
+<h1 class="mb-1 text-2xl font-bold">おぼえる</h1>
+<p class="mb-6 text-sm text-muted-foreground">カードの練習ボタンですぐに開始できます</p>
 
 {#if chapters.length === 0}
 	<div class="py-8 text-center">
 		<p>データがありません。管理画面で追加してください</p>
-		<a href="/manage" class="inline-flex min-h-11 items-center text-primary underline dark:text-blue-400"
+		<a href="/manage" class="inline-flex min-h-11 items-center text-success underline"
 			>管理画面で追加する</a
 		>
 	</div>
 {:else}
-	<div class="chapter-tree my-4 flex flex-col gap-1">
+	<div class="chapter-tree mb-4 flex flex-col gap-2">
 		{#snippet chapterNode(chapter: Chapter, depth: number)}
 			<div class="tree-node" style:margin-left={`${depth * 1.5}rem`}>
-				<div class="flex items-center gap-1">
+				<div
+					class="chapter-item flex min-h-14 items-center gap-1 rounded-xl border border-border bg-card p-2 shadow-xs transition-colors hover:bg-accent/50"
+					data-testid="chapter-card"
+				>
 					{#if hasChildren(chapter.id)}
 						<button
 							class="expand-toggle inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
@@ -80,21 +85,27 @@
 						>
 							<ChevronRight
 								class={isExpanded(chapter.id)
-									? 'h-4 w-4 rotate-90 transition-transform'
-									: 'h-4 w-4 transition-transform'}
+									? 'h-5 w-5 rotate-90 transition-transform'
+									: 'h-5 w-5 transition-transform'}
 							/>
 						</button>
 					{:else}
-						<span class="w-6 shrink-0" aria-hidden="true"></span>
+						<span class="w-4 shrink-0" aria-hidden="true"></span>
 					{/if}
-					<button
-						class="chapter-item flex flex-1 items-center justify-between gap-2 rounded-md border border-border bg-card px-4 py-3 text-left text-foreground transition-colors hover:bg-accent"
-						class:selected={selectedChapterId === chapter.id}
-						onclick={() => (selectedChapterId = chapter.id)}
-					>
-						<span>{chapter.name}</span>
-						<span class="text-sm text-muted-foreground">{getChapterSentences(chapter.id, sentences).length}文</span>
-					</button>
+					<div class="flex min-w-0 flex-1 flex-col gap-0.5 px-2">
+						<span class="chapter-name truncate text-base font-semibold">{chapter.name}</span>
+						<span class="text-sm text-muted-foreground">{getTotalSentenceCount(chapter.id)}文</span>
+					</div>
+					{#if getChapterSentences(chapter.id, sentences).length > 0}
+						<Button
+							class="h-11 gap-1.5 rounded-md px-5 text-base font-bold"
+							data-testid="card-start"
+							onclick={() => startPractice(chapter.id)}
+						>
+							<Play class="size-5 fill-current" />
+							練習
+						</Button>
+					{/if}
 				</div>
 				{#if isExpanded(chapter.id)}
 					{#each getChildren(chapter.id) as child (child.id)}
@@ -108,28 +119,4 @@
 			{@render chapterNode(chapter, 0)}
 		{/each}
 	</div>
-
-	<div class="practice-start mt-4 text-center">
-		<p class="mb-2">
-			{#if selectedChapterId}
-				{selectedChapter?.name} — {chapterSentenceCount}文
-			{:else}
-				チャプターを選択してください
-			{/if}
-		</p>
-		<button
-			onclick={startPractice}
-			disabled={!canStart}
-			class="rounded-md bg-primary px-8 py-3 text-lg text-primary-foreground disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
-		>
-			練習開始
-		</button>
-	</div>
 {/if}
-
-<style>
-	.chapter-item.selected {
-		border-color: var(--primary);
-		background: color-mix(in oklab, var(--primary) 10%, transparent);
-	}
-</style>

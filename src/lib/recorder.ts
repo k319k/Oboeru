@@ -16,6 +16,28 @@ const MIN_RECORDING_MS = 800;
 const MAX_RECORDING_MS = 30_000;
 const FFT_SIZE = 2_048;
 
+/** Frame rate requested for the live-STT tap (vosk expects 16 kHz). */
+const LIVE_SAMPLE_RATE = 16000;
+/** ScriptProcessor buffer size for the worklet fallback (256 ms @ 16 kHz). */
+const FRAME_BUFFER_SIZE = 4096;
+
+/**
+ * AudioWorklet source for the 16 kHz tap. Forwards every render quantum as a
+ * Float32Array copy; the buffer is reused between callbacks, so the copy is
+ * mandatory. A zero-gain sink keeps the node pulled by the render graph
+ * without echoing audio to the speakers.
+ */
+const FRAME_TAP_WORKLET = `
+  class FrameTap extends AudioWorkletProcessor {
+    process(inputs) {
+      const channel = inputs[0] && inputs[0][0];
+      if (channel) this.port.postMessage(new Float32Array(channel));
+      return true;
+    }
+  }
+  registerProcessor('frame-tap', FrameTap);
+`;
+
 const MIME_CANDIDATES = [
   'audio/webm;codecs=opus',
   'audio/mp4',
@@ -77,6 +99,23 @@ function computeRms(data: Uint8Array): number {
 // Public API
 // ---------------------------------------------------------------------------
 
+export interface StartRecordingOptions {
+	/**
+	 * Optional 16 kHz Float32 frame callback (live STT feed). When provided,
+	 * a second AudioContext at 16 kHz taps the same MediaStream and delivers
+	 * ~128-sample frames while recording. The default-rate analyser path and
+	 * MediaRecorder are unaffected.
+	 */
+	onAudioFrame?: (samples: Float32Array) => void;
+	/**
+	 * Silence auto-stop switch (default `true`). `false` disables the 800 ms
+	 * grace window and the 1.5 s silence hold — push-to-talk callers end the
+	 * recording via `stop()` on key release. The 30 s force-stop stays
+	 * enabled in both modes as a safety net.
+	 */
+	autoStop?: boolean;
+}
+
 /**
  * Start recording from the default audio input.
  *
@@ -88,21 +127,27 @@ function computeRms(data: Uint8Array): number {
  *   Callers await this instead of wiring their own `onstop` handler.
  * - `onProgress`: optional callback the caller can assign to receive the
  *   elapsed recording time (ms) every 100 ms.
+ * - `onLevel`: optional callback the caller can assign to receive the
+ *   input RMS level every 100 ms (for a live level meter).
  *
  * Auto-stop triggers when RMS stays below the threshold for 1 500 ms
  * (after an initial 800 ms grace period). Recordings longer than 30 s
- * are force-stopped.
+ * are force-stopped. Pass `autoStop: false` to record until `stop()`
+ * (push-to-talk) — the 30 s force-stop still applies.
  */
-export async function startRecording(): Promise<{
+export async function startRecording(
+	options: StartRecordingOptions = {}
+): Promise<{
 	stop: () => Promise<Blob>;
 	completed: Promise<Blob>;
 	onProgress?: (elapsedMs: number) => void;
+	onLevel?: (rms: number) => void;
 }> {
 	const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
 	const mime = selectMime();
-	const options: MediaRecorderOptions = mime ? { mimeType: mime } : {};
-	const recorder = new MediaRecorder(stream, options);
+	const recorderOptions: MediaRecorderOptions = mime ? { mimeType: mime } : {};
+	const recorder = new MediaRecorder(stream, recorderOptions);
 
 	// Set up analyser for RMS monitoring
 	const audioCtx = new AudioContext();
@@ -124,6 +169,66 @@ export async function startRecording(): Promise<{
 	};
 
 	// -----------------------------------------------------------------------
+	// 16 kHz frame tap for live STT — a separate context so the default-rate
+	// analyser path above is untouched (MediaRecorder reads the stream
+	// directly). Set up asynchronously: recording starts immediately and
+	// pre-start frames are ring-buffered by the live engine.
+	// -----------------------------------------------------------------------
+	let frameCtx: AudioContext | null = null;
+	let frameTeardown: (() => void) | null = null;
+	let frameTapDisposed = false;
+	if (options.onAudioFrame) {
+		const onFrame = options.onAudioFrame;
+		void (async () => {
+			const ctx = new AudioContext({ sampleRate: LIVE_SAMPLE_RATE });
+			frameCtx = ctx;
+			const tapSource = ctx.createMediaStreamSource(stream);
+			// The render graph only pulls nodes that reach the destination;
+			// the zero-gain sink keeps the tap alive without audible output.
+			const sink = ctx.createGain();
+			sink.gain.value = 0;
+			sink.connect(ctx.destination);
+			try {
+				const moduleUrl = URL.createObjectURL(
+					new Blob([FRAME_TAP_WORKLET], { type: 'application/javascript' })
+				);
+				try {
+					await ctx.audioWorklet.addModule(moduleUrl);
+				} finally {
+					URL.revokeObjectURL(moduleUrl);
+				}
+				if (frameTapDisposed) return;
+				const node = new AudioWorkletNode(ctx, 'frame-tap');
+				node.port.onmessage = (e) => {
+					if (e.data instanceof Float32Array) onFrame(e.data);
+				};
+				tapSource.connect(node);
+				node.connect(sink);
+				frameTeardown = () => {
+					node.port.onmessage = null;
+					node.disconnect();
+					tapSource.disconnect();
+				};
+			} catch {
+				// AudioWorklet unavailable (e.g. strict CSP) — ScriptProcessor fallback.
+				if (frameTapDisposed) return;
+				const processor = ctx.createScriptProcessor(FRAME_BUFFER_SIZE, 1, 1);
+				processor.onaudioprocess = (e) => {
+					// Copy: inputBuffer channel data is reused between events.
+					onFrame(new Float32Array(e.inputBuffer.getChannelData(0)));
+				};
+				tapSource.connect(processor);
+				processor.connect(sink);
+				frameTeardown = () => {
+					processor.onaudioprocess = null;
+					processor.disconnect();
+					tapSource.disconnect();
+				};
+			}
+		})();
+	}
+
+	// -----------------------------------------------------------------------
 	// Completion plumbing — set up at creation time so ANY stop path
 	// (silence auto-stop / 30 s force-stop / manual stop()) resolves
 	// `completed`. The previous structure set `onstop` inside `stop()`'s
@@ -142,9 +247,12 @@ export async function startRecording(): Promise<{
 		if (forceTimer !== null) clearTimeout(forceTimer);
 		timer = null;
 		forceTimer = null;
+		frameTapDisposed = true;
+		frameTeardown?.();
 		source.disconnect();
 		analyser.disconnect();
 		void audioCtx.close();
+		void frameCtx?.close();
 	};
 
 	const finalize = (): Blob => {
@@ -169,13 +277,16 @@ export async function startRecording(): Promise<{
 	};
 
 	// Silence-monitoring interval (every 100 ms)
+	const silenceAutoStop = options.autoStop ?? true;
 	const checkSilence = () => {
 		analyser.getByteTimeDomainData(rmsBuffer);
 		const rms = computeRms(rmsBuffer);
 		const elapsed = Date.now() - startTime;
 
 		result.onProgress?.(elapsed);
+		result.onLevel?.(rms);
 
+		if (!silenceAutoStop) return;
 		if (elapsed < MIN_RECORDING_MS) return;
 
 		if (rms < DEFAULT_SILENCE_THRESHOLD) {
@@ -211,6 +322,7 @@ export async function startRecording(): Promise<{
 		stop: () => Promise<Blob>;
 		completed: Promise<Blob>;
 		onProgress?: (elapsedMs: number) => void;
+		onLevel?: (rms: number) => void;
 	} = { stop, completed };
 
 	return result;

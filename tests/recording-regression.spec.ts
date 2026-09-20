@@ -103,6 +103,13 @@ test('recorder is NOT stopped immediately after creation (regression)', async ({
 	await seedAndMock(page);
 	await page.goto('/practice?chapter=ch-ja-01');
 
+	// Wait for the ready state BEFORE pressing Space: a keydown fired
+	// before Svelte hydration attaches the document keydown listener is
+	// silently lost. Mirror the real user flow — ready appears first,
+	// then the user presses and holds Space (T13 push-to-talk).
+	await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+	await page.keyboard.down('Space');
+
 	// Wait until the component has actually created the recorder
 	// (startRecording ran — createdAt is set inside the mock function).
 	await page.waitForFunction(
@@ -119,8 +126,10 @@ test('recorder is NOT stopped immediately after creation (regression)', async ({
 	// The recording phase must be visible and stay alive.
 	await expect(page.getByTestId('sentence-recording')).toBeVisible();
 
-	// Manual stop button → stop() called exactly once → transcribing.
-	await page.getByTestId('stop-recording-btn').click();
+	// Hold past the 500ms short-tap guard, then release → stop() called
+	// exactly once → transcribing.
+	await page.waitForTimeout(600);
+	await page.keyboard.up('Space');
 	await expect(page.getByTestId('sentence-transcribing')).toBeVisible({
 		timeout: 5000
 	});
@@ -189,6 +198,13 @@ test('runtime: real recorder records ≥800ms and transcribes the blob', async (
 
 	await page.goto('/practice?chapter=ch-ja-01');
 
+	// Wait for the ready state BEFORE pressing Space: a keydown fired
+	// before Svelte hydration attaches the document keydown listener is
+	// silently lost — mirror the real user flow (ready appears first,
+	// then the user holds Space). T13: recording starts on the hold only.
+	await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+	await page.keyboard.down('Space');
+
 	// Recording phase appears after show dwell (800ms) + TTS (50ms mock).
 	await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
 
@@ -206,8 +222,9 @@ test('runtime: real recorder records ≥800ms and transcribes the blob', async (
 	const durationMs = match ? Math.round(parseFloat(match[1]) * 1000) : 0;
 	console.log(`[runtime] measured recording duration: ${durationMs}ms (timer: "${timerText}")`);
 
-	// Manual stop → flow continues: transcribing → feedback.
-	await page.getByTestId('stop-recording-btn').click();
+	// Release the hold (held ≥ 800ms > the 500ms short-tap guard) →
+	// transcribing → feedback.
+	await page.keyboard.up('Space');
 	await expect(page.getByTestId('sentence-transcribing')).toBeVisible({ timeout: 5000 });
 	await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
 

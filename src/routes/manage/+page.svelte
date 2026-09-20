@@ -1,5 +1,12 @@
 <script lang="ts">
+	import { replaceState } from '$app/navigation';
+	import { page } from '$app/state';
 	import { loadSettings, saveSettings, type Settings } from '$lib/settings';
+	import {
+		loadPracticePrefs,
+		savePracticePrefs,
+		type PracticePrefs
+	} from '$lib/practice-prefs';
 	import { CURATED_VOICES } from '$lib/tts-voices';
 	import { cn } from '$lib/utils';
 	import {
@@ -25,6 +32,60 @@
 	import * as Slider from '$lib/components/ui/slider';
 	import * as RadioGroup from '$lib/components/ui/radio-group';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+
+	// ---------------------------------------------------------------------------
+	// Tabs (チャプター / 文章 / 設定 / データ)
+	// ---------------------------------------------------------------------------
+
+	const TABS = [
+		{ id: 'chapters', label: 'チャプター' },
+		{ id: 'sentences', label: '文章' },
+		{ id: 'settings', label: '設定' },
+		{ id: 'data', label: 'データ' }
+	] as const;
+	type Tab = (typeof TABS)[number];
+
+	// Deep link support: /manage?tab=設定 opens the 設定 tab; unknown values fall
+	// back to the default (チャプター).
+	let activeTab = $state<Tab>(TABS.find((t) => t.label === page.url.searchParams.get('tab')) ?? TABS[0]);
+
+	function selectTab(tab: Tab): void {
+		activeTab = tab;
+		const url = new URL(page.url);
+		if (tab.id === TABS[0].id) {
+			url.searchParams.delete('tab');
+		} else {
+			url.searchParams.set('tab', tab.label);
+		}
+		replaceState(url.pathname + url.search, {});
+	}
+
+	function activateTab(tab: Tab): void {
+		selectTab(tab);
+		document.getElementById(`tab-${tab.id}`)?.focus();
+	}
+
+	function handleTabKeydown(e: KeyboardEvent, tab: Tab): void {
+		const idx = TABS.indexOf(tab);
+		switch (e.key) {
+			case 'ArrowRight':
+				e.preventDefault();
+				activateTab(TABS[(idx + 1) % TABS.length]);
+				break;
+			case 'ArrowLeft':
+				e.preventDefault();
+				activateTab(TABS[(idx - 1 + TABS.length) % TABS.length]);
+				break;
+			case 'Home':
+				e.preventDefault();
+				activateTab(TABS[0]);
+				break;
+			case 'End':
+				e.preventDefault();
+				activateTab(TABS[TABS.length - 1]);
+				break;
+		}
+	}
 
 	// ---------------------------------------------------------------------------
 	// State
@@ -101,6 +162,16 @@
 		}
 		return counts;
 	});
+
+	/** Distinct languages among the chapter's direct sentences (JA first).
+	   The chapter-row badge renders one pill per language; none when empty. */
+	function chapterLanguages(chapterId: string): ('ja' | 'en')[] {
+		const langs = new Set<'ja' | 'en'>();
+		for (const s of sentences) {
+			if (s.chapterId === chapterId) langs.add(s.language);
+		}
+		return [...langs].sort((a, b) => (a === 'ja' ? -1 : 1));
+	}
 
 	let newSentenceOverLimit = $derived(newSentenceText.length > 200);
 	let editingSentenceOverLimit = $derived(editingSentenceText.length > 200);
@@ -549,6 +620,32 @@
 		settings = { ...settings, retryFrom: value };
 		saveSettings(settings);
 	}
+
+	// --- Practice operation (T9: oboeru:practice-ui:v1) ---
+
+	let practicePrefs = $state<PracticePrefs>(loadPracticePrefs());
+
+	/** はやい dwell pair; ふつう is the module default (800/2000). */
+	const FAST_DWELL = { correctDwellMs: 400, incorrectDwellMs: 800 } as const;
+
+	let practiceSpeed = $derived<'fast' | 'normal'>(
+		practicePrefs.correctDwellMs === FAST_DWELL.correctDwellMs &&
+			practicePrefs.incorrectDwellMs === FAST_DWELL.incorrectDwellMs
+			? 'fast'
+			: 'normal'
+	);
+
+	function handleAutoAdvanceChange(on: boolean): void {
+		practicePrefs = { ...practicePrefs, autoAdvance: on };
+		savePracticePrefs(practicePrefs);
+	}
+
+	function handlePracticeSpeedChange(speed: 'fast' | 'normal'): void {
+		const dwell =
+			speed === 'fast' ? FAST_DWELL : { correctDwellMs: 800, incorrectDwellMs: 2000 };
+		practicePrefs = { ...practicePrefs, ...dwell };
+		savePracticePrefs(practicePrefs);
+	}
 </script>
 
 <svelte:head>
@@ -556,13 +653,57 @@
 </svelte:head>
 
 <div>
-	<h1 class="mb-6 text-2xl font-bold">管理</h1>
+	{#snippet languageBadge(lang: 'ja' | 'en', label: string)}
+		<span
+			class="language-badge inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold {lang === 'ja'
+				? 'bg-lang-ja text-lang-ja-foreground'
+				: 'bg-lang-en text-lang-en-foreground'}"
+			title={lang === 'ja' ? '日本語' : 'English'}
+		>
+			{label}
+		</span>
+	{/snippet}
 
-	<div class="mb-8 grid grid-cols-1 gap-8 md:grid-cols-2">
-		<!-- ====================================================================== -->
-		<!-- Chapter Tree Section                                                   -->
-		<!-- ====================================================================== -->
+	<h1 class="mb-1 text-2xl font-bold">管理</h1>
+	<p class="mb-6 text-sm text-muted-foreground">チャプターと文章を管理します</p>
 
+	<!-- Tab bar (lightweight custom tabs: tablist / tab / tabpanel + arrow keys + ?tab= deep link) -->
+	<div
+		class="mb-6 grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted p-1 sm:grid-cols-4"
+		role="tablist"
+		aria-label="管理セクション"
+	>
+		{#each TABS as t (t.id)}
+			<button
+				type="button"
+				role="tab"
+				id="tab-{t.id}"
+				aria-selected={activeTab.id === t.id}
+				aria-controls="tabpanel-{t.id}"
+				tabindex={activeTab.id === t.id ? 0 : -1}
+				onclick={() => selectTab(t)}
+				onkeydown={(e) => handleTabKeydown(e, t)}
+				class="flex min-h-11 select-none items-center justify-center whitespace-nowrap rounded-md px-2 text-sm font-semibold outline-none transition-colors duration-[var(--motion-press)] focus-visible:ring-3 focus-visible:ring-ring/50 {activeTab.id === t.id
+					? 'bg-primary text-primary-foreground shadow-[0_3px_0_0_color-mix(in_oklab,var(--primary)_75%,black)]'
+					: 'text-muted-foreground hover:bg-background hover:text-foreground'}"
+			>
+				{t.label}
+			</button>
+		{/each}
+	</div>
+
+	<!-- ====================================================================== -->
+	<!-- Chapter panel                                                          -->
+	<!-- ====================================================================== -->
+
+	<div
+		id="tabpanel-chapters"
+		role="tabpanel"
+		aria-labelledby="tab-chapters"
+		tabindex="0"
+		class="focus-visible:outline-2"
+		hidden={activeTab.id !== 'chapters'}
+	>
 		<section class="rounded-lg border border-border bg-muted/50 p-4" aria-labelledby="chapters-heading">
 			<h2 id="chapters-heading" class="mb-3 text-lg font-semibold">チャプター</h2>
 
@@ -644,50 +785,55 @@
 								</div>
 							</div>
 						{:else}
+							{#each chapterLanguages(chapter.id) as lang (lang)}
+								{@render languageBadge(lang, lang.toUpperCase())}
+							{/each}
 							<span class="chapter-name min-w-0 flex-1 truncate font-medium" data-testid="chapter-name">{chapter.name}</span>
 							<span class="sentence-count text-xs whitespace-nowrap text-muted-foreground">
 								({chapterSentenceCounts.get(chapter.id) || 0}文)
 							</span>
-							<div class="chapter-actions flex shrink-0 flex-wrap gap-1">
+							<div class="chapter-actions flex shrink-0 flex-wrap items-center gap-2">
 								<Button
 									size="sm"
 									variant="outline"
 									onclick={() => startAddChildChapter(chapter.id)}
 									aria-label="子チャプターを追加"
 									data-testid="add-child-chapter"
-									class="h-11 sm:h-8"
+									class="h-11 min-w-16 sm:h-8 sm:min-w-14"
 								>
 									+ 子
 								</Button>
-								<Button
-									size="sm"
-									variant="outline"
-									onclick={() => moveChapter(chapter, -1)}
-									aria-label="上へ移動"
-									data-testid="move-chapter-up"
-									disabled={!canMove(chapter, -1)}
-									class="h-11 sm:h-8"
-								>
-									↑
-								</Button>
-								<Button
-									size="sm"
-									variant="outline"
-									onclick={() => moveChapter(chapter, 1)}
-									aria-label="下へ移動"
-									data-testid="move-chapter-down"
-									disabled={!canMove(chapter, 1)}
-									class="h-11 sm:h-8"
-								>
-									↓
-								</Button>
+								<div class="flex gap-1" role="group" aria-label="並び替え">
+									<Button
+										size="sm"
+										variant="outline"
+										onclick={() => moveChapter(chapter, -1)}
+										aria-label="上へ移動"
+										data-testid="move-chapter-up"
+										disabled={!canMove(chapter, -1)}
+										class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+									>
+										↑
+									</Button>
+									<Button
+										size="sm"
+										variant="outline"
+										onclick={() => moveChapter(chapter, 1)}
+										aria-label="下へ移動"
+										data-testid="move-chapter-down"
+										disabled={!canMove(chapter, 1)}
+										class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+									>
+										↓
+									</Button>
+								</div>
 								<Button
 									size="sm"
 									variant="outline"
 									onclick={() => startEditChapter(chapter)}
 									aria-label="名前を編集"
 									data-testid="edit-chapter"
-									class="h-11 sm:h-8"
+									class="h-11 min-w-16 sm:h-8 sm:min-w-14"
 								>
 									編集
 								</Button>
@@ -700,7 +846,7 @@
 									}}
 									aria-label="削除"
 									data-testid="delete-chapter"
-									class="h-11 sm:h-8"
+									class="h-11 min-w-16 sm:h-8 sm:min-w-14"
 								>
 									削除
 								</Button>
@@ -751,11 +897,20 @@
 				{/each}
 			</div>
 		</section>
+	</div>
 
-		<!-- ====================================================================== -->
-		<!-- Sentence Section                                                        -->
-		<!-- ====================================================================== -->
+	<!-- ====================================================================== -->
+	<!-- Sentence panel                                                         -->
+	<!-- ====================================================================== -->
 
+	<div
+		id="tabpanel-sentences"
+		role="tabpanel"
+		aria-labelledby="tab-sentences"
+		tabindex="0"
+		class="focus-visible:outline-2"
+		hidden={activeTab.id !== 'sentences'}
+	>
 		<section class="rounded-lg border border-border bg-muted/50 p-4" aria-labelledby="sentences-heading">
 			<h2 id="sentences-heading" class="mb-3 text-lg font-semibold">文章</h2>
 
@@ -946,25 +1101,19 @@
 							<div class="sentence-content p-3">
 								<div class="sentence-header mb-2 flex flex-wrap items-center gap-2">
 									<span class="sentence-text min-w-0 flex-1 text-sm" data-testid="sentence-text">{sentence.text}</span>
-									<span
-										class="language-badge rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase {sentence.language === 'ja'
-											? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
-											: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200'}"
-									>
-										{sentence.language === 'ja' ? '日本語' : 'English'}
-									</span>
+									{@render languageBadge(sentence.language, sentence.language === 'ja' ? '日本語' : 'English')}
 									<span class="chapter-badge max-w-30 truncate rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
 										{getChapterName(sentence.chapterId)}
 									</span>
 								</div>
-								<div class="sentence-actions flex flex-wrap gap-1">
+								<div class="sentence-actions flex flex-wrap gap-2">
 									<Button
 										size="sm"
 										variant="outline"
 										onclick={() => startEditSentence(sentence)}
 										aria-label="文章を編集"
 										data-testid="edit-sentence"
-										class="h-11 sm:h-8"
+										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
 									>
 										編集
 									</Button>
@@ -977,7 +1126,7 @@
 										}}
 										aria-label="文章を削除"
 										data-testid="delete-sentence"
-										class="h-11 sm:h-8"
+										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
 									>
 										削除
 									</Button>
@@ -999,139 +1148,203 @@
 	</div>
 
 	<!-- ====================================================================== -->
-	<!-- JSON Export                                                            -->
+	<!-- Data panel (export / import)                                           -->
 	<!-- ====================================================================== -->
 
-	<section class="mb-8 rounded-lg border border-border p-4" aria-labelledby="export-heading">
-		<h2 id="export-heading" class="mb-2 text-lg font-semibold">データのエクスポート</h2>
-		<p class="mb-3 text-sm text-muted-foreground">現在のチャプターと文章をJSONファイルとしてダウンロードします。</p>
-		<Button onclick={handleExport} class="h-11" data-testid="export-button">エクスポート</Button>
-	</section>
+	<div
+		id="tabpanel-data"
+		role="tabpanel"
+		aria-labelledby="tab-data"
+		tabindex="0"
+		class="focus-visible:outline-2"
+		hidden={activeTab.id !== 'data'}
+	>
+		<section class="mb-8 rounded-lg border border-border p-4" aria-labelledby="export-heading">
+			<h2 id="export-heading" class="mb-2 text-lg font-semibold">データのエクスポート</h2>
+			<p class="mb-3 text-sm text-muted-foreground">現在のチャプターと文章をJSONファイルとしてダウンロードします。</p>
+			<Button onclick={handleExport} class="h-11" data-testid="export-button">エクスポート</Button>
+		</section>
 
 	<!-- ====================================================================== -->
 	<!-- JSON Import                                                            -->
 	<!-- ====================================================================== -->
 
-	<section class="mb-8 rounded-lg border border-border p-4" aria-labelledby="import-heading">
-		<h2 id="import-heading" class="mb-2 text-lg font-semibold">データのインポート</h2>
-		<p class="mb-3 text-sm text-muted-foreground">JSONファイルからチャプターと文章をインポートします。既存データはIDベースでマージされます。</p>
-		<label
-			for="import-input"
-			class={cn(buttonVariants({ variant: 'default' }), 'h-11 cursor-pointer')}
-		>
-			ファイルを選択
-			<input
-				id="import-input"
-				type="file"
-				accept=".json"
-				onchange={handleImport}
-				data-testid="import-input"
-				class="sr-only"
-			/>
-		</label>
-		{#if importMessage}
-			<p
-				class="mt-3 rounded-md border p-2 text-sm {importMessage.type === 'success'
-					? 'success border-success/30 bg-success/10 text-success'
-					: 'error border-destructive/30 bg-background text-destructive'}"
-				role="status"
-				data-testid="import-message"
+		<section class="mb-8 rounded-lg border border-border p-4" aria-labelledby="import-heading">
+			<h2 id="import-heading" class="mb-2 text-lg font-semibold">データのインポート</h2>
+			<p class="mb-3 text-sm text-muted-foreground">JSONファイルからチャプターと文章をインポートします。既存データはIDベースでマージされます。</p>
+			<label
+				for="import-input"
+				class={cn(buttonVariants({ variant: 'default' }), 'h-11 cursor-pointer')}
 			>
-				{importMessage.text}
-			</p>
-		{/if}
-	</section>
+				ファイルを選択
+				<input
+					id="import-input"
+					type="file"
+					accept=".json"
+					onchange={handleImport}
+					data-testid="import-input"
+					class="sr-only"
+				/>
+			</label>
+			{#if importMessage}
+				<p
+					class="mt-3 rounded-md border p-2 text-sm {importMessage.type === 'success'
+						? 'success border-success/30 bg-success/10 text-success'
+						: 'error border-destructive/30 bg-background text-destructive'}"
+					role="status"
+					data-testid="import-message"
+				>
+					{importMessage.text}
+				</p>
+			{/if}
+		</section>
+	</div>
 
 	<!-- ====================================================================== -->
-	<!-- Settings                                                               -->
+	<!-- Settings panel                                                         -->
 	<!-- ====================================================================== -->
 
-	<section class="rounded-lg border border-border p-4" aria-labelledby="settings-heading">
-		<h2 id="settings-heading" class="mb-3 text-lg font-semibold">設定</h2>
+	<div
+		id="tabpanel-settings"
+		role="tabpanel"
+		aria-labelledby="tab-settings"
+		tabindex="0"
+		class="focus-visible:outline-2"
+		hidden={activeTab.id !== 'settings'}
+	>
+		<section class="rounded-lg border border-border p-4" aria-labelledby="settings-heading">
+			<h2 id="settings-heading" class="mb-3 text-lg font-semibold">設定</h2>
 
-		<!-- Threshold -->
-		<div class="setting-row mb-4 flex flex-col gap-1.5">
-			<Label for="threshold-slider">
-				認識閾値: <span data-testid="threshold-value">{settings.threshold}</span>%
-			</Label>
-			<Slider.Root
-				id="threshold-slider"
-				type="single"
-				value={settings.threshold}
-				onValueChange={(v: number) => handleThresholdChange(v)}
-				min={0}
-				max={100}
-				step={1}
-				class="max-w-80"
-				ariaLabel="認識閾値"
-				data-testid="threshold-slider"
-			/>
-		</div>
-
-		<!-- TTS Speed -->
-		<div class="setting-row mb-4 flex flex-col gap-1.5">
-			<Label for="tts-speed-slider">
-				TTS速度: <span data-testid="tts-rate-value">{settings.ttsRate.toFixed(1)}</span>
-			</Label>
-			<Slider.Root
-				id="tts-speed-slider"
-				type="single"
-				value={settings.ttsRate}
-				onValueChange={(v: number) => handleTtsRateChange(v)}
-				min={0.5}
-				max={2.0}
-				step={0.1}
-				class="max-w-80"
-				ariaLabel="TTS速度"
-				data-testid="tts-speed-slider"
-			/>
-		</div>
-
-		<!-- Voice -->
-		<div class="setting-row mb-4 flex flex-col gap-1.5">
-			<Label for="voice-select">音声:</Label>
-			<Select.Root
-				type="single"
-				value={settings.voiceURI ?? ''}
-				onValueChange={(v: string) => handleVoiceChange(v)}
-			>
-				<Select.Trigger id="voice-select" data-testid="voice-select" class="w-72 data-[size=default]:h-11 sm:data-[size=default]:h-9">
-					<span data-slot="select-value">{voiceLabel(settings.voiceURI)}</span>
-				</Select.Trigger>
-				<Select.Content>
-					<Select.Item value="">デフォルト (言語に応じて自動)</Select.Item>
-					<Select.Label>日本語</Select.Label>
-					{#each CURATED_VOICES.filter((v) => v.lang === 'ja') as voice (voice.name)}
-						<Select.Item value={voice.name}>{voice.label}</Select.Item>
-					{/each}
-					<Select.Separator />
-					<Select.Label>English</Select.Label>
-					{#each CURATED_VOICES.filter((v) => v.lang === 'en') as voice (voice.name)}
-						<Select.Item value={voice.name}>{voice.label}</Select.Item>
-					{/each}
-				</Select.Content>
-			</Select.Root>
-		</div>
-
-		<!-- Retry From -->
-		<fieldset class="setting-row mb-4 flex flex-col gap-1.5 border-0 p-0">
-			<legend class="mb-1.5 text-sm font-medium">リトライ方法:</legend>
-			<RadioGroup.Root
-				value={settings.retryFrom}
-				onValueChange={(v) => handleRetryFromChange(v as 'tts' | 'rerecord')}
-				class="flex gap-4"
-			>
-				<Label class="flex items-center gap-2 font-normal">
-					<RadioGroup.Item value="tts" data-testid="retry-tts" class="size-11 sm:size-4" />
-					TTSから再生
+			<!-- Threshold -->
+			<div class="setting-row mb-4 flex flex-col gap-1.5">
+				<Label for="threshold-slider">
+					認識閾値: <span data-testid="threshold-value">{settings.threshold}</span>%
 				</Label>
-				<Label class="flex items-center gap-2 font-normal">
-					<RadioGroup.Item value="rerecord" data-testid="retry-rerecord" class="size-11 sm:size-4" />
-					もう一度録音
+				<Slider.Root
+					id="threshold-slider"
+					type="single"
+					value={settings.threshold}
+					onValueChange={(v: number) => handleThresholdChange(v)}
+					min={0}
+					max={100}
+					step={1}
+					class="max-w-80"
+					ariaLabel="認識閾値"
+					data-testid="threshold-slider"
+				/>
+			</div>
+
+			<!-- TTS Speed -->
+			<div class="setting-row mb-4 flex flex-col gap-1.5">
+				<Label for="tts-speed-slider">
+					TTS速度: <span data-testid="tts-rate-value">{settings.ttsRate.toFixed(1)}</span>
 				</Label>
-			</RadioGroup.Root>
-		</fieldset>
-	</section>
+				<Slider.Root
+					id="tts-speed-slider"
+					type="single"
+					value={settings.ttsRate}
+					onValueChange={(v: number) => handleTtsRateChange(v)}
+					min={0.5}
+					max={2.0}
+					step={0.1}
+					class="max-w-80"
+					ariaLabel="TTS速度"
+					data-testid="tts-speed-slider"
+				/>
+			</div>
+
+			<!-- Voice -->
+			<div class="setting-row mb-4 flex flex-col gap-1.5">
+				<Label for="voice-select">音声:</Label>
+				<Select.Root
+					type="single"
+					value={settings.voiceURI ?? ''}
+					onValueChange={(v: string) => handleVoiceChange(v)}
+				>
+					<Select.Trigger id="voice-select" data-testid="voice-select" class="w-72 data-[size=default]:h-11 sm:data-[size=default]:h-9">
+						<span data-slot="select-value">{voiceLabel(settings.voiceURI)}</span>
+					</Select.Trigger>
+					<Select.Content>
+						<Select.Item value="">デフォルト (言語に応じて自動)</Select.Item>
+						<Select.Label>日本語</Select.Label>
+						{#each CURATED_VOICES.filter((v) => v.lang === 'ja') as voice (voice.name)}
+							<Select.Item value={voice.name}>{voice.label}</Select.Item>
+						{/each}
+						<Select.Separator />
+						<Select.Label>English</Select.Label>
+						{#each CURATED_VOICES.filter((v) => v.lang === 'en') as voice (voice.name)}
+							<Select.Item value={voice.name}>{voice.label}</Select.Item>
+						{/each}
+					</Select.Content>
+				</Select.Root>
+			</div>
+
+			<!-- Retry From -->
+			<fieldset class="setting-row mb-4 flex flex-col gap-1.5 border-0 p-0">
+				<legend class="mb-1.5 text-sm font-medium">リトライ方法:</legend>
+				<RadioGroup.Root
+					value={settings.retryFrom}
+					onValueChange={(v) => handleRetryFromChange(v as 'tts' | 'rerecord')}
+					class="flex gap-4"
+				>
+					<Label class="flex items-center gap-2 font-normal">
+						<RadioGroup.Item value="tts" data-testid="retry-tts" class="size-11 sm:size-4" />
+						TTSから再生
+					</Label>
+					<Label class="flex items-center gap-2 font-normal">
+						<RadioGroup.Item value="rerecord" data-testid="retry-rerecord" class="size-11 sm:size-4" />
+						もう一度録音
+					</Label>
+				</RadioGroup.Root>
+			</fieldset>
+
+			<!-- Practice operation (T9) -->
+			<fieldset
+				class="setting-row flex flex-col gap-3 rounded-md border border-border bg-muted/40 p-3"
+				aria-labelledby="practice-operation-heading"
+			>
+				<legend id="practice-operation-heading" class="px-1 text-sm font-semibold">
+					練習の操作
+				</legend>
+
+				<div class="flex flex-col gap-1.5">
+					<span class="text-sm font-medium">自動進行:</span>
+					<RadioGroup.Root
+						value={practicePrefs.autoAdvance ? 'on' : 'off'}
+						onValueChange={(v) => handleAutoAdvanceChange(v === 'on')}
+						class="flex gap-4"
+					>
+						<Label class="flex items-center gap-2 font-normal">
+							<RadioGroup.Item value="on" data-testid="auto-advance-on" class="size-11 sm:size-4" />
+							オン (自動で次へ)
+						</Label>
+						<Label class="flex items-center gap-2 font-normal">
+							<RadioGroup.Item value="off" data-testid="auto-advance-off" class="size-11 sm:size-4" />
+							オフ (手動で次へ)
+						</Label>
+					</RadioGroup.Root>
+				</div>
+
+				<div class="flex flex-col gap-1.5">
+					<span class="text-sm font-medium">進む速さ:</span>
+					<RadioGroup.Root
+						value={practiceSpeed}
+						onValueChange={(v) => handlePracticeSpeedChange(v as 'fast' | 'normal')}
+						class="flex gap-4"
+					>
+						<Label class="flex items-center gap-2 font-normal">
+							<RadioGroup.Item value="fast" data-testid="speed-fast" class="size-11 sm:size-4" />
+							はやい
+						</Label>
+						<Label class="flex items-center gap-2 font-normal">
+							<RadioGroup.Item value="normal" data-testid="speed-normal" class="size-11 sm:size-4" />
+							ふつう
+						</Label>
+					</RadioGroup.Root>
+				</div>
+			</fieldset>
+		</section>
+	</div>
 
 	<!-- ====================================================================== -->
 	<!-- Delete confirmation dialogs                                            -->

@@ -6,6 +6,7 @@ import { test, expect } from '@playwright/test';
 
 const STORAGE_KEY = 'oboeru:v1';
 const SETTINGS_KEY = 'oboeru:settings:v1';
+const PRACTICE_UI_KEY = 'oboeru:practice-ui:v1';
 
 /** Seed localStorage with chapters and sentences before navigating. */
 async function seedData(page: import('@playwright/test').Page) {
@@ -72,6 +73,7 @@ async function seedData(page: import('@playwright/test').Page) {
 test.describe('JSON Export', () => {
 	test('clicking export triggers file download', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
 
 		const downloadPromise = page.waitForEvent('download');
 		await page.getByTestId('export-button').click();
@@ -107,6 +109,7 @@ test.describe('JSON Import — Valid', () => {
 		page
 	}) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
 
 		// Create a valid import file
 		const importData = {
@@ -166,6 +169,7 @@ test.describe('JSON Import — Valid', () => {
 test.describe('JSON Import — Merge', () => {
 	test('importing with existing IDs overwrites', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
 
 		// Import with the same chapter ID but different name
 		const importData = {
@@ -226,6 +230,7 @@ test.describe('JSON Import — Merge', () => {
 test.describe('JSON Import — Invalid', () => {
 	test('importing invalid JSON shows error', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
 
 		const fileChooserPromise = page.waitForEvent('filechooser');
 		await page.getByTestId('import-input').click({ force: true });
@@ -244,6 +249,7 @@ test.describe('JSON Import — Invalid', () => {
 
 	test('importing missing chapters array shows error', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
 
 		const importData = {
 			version: 1,
@@ -266,6 +272,7 @@ test.describe('JSON Import — Invalid', () => {
 
 	test('importing missing sentences array shows error', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
 
 		const importData = {
 			version: 1,
@@ -294,6 +301,7 @@ test.describe('JSON Import — Invalid', () => {
 test.describe('JSON Import — Version Mismatch', () => {
 	test('importing version 2 shows error', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
 
 		const importData = {
 			version: 2,
@@ -323,6 +331,7 @@ test.describe('JSON Import — Version Mismatch', () => {
 test.describe('Settings — Threshold', () => {
 	test('changing threshold persists across reload', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: '設定' }).click();
 
 		// Verify default value
 		await expect(page.getByTestId('threshold-value')).toHaveText('80');
@@ -339,8 +348,10 @@ test.describe('Settings — Threshold', () => {
 		// Verify display updates
 		await expect(page.getByTestId('threshold-value')).toHaveText('50');
 
-		// Reload and verify persistence
+		// Reload and verify persistence. Reload resets the tab to the default
+		// (チャプター), so re-select 設定 before asserting the visible value.
 		await page.reload();
+		await page.getByRole('tab', { name: '設定' }).click();
 		await expect(page.getByTestId('threshold-value')).toHaveText('50');
 
 		// Also verify localStorage
@@ -358,6 +369,7 @@ test.describe('Settings — Threshold', () => {
 test.describe('Settings — TTS Speed', () => {
 	test('changing TTS speed persists across reload', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: '設定' }).click();
 
 		// Verify default value
 		await expect(page.getByTestId('tts-rate-value')).toHaveText('1.0');
@@ -372,8 +384,10 @@ test.describe('Settings — TTS Speed', () => {
 		// Verify display updates
 		await expect(page.getByTestId('tts-rate-value')).toHaveText('1.5');
 
-		// Reload and verify persistence
+		// Reload and verify persistence. Reload resets the tab to the default
+		// (チャプター), so re-select 設定 before asserting the visible value.
 		await page.reload();
+		await page.getByRole('tab', { name: '設定' }).click();
 		await expect(page.getByTestId('tts-rate-value')).toHaveText('1.5');
 
 		const stored = await page.evaluate((key) => {
@@ -390,6 +404,7 @@ test.describe('Settings — TTS Speed', () => {
 test.describe('Settings — Retry From', () => {
 	test('changing retry from persists across reload', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: '設定' }).click();
 
 		// Default is TTS
 		await expect(page.getByTestId('retry-tts')).toBeChecked();
@@ -398,8 +413,10 @@ test.describe('Settings — Retry From', () => {
 		await page.getByTestId('retry-rerecord').click();
 		await expect(page.getByTestId('retry-rerecord')).toBeChecked();
 
-		// Reload and verify
+		// Reload and verify. Reload resets the tab to the default (チャプター),
+		// so re-select 設定 before asserting the visible radio state.
 		await page.reload();
+		await page.getByRole('tab', { name: '設定' }).click();
 		await expect(page.getByTestId('retry-rerecord')).toBeChecked();
 
 		const stored = await page.evaluate((key) => {
@@ -416,6 +433,7 @@ test.describe('Settings — Retry From', () => {
 test.describe('Settings — Voice Select', () => {
 	test('default voice option is デフォルト (言語に応じて自動)', async ({ page }) => {
 		await seedData(page);
+		await page.getByRole('tab', { name: '設定' }).click();
 
 		// The trigger should show デフォルト (言語に応じて自動) as the selected value
 		const select = page.getByTestId('voice-select');
@@ -425,5 +443,45 @@ test.describe('Settings — Voice Select', () => {
 		// The option list contains デフォルト (言語に応じて自動) as the first option
 		await select.click();
 		await expect(page.getByRole('option', { name: 'デフォルト (言語に応じて自動)' })).toBeVisible();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Settings — 練習の操作 (T9: auto-advance + dwell speed, oboeru:practice-ui:v1)
+// ---------------------------------------------------------------------------
+
+test.describe('Settings — Practice Operation', () => {
+	test('練習の操作 defaults to auto-advance ON and ふつう speed', async ({ page }) => {
+		await seedData(page);
+		await page.getByRole('tab', { name: '設定' }).click();
+
+		await expect(page.getByRole('group', { name: '練習の操作' })).toBeVisible();
+		await expect(page.getByTestId('auto-advance-on')).toBeChecked();
+		await expect(page.getByTestId('speed-normal')).toBeChecked();
+	});
+
+	test('changing auto-advance and speed persists across reload', async ({ page }) => {
+		await seedData(page);
+		await page.getByRole('tab', { name: '設定' }).click();
+
+		await page.getByTestId('auto-advance-off').click();
+		await expect(page.getByTestId('auto-advance-off')).toBeChecked();
+		await expect(page.getByTestId('auto-advance-on')).not.toBeChecked();
+
+		await page.getByTestId('speed-fast').click();
+		await expect(page.getByTestId('speed-fast')).toBeChecked();
+
+		// Reload resets the tab to the default (チャプター), so re-select 設定.
+		await page.reload();
+		await page.getByRole('tab', { name: '設定' }).click();
+		await expect(page.getByTestId('auto-advance-off')).toBeChecked();
+		await expect(page.getByTestId('speed-fast')).toBeChecked();
+
+		const stored = await page.evaluate((key) => {
+			return JSON.parse(localStorage.getItem(key)!);
+		}, PRACTICE_UI_KEY);
+		expect(stored.autoAdvance).toBe(false);
+		expect(stored.correctDwellMs).toBe(400);
+		expect(stored.incorrectDwellMs).toBe(800);
 	});
 });

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { mockTtsApi, type TtsMock } from './tts-mock';
+import { mockTtsApi, silentWavBytes, type TtsMock } from './tts-mock';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -7,6 +7,7 @@ import { mockTtsApi, type TtsMock } from './tts-mock';
 
 const STORAGE_KEY = 'oboeru:v1';
 const SETTINGS_KEY = 'oboeru:settings:v1';
+const PRACTICE_UI_KEY = 'oboeru:practice-ui:v1';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,6 +28,11 @@ interface SeedOptions {
 		ttsRate?: number;
 		voiceURI?: string | null;
 		retryFrom?: 'tts' | 'rerecord';
+	};
+	practicePrefs?: {
+		autoAdvance?: boolean;
+		correctDwellMs?: number;
+		incorrectDwellMs?: number;
 	};
 }
 
@@ -51,11 +57,22 @@ async function seedPractice(page: Page, opts: SeedOptions = {}) {
 	};
 
 	await page.addInitScript(
-		({ storageKey, settingsKey, chapters, sentences, settings }) => {
+		({ storageKey, settingsKey, practiceUiKey, chapters, sentences, settings, practicePrefs }) => {
 			localStorage.setItem(storageKey, JSON.stringify({ chapters, sentences }));
 			localStorage.setItem(settingsKey, JSON.stringify(settings));
+			if (practicePrefs) {
+				localStorage.setItem(practiceUiKey, JSON.stringify(practicePrefs));
+			}
 		},
-		{ storageKey: STORAGE_KEY, settingsKey: SETTINGS_KEY, chapters, sentences, settings }
+		{
+			storageKey: STORAGE_KEY,
+			settingsKey: SETTINGS_KEY,
+			practiceUiKey: PRACTICE_UI_KEY,
+			chapters,
+			sentences,
+			settings,
+			practicePrefs: opts.practicePrefs ?? null
+		}
 	);
 }
 
@@ -156,7 +173,8 @@ test.describe('Practice — Error states', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('Practice — Auto loop', () => {
-	// fake-media はトーン音声のため無音自動停止は発火しない。手動停止ボタンを基本とする(plan T5 手順4)
+	// fake-media はトーン音声のため無音自動停止は発火しない。T13 からは
+	// 自動録音が廃止され、ホールド(Space/ボタン)中のみ録音される。
 	test('initial show phase displays the sentence and progress', async ({ page }) => {
 		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
 
@@ -165,7 +183,7 @@ test.describe('Practice — Auto loop', () => {
 		await expect(page.getByTestId('progress')).toHaveText('1 / 1');
 	});
 
-	test('auto-advances from show through tts to transcribing (text hidden)', async ({
+	test('auto-advances from show through tts to the ready state; hold + release transcribes', async ({
 		page
 	}) => {
 		await setupPractice(page, {
@@ -175,12 +193,13 @@ test.describe('Practice — Auto loop', () => {
 		// Text visible initially (show phase)
 		await expect(page.getByTestId('sentence-text')).toBeVisible();
 
-		// After the show dwell + TTS, the text is hidden and recording starts
+		// After the show dwell + TTS, the text is hidden and the ready state
+		// waits for a push — no recording starts on its own.
 		await expect(page.getByTestId('sentence-text')).toBeHidden({ timeout: 5000 });
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 
-		// Manual stop → transcribing (mock has delayMs: 1000 so it stays visible)
-		await page.getByTestId('stop-recording-btn').click();
+		// Hold → release → transcribing (mock has delayMs: 1000 so it stays visible)
+		await holdAndRelease(page);
 		await expect(page.getByTestId('sentence-transcribing')).toBeVisible({
 			timeout: 5000
 		});
@@ -189,9 +208,9 @@ test.describe('Practice — Auto loop', () => {
 	test('full pass loop: feedback with score then summary', async ({ page }) => {
 		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
 
-		// Recording phase → manual stop → transcribe → feedback
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-		await page.getByTestId('stop-recording-btn').click();
+		// Hold → release → transcribe → feedback
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
 
 		// Feedback with a passing score and the transcribed text
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
@@ -210,18 +229,18 @@ test.describe('Practice — Auto loop', () => {
 	test('fail loop: low score then retry', async ({ page }) => {
 		await setupPractice(page, { transcribe: [{ text: 'ぜんぜんちがう' }] });
 
-		// Recording phase → manual stop → transcribe → failing feedback
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-		await page.getByTestId('stop-recording-btn').click();
+		// Hold → release → transcribe → failing feedback
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
 
 		// First feedback: failing score
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
 		await expect(page.getByTestId('score')).toHaveClass(/fail/);
 
-		// Retry: feedback disappears, recording restarts → manual stop again
+		// Retry: feedback disappears → tts → ready → hold again → feedback
 		await expect(page.getByTestId('feedback')).toBeHidden({ timeout: 10000 });
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-		await page.getByTestId('stop-recording-btn').click();
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 15000 });
 	});
 });
@@ -328,21 +347,24 @@ test.describe('Practice — Manual controls', () => {
 		await expect(page.getByTestId('sentence-text')).toBeVisible();
 		await page.getByTestId('replay-btn').click();
 
-		// TTS plays (50ms mock) → hidden → recording — well before the 800ms show dwell
+		// TTS plays (50ms mock) → hidden ready state — well before the 800ms show dwell
 		await expect(page.getByTestId('sentence-text')).toBeHidden({ timeout: 500 });
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 500 });
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 500 });
 	});
 
-	test('replay button in feedback replays the sentence', async ({ page }) => {
+	test('replay button in feedback replays the sentence (T3 cache hit, no refetch)', async ({
+		page
+	}) => {
 		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
 
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-		await page.getByTestId('stop-recording-btn').click();
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
 
-		// speak count: 1 (initial tts) → click replay → 2
+		// T3 cache: the show-phase prefetch warmed the cache, so the feedback
+		// replay must reuse it — the API is NOT called a second time (T6).
 		await page.getByTestId('replay-btn').click();
-		await expect.poll(() => ttsCallCount()).toBe(2);
+		await expect.poll(() => ttsCallCount()).toBe(1);
 	});
 
 	test('next button advances immediately without waiting for the dwell', async ({ page }) => {
@@ -366,8 +388,8 @@ test.describe('Practice — Manual controls', () => {
 			]
 		});
 
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-		await page.getByTestId('stop-recording-btn').click();
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
 
 		// Click 次へ → sentence 2 appears well before the 1.2s correct-dwell
@@ -381,14 +403,16 @@ test.describe('Practice — Manual controls', () => {
 	test('retry button retries the same sentence immediately', async ({ page }) => {
 		await setupPractice(page, { transcribe: [{ text: 'ぜんぜんちがう' }] });
 
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-		await page.getByTestId('stop-recording-btn').click();
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
 		await expect(page.getByTestId('score')).toHaveClass(/fail/);
 
-		// Click もう一度試す → recording restarts well before the 2.5s fail-dwell
+		// Click もう一度試す → back to tts → ready well before the 2.5s fail-dwell
 		await page.getByTestId('retry-btn').click();
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 500 });
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 2000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
 	});
 
 	test('end dialog cancel keeps the session running', async ({ page }) => {
@@ -443,13 +467,13 @@ test.describe('Practice — Manual controls', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('Practice — Transcription errors', () => {
-	// fake-media はトーン音声のため無音自動停止は発火しない。手動停止ボタンを基本とする(plan T5 手順4)
+	// fake-media はトーン音声のため無音自動停止は発火しない。ホールド操作で録音する(T13)
 	test('transcribe 500 shows error message in feedback', async ({ page }) => {
 		await setupPractice(page, { transcribe: [{ status: 500 }] });
 
-		// Recording phase → manual stop → transcribe 500 → error feedback
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-		await page.getByTestId('stop-recording-btn').click();
+		// Hold → release → transcribe 500 → error feedback
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
 
 		await expect(page.getByTestId('error-message')).toBeVisible({ timeout: 10000 });
 		await expect(page.getByTestId('error-message')).toContainText('文字起こしエラー');
@@ -460,11 +484,713 @@ test.describe('Practice — Transcription errors', () => {
 			transcribe: [{ status: 429, headers: { 'retry-after': '0' } }]
 		});
 
-		// Recording phase → manual stop → transcribe 429 → congestion feedback
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-		await page.getByTestId('stop-recording-btn').click();
+		// Hold → release → transcribe 429 → congestion feedback
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
 
 		await expect(page.getByTestId('error-message')).toBeVisible({ timeout: 15000 });
 		await expect(page.getByTestId('error-message')).toContainText('混雑中です');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// T6: Keyboard controls
+// ---------------------------------------------------------------------------
+
+/** Recorder module mock whose startRecording resolves after 400ms (keeps hidden visible). */
+const MOCK_MIC_DELAYED = `
+  export async function startRecording() {
+    await new Promise((r) => setTimeout(r, 400));
+    let resolveCompleted;
+    const completed = new Promise((resolve) => { resolveCompleted = resolve; });
+    return {
+      stop: async () => { resolveCompleted(new Blob(['x'], { type: 'audio/webm' })); return completed; },
+      completed,
+      onProgress: undefined
+    };
+  }
+  export function isSilent() { return false; }
+  export function selectMime() { return null; }
+`;
+
+test.describe('Practice — T6 keyboard', () => {
+	test('Space hold in show starts recording after mic prep, release transcribes', async ({
+		page
+	}) => {
+		await seedPractice(page);
+		await mockTts(page);
+		await mockTranscribe(page, [{ text: 'おはようございます。' }]);
+		await page.route('**/src/lib/recorder.ts*', (route) =>
+			route.fulfill({
+				status: 200,
+				contentType: 'application/javascript',
+				body: MOCK_MIC_DELAYED
+			})
+		);
+		await page.goto('/practice?chapter=ch-ja-01');
+
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+		await expect(page.getByTestId('chapter-name')).toHaveText('日本語');
+
+		// Space during show cancels the TTS path and pushes straight into
+		// recording — the delayed mic mock keeps the prep copy visible.
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-hidden')).toBeVisible({ timeout: 500 });
+		await expect(page.getByTestId('sentence-hidden')).toHaveText(/マイクを準備中/);
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+
+		// Held long enough (> 500ms) → release scores.
+		await page.waitForTimeout(600);
+		await page.keyboard.up('Space');
+		await expect(page.getByTestId('sentence-transcribing')).toBeVisible({ timeout: 5000 });
+	});
+
+	test('Enter in show skips to the ready state', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+
+		await page.keyboard.press('Enter');
+		await expect(page.getByTestId('sentence-text')).toBeHidden({ timeout: 500 });
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 500 });
+
+		// Recording itself needs the Space hold.
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+		await page.keyboard.up('Space');
+	});
+
+	test('Space release ends the hold → transcribing copy', async ({ page }) => {
+		await setupPractice(page, {
+			transcribe: [{ text: 'おはようございます。', delayMs: 1000 }]
+		});
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		await holdAndRelease(page);
+		await expect(page.getByTestId('sentence-transcribing')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByTestId('sentence-transcribing')).toHaveText(/聞き取ってるよ/);
+	});
+
+	test('Space in passing feedback advances to the next sentence immediately', async ({
+		page
+	}) => {
+		await setupPractice(page, {
+			transcribe: [{ text: 'おはようございます。' }],
+			sentences: [
+				{ id: 'ja-01', chapterId: 'ch-ja-01', text: 'おはようございます。', language: 'ja', order: 1 },
+				{ id: 'ja-02', chapterId: 'ch-ja-01', text: 'こんにちは。', language: 'ja', order: 2 }
+			]
+		});
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('score')).toHaveClass(/pass/, { timeout: 10000 });
+
+		// Must beat the 1.2s correct-dwell — Space advances instantly.
+		await page.keyboard.press(' ');
+		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。', { timeout: 700 });
+	});
+
+	test('R in show replays immediately (skips the show dwell)', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+
+		await page.keyboard.press('r');
+		// R → tts (cached) → hidden ready, well before the 800ms dwell path.
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 700 });
+	});
+
+	test('R in passing feedback replays from cache without a second API call', async ({
+		page
+	}) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
+		await expect.poll(() => ttsCallCount()).toBe(1);
+
+		await page.keyboard.press('r');
+		await expect.poll(() => ttsCallCount()).toBe(1);
+	});
+
+	test('S skips to the next sentence', async ({ page }) => {
+		await setupPractice(page, {
+			transcribe: [{ text: 'x' }],
+			sentences: [
+				{ id: 'ja-01', chapterId: 'ch-ja-01', text: 'おはようございます。', language: 'ja', order: 1 },
+				{ id: 'ja-02', chapterId: 'ch-ja-01', text: 'こんにちは。', language: 'ja', order: 2 }
+			]
+		});
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+
+		await page.keyboard.press('s');
+		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。');
+		await expect(page.getByTestId('progress')).toHaveText('2 / 2');
+	});
+
+	test('Esc opens the end dialog; keys are inert while it is open', async ({ page }) => {
+		await setupPractice(page, {
+			transcribe: [{ text: 'x' }],
+			sentences: [
+				{ id: 'ja-01', chapterId: 'ch-ja-01', text: 'おはようございます。', language: 'ja', order: 1 },
+				{ id: 'ja-02', chapterId: 'ch-ja-01', text: 'こんにちは。', language: 'ja', order: 2 }
+			]
+		});
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+
+		await page.keyboard.press('Escape');
+		await expect(page.getByRole('alertdialog')).toBeVisible();
+
+		// S while the dialog is open must NOT skip behind it.
+		await page.keyboard.press('s');
+		await expect(page.getByRole('alertdialog')).toBeVisible();
+		await expect(page.getByTestId('summary')).toBeHidden();
+
+		await page.keyboard.press('Escape');
+		await expect(page.getByRole('alertdialog')).toBeHidden();
+		await expect(page.getByTestId('stop-btn')).toBeVisible();
+	});
+
+	test('level meter renders a non-zero width while recording', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+
+		// fake-media produces a tone (non-silent) → the rms-driven fill is > 0%.
+		await page.waitForFunction(() => {
+			const el = document.querySelector<HTMLElement>('[data-testid="level-meter-fill"]');
+			if (!el) return false;
+			const w = parseFloat(el.style.width);
+			return Number.isFinite(w) && w > 0;
+		});
+		await expect(page.getByTestId('level-value')).toHaveText(/レベル \d+%/);
+
+		await page.keyboard.up('Space');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// T6: Error retry (un-stick every failure)
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — T6 error retry', () => {
+	test('TTS 500 → 「もう一度再生」 resumes the flow after recovery', async ({ page }) => {
+		await seedPractice(page);
+		let ttsCalls = 0;
+		await page.route('**/api/tts', async (route) => {
+			ttsCalls++;
+			if (ttsCalls <= 2) {
+				await route.fulfill({
+					status: 500,
+					contentType: 'application/json',
+					body: JSON.stringify({ error: 'TTS down' })
+				});
+				return;
+			}
+			await route.fulfill({ status: 200, contentType: 'audio/wav', body: silentWavBytes(80) });
+		});
+		await mockTranscribe(page, [{ text: 'おはようございます。' }]);
+		await page.goto('/practice?chapter=ch-ja-01');
+
+		// show-prefetch (#1) + tts speak (#2) both fail → un-stuck error UI.
+		await expect(page.getByTestId('error-message')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('error-retry-btn')).toHaveText('もう一度再生');
+
+		await page.getByTestId('error-retry-btn').click();
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+	});
+
+	test('mic denied shows the error + retry on the ready screen, then records', async ({
+		page
+	}) => {
+		const MOCK_MIC_DENY_ONCE = `
+		  let calls = 0;
+		  export async function startRecording() {
+		    calls++;
+		    if (calls === 1) throw new Error('NotAllowedError: mic denied');
+		    let resolveCompleted;
+		    const completed = new Promise((resolve) => { resolveCompleted = resolve; });
+		    return {
+		      stop: async () => { resolveCompleted(new Blob(['x'], { type: 'audio/webm' })); return completed; },
+		      completed,
+		      onProgress: undefined
+		    };
+		  }
+		  export function isSilent() { return false; }
+		  export function selectMime() { return null; }
+		`;
+
+		await seedPractice(page);
+		await mockTts(page);
+		await mockTranscribe(page, [{ text: 'おはようございます。' }]);
+		await page.route('**/src/lib/recorder.ts*', (route) =>
+			route.fulfill({
+				status: 200,
+				contentType: 'application/javascript',
+				body: MOCK_MIC_DENY_ONCE
+			})
+		);
+		await page.goto('/practice?chapter=ch-ja-01');
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		// The push fails: the error + retry appear on the ready screen itself.
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('error-message')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('error-message')).toContainText('マイク');
+		await page.keyboard.up('Space');
+		await expect(page.getByTestId('error-retry-btn')).toHaveText('マイクをもう一度許可');
+
+		// Retry clears the error → the next push records (mock call #2 succeeds).
+		await page.getByTestId('error-retry-btn').click();
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByTestId('error-message')).toHaveCount(0);
+
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+		await page.keyboard.up('Space');
+	});
+
+	test('transcribe 500 → 「もう一度採点」 resends the SAME blob', async ({ page }) => {
+		await seedPractice(page);
+		await mockTts(page);
+
+		const blobSizes: number[] = [];
+		await page.route('**/api/transcribe', async (route) => {
+			blobSizes.push(route.request().postDataBuffer()?.length ?? 0);
+			if (blobSizes.length === 1) {
+				await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+				return;
+			}
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ text: 'おはようございます。' })
+			});
+		});
+		await page.goto('/practice?chapter=ch-ja-01');
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('error-message')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('error-retry-btn')).toHaveText('もう一度採点');
+
+		await page.getByTestId('error-retry-btn').click();
+		await expect(page.getByTestId('score')).toHaveText('100%', { timeout: 15000 });
+		await expect(page.getByTestId('score')).toHaveClass(/pass/);
+
+		expect(blobSizes.length).toBe(2);
+		expect(blobSizes[0]).toBeGreaterThan(0);
+		expect(blobSizes[0]).toBe(blobSizes[1]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// T6: Word diff + celebration
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — T6 word diff', () => {
+	test('feedback shows token diff: match / mismatch / unread + legend', async ({ page }) => {
+		await seedPractice(page, {
+			sentences: [
+				{
+					id: 'en-01',
+					chapterId: 'ch-ja-01',
+					text: 'Good morning everyone',
+					language: 'en',
+					order: 1
+				}
+			]
+		});
+		await mockTts(page);
+		await mockTranscribe(page, [{ text: 'Good banana' }]);
+		await page.goto('/practice?chapter=ch-ja-01');
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
+
+		await expect(page.getByTestId('score-label')).toHaveText('類似度');
+		await expect(page.getByTestId('word-diff')).toBeVisible();
+		await expect(page.locator('[data-testid="diff-token"][data-status="match"]')).toHaveText(
+			'Good'
+		);
+		await expect(page.locator('[data-testid="diff-token"][data-status="mismatch"]')).toHaveText(
+			'morning'
+		);
+		await expect(page.locator('[data-testid="diff-token"][data-status="unread"]')).toHaveText(
+			'everyone'
+		);
+		await expect(page.getByTestId('transcribed-text')).toContainText('Good banana');
+
+		// Legend maps the three states in reading order.
+		await expect(page.getByTestId('diff-legend')).toContainText('正しく読めた');
+		await expect(page.getByTestId('diff-legend')).toContainText('聞き取りに差');
+		await expect(page.getByTestId('diff-legend')).toContainText('未読');
+	});
+
+	test('passing score plays celebration-pop and announces 合格', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('score')).toHaveClass(/pass/, { timeout: 10000 });
+
+		await expect(page.getByTestId('score')).toHaveClass(/celebrate/);
+		await expect(page.locator('p.sr-only[aria-live="polite"]', { hasText: '合格' })).toBeVisible();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// T8: Live word display (mock engine via ?e2e=1, DEV only)
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — T8 live words', () => {
+	test('e2e mock fills slots green, shows mismatch chip and ghost, then scores normally', async ({
+		page
+	}) => {
+		await seedPractice(page, {
+			sentences: [
+				{
+					id: 'en-01',
+					chapterId: 'ch-ja-01',
+					text: 'Good morning everyone',
+					language: 'en',
+					order: 1
+				}
+			]
+		});
+		await mockTts(page);
+		await mockTranscribe(page, [{ text: 'Good morning everyone' }]);
+		await page.goto('/practice?chapter=ch-ja-01&e2e=1');
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		// Hold: the scripted mock words fill the slots DURING the hold.
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+
+		// One empty slot per target token — no target text leaks before a match.
+		const slots = page.locator('[data-testid="word-slot"]');
+		await expect(slots).toHaveCount(3);
+		await expect(page.getByTestId('live-word-stream')).not.toContainText('everyone');
+
+		// First scripted word → its slot fills green and shows the TARGET word.
+		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(1, {
+			timeout: 5000
+		});
+		await expect(page.locator('[data-testid="word-slot"].match').first()).toHaveText('Good');
+
+		// Scripted mismatch word → red chip in the stream, no slot filled.
+		await expect(page.getByTestId('word-chip')).toHaveText('バナナ');
+		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(1);
+
+		// Scripted partial → gray ghost in the next slot (speaker-side fragment).
+		await expect(page.getByTestId('word-ghost')).toHaveText('ever', { timeout: 3000 });
+
+		// Remaining words confirm → all slots green, ghost gone.
+		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(3, {
+			timeout: 8000
+		});
+		await expect(page.getByTestId('word-ghost')).toHaveCount(0);
+		await expect(page.locator('[data-testid="word-slot"].match').nth(1)).toHaveText('morning');
+		await expect(page.locator('[data-testid="word-slot"].match').nth(2)).toHaveText('everyone');
+
+		// Release ends the hold → normal Groq (mock) scoring path is untouched.
+		await page.keyboard.up('Space');
+		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('score')).toHaveClass(/pass/);
+		await expect(page.getByTestId('transcribed-text')).toContainText('Good morning everyone');
+	});
+
+	test('liveFail=1 falls back: no-live notice shows and practice completes normally', async ({
+		page
+	}) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] }, 'ch-ja-01&e2e=1&liveFail=1');
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		// Hold: live display is off — notice text only, no word stream.
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByTestId('live-off-notice')).toHaveText('ライブ表示なしで練習します');
+		await expect(page.getByTestId('live-word-stream')).toHaveCount(0);
+
+		// Release ends the hold → the current flow completes untouched.
+		await page.waitForFunction(() => {
+			const m = document
+				.querySelector('[data-testid="recording-timer"]')
+				?.textContent?.match(/(\d+\.\d+)/);
+			return m ? parseFloat(m[1]) >= 0.7 : false;
+		});
+		await page.keyboard.up('Space');
+		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('score')).toHaveClass(/pass/);
+		await expect(page.getByTestId('summary')).toBeVisible({ timeout: 10000 });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// T13: Push-to-talk (hold to record)
+// ---------------------------------------------------------------------------
+
+/**
+ * Hold Space until the recorder has been running for ≥ 700ms (measured by
+ * the on-screen timer, not wall clock), then release → the flow transcribes.
+ */
+async function holdAndRelease(page: Page): Promise<void> {
+	await page.keyboard.down('Space');
+	await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+	await page.waitForFunction(() => {
+		const m = document
+			.querySelector('[data-testid="recording-timer"]')
+			?.textContent?.match(/(\d+\.\d+)/);
+		return m ? parseFloat(m[1]) >= 0.7 : false;
+	});
+	await page.keyboard.up('Space');
+}
+
+test.describe('Practice — T13 push-to-talk', () => {
+	test('TTS end leaves the ready state; recording only starts on Space hold', async ({
+		page
+	}) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。', delayMs: 1000 }] });
+
+		// Ready state after TTS — NO automatic recording anymore.
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByTestId('record-ready')).toContainText('Spaceを押しながら読み上げてね');
+		await expect(page.getByTestId('record-hold-btn')).toBeVisible();
+		await expect(page.getByTestId('sentence-recording')).toHaveCount(0);
+	});
+
+	test('Space hold records; a 5s hold is never silence-stopped; release transcribes', async ({
+		page
+	}) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。', delayMs: 1000 }] });
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+
+		// autoStop: false — sustained silence must NOT end the recording.
+		await page.waitForTimeout(5_000);
+		await expect(page.getByTestId('sentence-recording')).toBeVisible();
+		const timerText = (await page.getByTestId('recording-timer').textContent()) ?? '';
+		const elapsed = parseFloat(timerText.match(/(\d+\.\d+)/)?.[1] ?? '0');
+		expect(elapsed).toBeGreaterThanOrEqual(4.5);
+
+		await page.keyboard.up('Space');
+		await expect(page.getByTestId('sentence-transcribing')).toBeVisible({ timeout: 5000 });
+	});
+
+	test('on-screen hold button records on mouse down and stops on mouse up', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。', delayMs: 1000 }] });
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		await page.getByTestId('record-hold-btn').hover();
+		await page.mouse.down();
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+		await page.waitForTimeout(700);
+		await page.mouse.up();
+
+		await expect(page.getByTestId('sentence-transcribing')).toBeVisible({ timeout: 5000 });
+	});
+
+	test('press shorter than 500ms shows the longer-press hint and never scores', async ({
+		page
+	}) => {
+		let transcribeCalls = 0;
+		await seedPractice(page);
+		await mockTts(page);
+		await page.route('**/api/transcribe', async (route) => {
+			transcribeCalls++;
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify({ text: 'おはようございます。' })
+			});
+		});
+		await page.goto('/practice?chapter=ch-ja-01');
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+		await page.waitForTimeout(150);
+		await page.keyboard.up('Space');
+
+		// Back to ready with the hint — no transcription was requested.
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByTestId('short-press-hint')).toBeVisible();
+		await expect(page.getByTestId('sentence-transcribing')).toHaveCount(0);
+		await page.waitForTimeout(500);
+		expect(transcribeCalls).toBe(0);
+	});
+
+	test('kbd hints render on the action buttons', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'x' }] });
+
+		// Show phase: replay carries [R]
+		await expect(page.getByTestId('sentence-text')).toBeVisible();
+		await expect(page.getByTestId('replay-btn')).toContainText('R');
+
+		// Ready phase: hold button [Space], skip [S], stop [Esc]
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByTestId('record-hold-btn')).toContainText('Space');
+		await expect(page.getByTestId('skip-btn')).toContainText('S');
+		await expect(page.getByTestId('stop-btn')).toContainText('Esc');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// T6: Summary normalization
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — T6 summary', () => {
+	test('full completion: title 練習完了! and 完了文数 n / n', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('summary')).toBeVisible({ timeout: 10000 });
+
+		await expect(page.getByTestId('summary-title')).toHaveText('練習完了!');
+		await expect(page.getByTestId('summary-completed')).toHaveText('1 / 1');
+		await expect(page.getByTestId('summary-sentences')).toHaveText('1');
+	});
+
+	test('early stop: title おつかれさま! and 完了文数 0 / 1', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'x' }] });
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await page.getByTestId('stop-btn').click();
+		await page.getByTestId('confirm-end-btn').click();
+		await expect(page.getByTestId('summary')).toBeVisible();
+
+		await expect(page.getByTestId('summary-title')).toHaveText('おつかれさま!');
+		await expect(page.getByTestId('summary-completed')).toHaveText('0 / 1');
+	});
+
+	test('failed list + 間違えた文だけやり直す restarts with only the failed sentences', async ({
+		page
+	}) => {
+		await setupPractice(page, {
+			settings: { threshold: 100 },
+			transcribe: [{ text: 'ぜんぜんちがう' }],
+			sentences: [
+				{ id: 'ja-01', chapterId: 'ch-ja-01', text: 'おはようございます。', language: 'ja', order: 1 },
+				{ id: 'ja-02', chapterId: 'ch-ja-01', text: 'こんにちは。', language: 'ja', order: 2 }
+			]
+		});
+
+		// Sentence 1 fails → skip. Sentence 2 fails → stop (both stay unpassed).
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('score')).toHaveClass(/fail/, { timeout: 15000 });
+		await page.getByTestId('skip-btn').click();
+		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。');
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('score')).toHaveClass(/fail/, { timeout: 15000 });
+		await page.getByTestId('stop-btn').click();
+		await page.getByTestId('confirm-end-btn').click();
+
+		await expect(page.getByTestId('summary')).toBeVisible();
+		await expect(page.getByTestId('summary-title')).toHaveText('おつかれさま!');
+		await expect(page.getByTestId('summary-completed')).toHaveText('0 / 2');
+		await expect(page.getByTestId('summary-failed-item')).toHaveCount(2);
+		await expect(page.getByTestId('summary-sentences')).toHaveText('2');
+
+		await page.getByTestId('retry-failed-btn').click();
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+		await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// T9: Session restore (sessionStorage oboeru:progress:v1)
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — T9 restore', () => {
+	const THREE_SENTENCES: SeedSentence[] = [
+		{ id: 'ja-01', chapterId: 'ch-ja-01', text: 'おはようございます。', language: 'ja', order: 1 },
+		{ id: 'ja-02', chapterId: 'ch-ja-01', text: 'こんにちは。', language: 'ja', order: 2 },
+		{ id: 'ja-03', chapterId: 'ch-ja-01', text: 'さようなら。', language: 'ja', order: 3 }
+	];
+
+	test('reload at sentence 2 of 3 → restore dialog → 続ける resumes at 2 / 3', async ({
+		page
+	}) => {
+		await setupPractice(page, { transcribe: [{ text: 'x' }], sentences: THREE_SENTENCES });
+
+		// Move to sentence 2 to lay down a mid-session snapshot.
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+		await page.getByTestId('skip-btn').click();
+		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。');
+		await expect(page.getByTestId('progress')).toHaveText('2 / 3');
+
+		await page.reload();
+
+		await expect(page.getByTestId('restore-dialog')).toBeVisible();
+		await expect(page.getByTestId('restore-dialog')).toContainText('前回の続きから再開しますか?');
+
+		await page.getByTestId('resume-btn').click();
+		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。');
+		await expect(page.getByTestId('progress')).toHaveText('2 / 3');
+	});
+
+	test('restore dialog → 最初から restarts at 1 / 3', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'x' }], sentences: THREE_SENTENCES });
+
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+		await page.getByTestId('skip-btn').click();
+		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。');
+
+		await page.reload();
+		await expect(page.getByTestId('restore-dialog')).toBeVisible();
+
+		await page.getByTestId('start-over-btn').click();
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+		await expect(page.getByTestId('progress')).toHaveText('1 / 3');
+	});
+
+	test('no dialog on a fresh session without saved progress', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'x' }], sentences: THREE_SENTENCES });
+
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+		await expect(page.getByTestId('restore-dialog')).toHaveCount(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// T9: Operation prefs (localStorage oboeru:practice-ui:v1) — autoAdvance
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — T9 autoAdvance off', () => {
+	test('passing feedback does not auto-advance; Space advances manually', async ({ page }) => {
+		await seedPractice(page, {
+			practicePrefs: { autoAdvance: false, correctDwellMs: 800, incorrectDwellMs: 2000 },
+			sentences: [
+				{ id: 'ja-01', chapterId: 'ch-ja-01', text: 'おはようございます。', language: 'ja', order: 1 },
+				{ id: 'ja-02', chapterId: 'ch-ja-01', text: 'こんにちは。', language: 'ja', order: 2 }
+			]
+		});
+		await mockTts(page);
+		await mockTranscribe(page, [{ text: 'おはようございます。' }]);
+		await page.goto('/practice?chapter=ch-ja-01');
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('score')).toHaveClass(/pass/, { timeout: 10000 });
+
+		// With autoAdvance the 800ms correct dwell would have advanced already —
+		// after 2.5s the feedback must still be on screen.
+		await page.waitForTimeout(2500);
+		await expect(page.getByTestId('feedback')).toBeVisible();
+		await expect(page.getByTestId('sentence-text')).toHaveCount(0);
+
+		await page.keyboard.press(' ');
+		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。', { timeout: 2000 });
 	});
 });

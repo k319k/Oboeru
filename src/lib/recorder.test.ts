@@ -362,4 +362,188 @@ describe('startRecording', () => {
 			}
 		});
 	});
+
+	// ─── autoStop option (push-to-talk) ───────────────────────────────
+	// autoStop: false must disable BOTH the 800ms grace window and the
+	// 1.5s silence hold, while keeping manual stop() and the 30s
+	// force-stop intact.
+	describe('startRecording — autoStop option', () => {
+		it('autoStop: false keeps recording through sustained silence', async () => {
+			vi.useFakeTimers();
+			try {
+				const { completed } = await startRecording({ autoStop: false });
+				const recorderInstance = (MediaRecorder as any).mock.results[0].value;
+
+				// Far beyond grace (800ms) + hold (1500ms) — silence must NOT stop it.
+				await vi.advanceTimersByTimeAsync(5_000);
+
+				expect(recorderInstance.stop).not.toHaveBeenCalled();
+
+				let resolved = false;
+				completed.then(() => {
+					resolved = true;
+				});
+				await vi.advanceTimersByTimeAsync(0);
+				expect(resolved).toBe(false);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('autoStop: false still resolves completed on manual stop', async () => {
+			vi.useFakeTimers();
+			try {
+				const { stop, completed } = await startRecording({ autoStop: false });
+				const recorderInstance = (MediaRecorder as any).mock.results[0].value;
+				recorderInstance._fireData(new Blob(['x'], { type: 'audio/webm' }));
+
+				let resolved = false;
+				completed.then(() => {
+					resolved = true;
+				});
+
+				void stop();
+				await vi.advanceTimersByTimeAsync(0);
+
+				expect(resolved).toBe(true);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('autoStop: false keeps the 30s force-stop as a safety net', async () => {
+			vi.useFakeTimers();
+			try {
+				const { completed } = await startRecording({ autoStop: false });
+				const recorderInstance = (MediaRecorder as any).mock.results[0].value;
+
+				await vi.advanceTimersByTimeAsync(30_100);
+
+				expect(recorderInstance.stop).toHaveBeenCalled();
+				await expect(completed).resolves.toBeInstanceOf(Blob);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
+	// ─── onAudioFrame (16kHz tap for live STT) ────────────────────────
+	describe('startRecording — onAudioFrame', () => {
+		interface CtxMock {
+			options: { sampleRate?: number } | undefined;
+			createMediaStreamSource: ReturnType<typeof vi.fn>;
+			createAnalyser: ReturnType<typeof vi.fn>;
+			createGain: ReturnType<typeof vi.fn>;
+			createScriptProcessor: ReturnType<typeof vi.fn>;
+			audioWorklet: { addModule: ReturnType<typeof vi.fn> };
+			close: ReturnType<typeof vi.fn>;
+		}
+
+		let contexts: CtxMock[];
+		let workletNodes: {
+			port: { onmessage: ((e: { data: unknown }) => void) | null };
+		}[];
+		let addModule: ReturnType<typeof vi.fn>;
+		let originalCreateObjectURL: typeof URL.createObjectURL | undefined;
+		let originalRevokeObjectURL: typeof URL.revokeObjectURL | undefined;
+
+		beforeEach(() => {
+			contexts = [];
+			workletNodes = [];
+			addModule = vi.fn().mockResolvedValue(undefined);
+
+			globalThis.AudioContext = vi.fn().mockImplementation(
+				(options?: { sampleRate?: number }) => {
+					const ctx: CtxMock = {
+						options,
+						createMediaStreamSource: vi.fn().mockReturnValue({
+							connect: vi.fn(),
+							disconnect: vi.fn(),
+						}),
+						createAnalyser: vi.fn().mockReturnValue({
+							fftSize: 2048,
+							getByteTimeDomainData: vi.fn((arr: Uint8Array) => arr.fill(128)),
+							connect: vi.fn(),
+							disconnect: vi.fn(),
+						}),
+						createGain: vi.fn().mockReturnValue({
+							gain: { value: 1 },
+							connect: vi.fn(),
+							disconnect: vi.fn(),
+						}),
+						createScriptProcessor: vi.fn().mockImplementation(() => ({
+							connect: vi.fn(),
+							disconnect: vi.fn(),
+							onaudioprocess: null as ((e: unknown) => void) | null,
+						})),
+						audioWorklet: { addModule },
+						close: vi.fn().mockResolvedValue(undefined),
+					};
+					contexts.push(ctx);
+					return ctx;
+				}
+			) as any;
+
+			globalThis.AudioWorkletNode = vi.fn().mockImplementation(() => {
+				const node = {
+					port: { onmessage: null as ((e: { data: unknown }) => void) | null },
+				};
+				workletNodes.push(node);
+				return node;
+			}) as any;
+
+			originalCreateObjectURL = URL.createObjectURL;
+			originalRevokeObjectURL = URL.revokeObjectURL;
+			URL.createObjectURL = vi.fn(() => 'blob:frame-tap');
+			URL.revokeObjectURL = vi.fn(() => undefined);
+		});
+
+		afterEach(() => {
+			if (originalCreateObjectURL) URL.createObjectURL = originalCreateObjectURL;
+			if (originalRevokeObjectURL) URL.revokeObjectURL = originalRevokeObjectURL;
+		});
+
+		it('creates only the default-rate context when onAudioFrame is absent', async () => {
+			await startRecording();
+			expect(contexts).toHaveLength(1);
+			expect(contexts[0].options).toBeUndefined();
+		});
+
+		it('opens a 16kHz context and delivers worklet frames to onAudioFrame', async () => {
+			const frames: Float32Array[] = [];
+			await startRecording({ onAudioFrame: (samples) => frames.push(samples) });
+
+			expect(contexts).toHaveLength(2);
+			expect(contexts[1].options).toEqual({ sampleRate: 16000 });
+
+			await vi.waitFor(() => expect(workletNodes).toHaveLength(1));
+			// Powers of two — exactly representable in Float32.
+			workletNodes[0].port.onmessage?.({ data: new Float32Array([0.25, -0.5, 0.75]) });
+			expect(frames).toHaveLength(1);
+			expect([...frames[0]]).toEqual([0.25, -0.5, 0.75]);
+		});
+
+		it('falls back to ScriptProcessorNode when the worklet module fails', async () => {
+			addModule.mockRejectedValue(new Error('worklet unavailable'));
+			const frames: Float32Array[] = [];
+			await startRecording({ onAudioFrame: (samples) => frames.push(samples) });
+
+			const tapCtx = contexts[1];
+			await vi.waitFor(() => expect(tapCtx.createScriptProcessor).toHaveBeenCalled());
+			const processor = (tapCtx.createScriptProcessor as any).mock.results[0].value;
+			(processor.onaudioprocess as (e: unknown) => void)({
+				inputBuffer: { getChannelData: () => new Float32Array([0.5, -0.5]) },
+			});
+			expect(frames).toHaveLength(1);
+			expect([...frames[0]]).toEqual([0.5, -0.5]);
+		});
+
+		it('closes the 16kHz context when the recording stops', async () => {
+			const { stop } = await startRecording({ onAudioFrame: () => {} });
+			await vi.waitFor(() => expect(workletNodes).toHaveLength(1));
+			await stop();
+			expect(contexts[0].close).toHaveBeenCalled();
+			expect(contexts[1].close).toHaveBeenCalled();
+		});
+	});
 });

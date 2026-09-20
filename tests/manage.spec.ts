@@ -51,6 +51,85 @@ async function pickOption(page: Page, testId: string, optionLabel: string): Prom
 }
 
 // ---------------------------------------------------------------------------
+// Tabs (tablist / tab / tabpanel + arrow keys + ?tab= deep link)
+// ---------------------------------------------------------------------------
+
+test.describe('Tabs', () => {
+	test('switching tabs shows only the active panel', async ({ page }) => {
+		await gotoManage(page, seed);
+
+		// Default tab is チャプター
+		await expect(page.getByRole('tab', { name: 'チャプター' })).toHaveAttribute(
+			'aria-selected',
+			'true'
+		);
+		await expect(page.getByTestId('add-root-chapter')).toBeVisible();
+		await expect(page.getByTestId('add-sentence')).toBeHidden();
+		await expect(page.getByTestId('threshold-slider')).toBeHidden();
+		await expect(page.getByTestId('export-button')).toBeHidden();
+
+		// 文章 tab
+		await page.getByRole('tab', { name: '文章' }).click();
+		await expect(page.getByRole('tab', { name: '文章' })).toHaveAttribute(
+			'aria-selected',
+			'true'
+		);
+		await expect(page.getByTestId('add-sentence')).toBeVisible();
+		await expect(page.getByTestId('add-root-chapter')).toBeHidden();
+
+		// 設定 tab
+		await page.getByRole('tab', { name: '設定' }).click();
+		await expect(page.getByTestId('threshold-slider')).toBeVisible();
+		await expect(page.getByTestId('add-sentence')).toBeHidden();
+
+		// データ tab
+		await page.getByRole('tab', { name: 'データ' }).click();
+		await expect(page.getByTestId('export-button')).toBeVisible();
+		await expect(page.getByTestId('import-input')).toBeAttached();
+		await expect(page.getByTestId('threshold-slider')).toBeHidden();
+		await expect(page.getByTestId('add-root-chapter')).toBeHidden();
+	});
+
+	test('deep link ?tab= opens the target tab directly', async ({ page }) => {
+		await gotoWithSeed(page, seed);
+		await page.goto('/manage?tab=設定');
+
+		await expect(page.getByRole('tab', { name: '設定' })).toHaveAttribute(
+			'aria-selected',
+			'true'
+		);
+		await expect(page.getByTestId('threshold-slider')).toBeVisible();
+		await expect(page.getByTestId('add-root-chapter')).toBeHidden();
+	});
+
+	test('arrow keys move tab focus and activate (Home/End, wraps around)', async ({
+		page
+	}) => {
+		await gotoManage(page, seed);
+		const chapterTab = page.getByRole('tab', { name: 'チャプター' });
+		const sentenceTab = page.getByRole('tab', { name: '文章' });
+		const settingsTab = page.getByRole('tab', { name: '設定' });
+		const dataTab = page.getByRole('tab', { name: 'データ' });
+
+		await chapterTab.focus();
+		await page.keyboard.press('ArrowRight');
+		await expect(sentenceTab).toBeFocused();
+		await page.keyboard.press('ArrowRight');
+		await expect(settingsTab).toBeFocused();
+		await page.keyboard.press('ArrowRight');
+		await expect(dataTab).toBeFocused();
+		await page.keyboard.press('ArrowRight');
+		await expect(chapterTab).toBeFocused(); // wraps around
+		await page.keyboard.press('ArrowLeft');
+		await expect(dataTab).toBeFocused();
+		await page.keyboard.press('Home');
+		await expect(chapterTab).toBeFocused();
+		await page.keyboard.press('End');
+		await expect(dataTab).toBeFocused();
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Chapter CRUD
 // ---------------------------------------------------------------------------
 
@@ -243,6 +322,9 @@ test.describe('Chapter delete with descendants', () => {
 		await expect(
 			page.getByTestId('chapter-name').filter({ hasText: '孫チャプター' })
 		).toBeVisible();
+
+		// Sentences live in the 文章 tab.
+		await page.getByRole('tab', { name: '文章' }).click();
 		await expect(
 			page.getByTestId('sentence-text').filter({ hasText: '親の文章' })
 		).toBeVisible();
@@ -301,12 +383,61 @@ test.describe('Chapter reorder', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Chapter language badges (task-13: one tokenized pill per language)
+// ---------------------------------------------------------------------------
+
+test.describe('Chapter language badges', () => {
+	test('single-language chapter rows show one badge, empty rows show none', async ({
+		page
+	}) => {
+		await gotoManage(page, seed);
+
+		const jaRow = page.locator('.chapter-row', { hasText: 'はじめの一歩（日本語）' });
+		await expect(jaRow.locator('.language-badge')).toHaveText(['JA']);
+		const enRow = page.locator('.chapter-row', { hasText: 'First Steps（English）' });
+		await expect(enRow.locator('.language-badge')).toHaveText(['EN']);
+	});
+
+	test('mixed-language chapter shows both badges, empty chapter shows none', async ({
+		page
+	}) => {
+		await gotoManage(page, {
+			chapters: [
+				{ id: 'mix', name: 'ミックス', parentId: null, order: 1 },
+				{ id: 'empty', name: '空チャプター', parentId: null, order: 2 }
+			],
+			sentences: [
+				{ id: 'm1', chapterId: 'mix', text: 'こんにちは。', language: 'ja', order: 1 },
+				{ id: 'm2', chapterId: 'mix', text: 'Hello.', language: 'en', order: 2 }
+			]
+		});
+
+		const mixRow = page.locator('.chapter-row', { hasText: 'ミックス' });
+		await expect(mixRow.locator('.language-badge')).toHaveText(['JA', 'EN']);
+		await expect(
+			page.locator('.chapter-row', { hasText: '空チャプター' }).locator('.language-badge')
+		).toHaveCount(0);
+	});
+
+	test('sentence rows show the tokenized language badge', async ({ page }) => {
+		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
+
+		const jaItem = page.locator('.sentence-item', { hasText: 'おはようございます。' });
+		await expect(jaItem.locator('.language-badge')).toHaveText(['日本語']);
+		const enItem = page.locator('.sentence-item', { hasText: 'Good morning.' });
+		await expect(enItem.locator('.language-badge')).toHaveText(['English']);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Sentence CRUD
 // ---------------------------------------------------------------------------
 
 test.describe('Sentence CRUD', () => {
 	test('full cycle: add → visible → edit → delete', async ({ page }) => {
 		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
 
 		// Add
 		await page.getByTestId('add-sentence').click();
@@ -346,6 +477,7 @@ test.describe('Sentence CRUD', () => {
 		page
 	}) => {
 		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
 		const initialCount = await page.getByTestId('sentence-text').count();
 
 		await page.getByTestId('add-sentence').click();
@@ -359,6 +491,7 @@ test.describe('Sentence CRUD', () => {
 
 	test('rejects sentence text over 200 chars with inline error', async ({ page }) => {
 		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
 		const initialCount = await page.getByTestId('sentence-text').count();
 		const longText = 'あ'.repeat(201);
 
@@ -373,6 +506,7 @@ test.describe('Sentence CRUD', () => {
 
 	test('shows live character counter', async ({ page }) => {
 		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
 
 		await page.getByTestId('add-sentence').click();
 		await page.getByTestId('new-sentence-text').fill('こんにちは');
@@ -387,6 +521,7 @@ test.describe('Sentence CRUD', () => {
 test.describe('Filters', () => {
 	test('filters sentences by language', async ({ page }) => {
 		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
 
 		// All: 3 sentences
 		await expect(page.getByTestId('sentence-text')).toHaveCount(3);
@@ -414,6 +549,7 @@ test.describe('Filters', () => {
 
 	test('filters sentences by chapter', async ({ page }) => {
 		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
 
 		await pickOption(page, 'chapter-filter', 'はじめの一歩（日本語）');
 		await expect(page.getByTestId('sentence-text')).toHaveCount(2);
@@ -433,6 +569,7 @@ test.describe('Filters', () => {
 
 	test('combines language and chapter filters', async ({ page }) => {
 		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
 
 		await pickOption(page, 'chapter-filter', 'はじめの一歩（日本語）');
 		await pickOption(page, 'language-filter', 'English');

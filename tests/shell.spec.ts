@@ -37,19 +37,21 @@ test.describe('App shell', () => {
 		expect(consoleErrors.filter((e) => e.includes('404') || e.includes('favicon'))).toEqual([]);
 	});
 
-	test('active nav link color matches the --primary token', async ({ page }) => {
+	test('active nav link color matches the --success token (AA green)', async ({ page }) => {
 		await page.goto('/');
 
 		const activeLink = page.getByRole('link', { name: 'おぼえる' });
 		await expect(activeLink).toHaveClass(/active/);
 
+		// T10 (oboeru-ui-ux-v2): the active link uses --success — --primary
+		// (#58cc02) is 2.09:1 as text on white and would fail axe color-contrast.
 		const matches = await page.evaluate(() => {
 			const link = document.querySelector('nav a.active');
 			if (!link) return false;
-			const primary = getComputedStyle(document.documentElement)
-				.getPropertyValue('--primary')
+			const success = getComputedStyle(document.documentElement)
+				.getPropertyValue('--success')
 				.trim();
-			return getComputedStyle(link).color === primary;
+			return getComputedStyle(link).color === success;
 		});
 		expect(matches).toBe(true);
 	});
