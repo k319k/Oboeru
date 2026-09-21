@@ -5,9 +5,17 @@ export interface Chapter {
 	order: number;
 }
 
+export interface Track {
+	id: string;
+	chapterId: string;
+	name: string;
+	order: number;
+}
+
 export interface Sentence {
 	id: string;
 	chapterId: string;
+	trackId: string;
 	text: string;
 	language: 'ja' | 'en';
 	order: number;

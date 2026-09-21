@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { Chapter, Sentence } from './types';
+import type { Chapter, Sentence, Track } from './types';
 import {
 	loadChapters,
 	saveChapters,
@@ -12,9 +12,15 @@ import {
 	updateSentence,
 	deleteSentence,
 	flattenChapterTree,
-	getChapterSentences
+	getChapterSentences,
+	loadTracks,
+	saveTracks,
+	addTrack,
+	updateTrack,
+	deleteTrack,
+	getChapterTracks
 } from './sentences';
-import { defaultChapters, defaultSentences } from './default-sentences';
+import { defaultChapters, defaultSentences, defaultTracks } from './default-sentences';
 
 const STORAGE_KEY = 'oboeru:v1';
 
@@ -84,7 +90,7 @@ describe('loadSentences / saveSentences', () => {
 
 	it('saves and loads sentences', () => {
 		const sentences: Sentence[] = [
-			{ id: 's1', chapterId: 'c1', text: 'Hello', language: 'en', order: 0 }
+			{ id: 's1', chapterId: 'c1', trackId: 'tr-c1', text: 'Hello', language: 'en', order: 0 }
 		];
 		saveSentences(sentences);
 		expect(loadSentences()).toEqual(sentences);
@@ -285,10 +291,10 @@ describe('flattenChapterTree', () => {
 describe('getChapterSentences', () => {
 	it('returns sentences for a chapter ordered by order', () => {
 		const sentences: Sentence[] = [
-			{ id: 's1', chapterId: 'c1', text: 'first', language: 'ja', order: 2 },
-			{ id: 's2', chapterId: 'c1', text: 'second', language: 'ja', order: 0 },
-			{ id: 's3', chapterId: 'c1', text: 'third', language: 'ja', order: 1 },
-			{ id: 's4', chapterId: 'other', text: 'other', language: 'en', order: 0 }
+			{ id: 's1', chapterId: 'c1', trackId: 'tr-c1', text: 'first', language: 'ja', order: 2 },
+			{ id: 's2', chapterId: 'c1', trackId: 'tr-c1', text: 'second', language: 'ja', order: 0 },
+			{ id: 's3', chapterId: 'c1', trackId: 'tr-c1', text: 'third', language: 'ja', order: 1 },
+			{ id: 's4', chapterId: 'other', trackId: 'tr-c2', text: 'other', language: 'en', order: 0 }
 		];
 		const result = getChapterSentences('c1', sentences);
 		expect(result.map((s) => s.id)).toEqual(['s2', 's3', 's1']);
@@ -296,5 +302,242 @@ describe('getChapterSentences', () => {
 
 	it('returns empty array when no sentences match', () => {
 		expect(getChapterSentences('missing', [])).toEqual([]);
+	});
+
+	it('orders sentences by track order first, then sentence order', () => {
+		const chapter = addChapter('C', null);
+		const trackA = addTrack(chapter.id, 'A');
+		const trackB = addTrack(chapter.id, 'B');
+		const sentences: Sentence[] = [
+			{ id: 's1', chapterId: chapter.id, trackId: trackB.id, text: 'b1', language: 'ja', order: 1 },
+			{ id: 's2', chapterId: chapter.id, trackId: trackA.id, text: 'a2', language: 'ja', order: 2 },
+			{ id: 's3', chapterId: chapter.id, trackId: trackB.id, text: 'b2', language: 'ja', order: 2 },
+			{ id: 's4', chapterId: chapter.id, trackId: trackA.id, text: 'a1', language: 'ja', order: 1 }
+		];
+		saveSentences(sentences);
+
+		const result = getChapterSentences(chapter.id, loadSentences());
+		expect(result.map((s) => s.id)).toEqual(['s4', 's2', 's1', 's3']);
+	});
+
+	it('sorts sentences with an unknown trackId last without dropping them', () => {
+		const chapter = addChapter('C', null);
+		const track = addTrack(chapter.id, 'T');
+		const sentences: Sentence[] = [
+			{
+				id: 's1',
+				chapterId: chapter.id,
+				trackId: 'tr-unknown',
+				text: 'orphan',
+				language: 'ja',
+				order: 1
+			},
+			{
+				id: 's2',
+				chapterId: chapter.id,
+				trackId: track.id,
+				text: 'in track',
+				language: 'ja',
+				order: 2
+			}
+		];
+		saveSentences(sentences);
+
+		const result = getChapterSentences(chapter.id, loadSentences());
+		expect(result).toHaveLength(2);
+		expect(result.map((s) => s.id)).toEqual(['s2', 's1']);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// loadTracks / saveTracks
+// ---------------------------------------------------------------------------
+
+describe('loadTracks / saveTracks', () => {
+	it('returns default tracks when localStorage is empty', () => {
+		expect(loadTracks()).toEqual(defaultTracks);
+	});
+
+	it('saves and loads tracks', () => {
+		const tracks: Track[] = [{ id: 't1', chapterId: 'c1', name: 'Track', order: 0 }];
+		saveTracks(tracks);
+		expect(storage.setItem).toHaveBeenCalled();
+		expect(loadTracks()).toEqual(tracks);
+	});
+
+	it('falls back to defaults on corrupt JSON', () => {
+		storage.store.set(STORAGE_KEY, '{broken');
+		expect(() => loadTracks()).not.toThrow();
+		expect(loadTracks()).toEqual(defaultTracks);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Track CRUD
+// ---------------------------------------------------------------------------
+
+describe('addTrack', () => {
+	it('adds a track with generated id and chapter-scoped next order', () => {
+		const chapter = addChapter('C', null);
+		const other = addChapter('Other', null);
+		const t1 = addTrack(chapter.id, 'Track 1');
+		const t2 = addTrack(chapter.id, 'Track 2');
+		const t3 = addTrack(other.id, 'Other Track');
+		expect(t1.id).toBeTruthy();
+		expect(t1.chapterId).toBe(chapter.id);
+		expect(t1.name).toBe('Track 1');
+		expect(t1.order).toBe(1);
+		expect(t2.order).toBe(2);
+		expect(t3.order).toBe(1);
+		expect(loadTracks()).toContainEqual(t1);
+	});
+
+	it('trims the track name', () => {
+		const chapter = addChapter('C', null);
+		const track = addTrack(chapter.id, '  Padded  ');
+		expect(track.name).toBe('Padded');
+	});
+
+	it('rejects empty name', () => {
+		const chapter = addChapter('C', null);
+		expect(() => addTrack(chapter.id, '   ')).toThrow();
+	});
+});
+
+describe('updateTrack', () => {
+	it('updates track fields', () => {
+		const chapter = addChapter('C', null);
+		const track = addTrack(chapter.id, 'Original');
+		updateTrack(track.id, { name: 'Renamed', order: 5 });
+		const updated = loadTracks().find((t) => t.id === track.id);
+		expect(updated?.name).toBe('Renamed');
+		expect(updated?.order).toBe(5);
+	});
+
+	it('throws when track does not exist', () => {
+		expect(() => updateTrack('nope', { name: 'x' })).toThrow();
+	});
+});
+
+describe('deleteTrack', () => {
+	it('deletes a track and its sentences', () => {
+		const chapter = addChapter('C', null);
+		const track = addTrack(chapter.id, 'T');
+		const otherTrack = addTrack(chapter.id, 'Other');
+		const sentence = addSentence(chapter.id, 'in track', 'ja', track.id);
+		const keptSentence = addSentence(chapter.id, 'in other track', 'ja', otherTrack.id);
+
+		deleteTrack(track.id);
+
+		expect(loadTracks().find((t) => t.id === track.id)).toBeUndefined();
+		expect(loadSentences().find((s) => s.id === sentence.id)).toBeUndefined();
+		expect(loadSentences().find((s) => s.id === keptSentence.id)).toBeDefined();
+	});
+});
+
+describe('getChapterTracks', () => {
+	it('returns tracks for a chapter ordered by order', () => {
+		const tracks: Track[] = [
+			{ id: 't1', chapterId: 'c1', name: 'B', order: 2 },
+			{ id: 't2', chapterId: 'c1', name: 'A', order: 1 },
+			{ id: 't3', chapterId: 'c2', name: 'Other', order: 0 }
+		];
+		const result = getChapterTracks('c1', tracks);
+		expect(result.map((t) => t.id)).toEqual(['t2', 't1']);
+	});
+
+	it('returns empty array when no tracks match', () => {
+		expect(getChapterTracks('missing', [])).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Old-format read shim
+// ---------------------------------------------------------------------------
+
+describe('old-format read shim', () => {
+	const oldData = {
+		chapters: [{ id: 'c1', name: 'C1', parentId: null, order: 1 }],
+		sentences: [
+			{ id: 's1', chapterId: 'c1', text: 'hello', language: 'ja', order: 1 },
+			{ id: 's2', chapterId: 'unknown-chapter', text: 'orphan', language: 'en', order: 2 }
+		]
+	};
+
+	it('synthesizes a default track per chapter when stored data has no tracks', () => {
+		storage.store.set(STORAGE_KEY, JSON.stringify(oldData));
+		expect(loadTracks()).toEqual([{ id: 'tr-c1', chapterId: 'c1', name: 'トラック1', order: 1 }]);
+	});
+
+	it('backfills trackId on sentences without skipping unknown chapters', () => {
+		storage.store.set(STORAGE_KEY, JSON.stringify(oldData));
+		const sentences = loadSentences();
+		expect(sentences.find((s) => s.id === 's1')?.trackId).toBe('tr-c1');
+		expect(sentences.find((s) => s.id === 's2')?.trackId).toBe('tr-unknown-chapter');
+	});
+
+	it('persists tracks and trackId on the next save so new saves use the new format', () => {
+		storage.store.set(STORAGE_KEY, JSON.stringify(oldData));
+		saveChapters(loadChapters());
+		const parsed = JSON.parse(storage.store.get(STORAGE_KEY)!);
+		expect(Array.isArray(parsed.tracks)).toBe(true);
+		expect(parsed.sentences[0].trackId).toBe('tr-c1');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// addSentence with tracks
+// ---------------------------------------------------------------------------
+
+describe('addSentence with tracks', () => {
+	it('uses the chapter first track when trackId is omitted', () => {
+		const chapter = addChapter('C', null);
+		const first = addTrack(chapter.id, 'First');
+		addTrack(chapter.id, 'Second');
+		const sentence = addSentence(chapter.id, 'hello', 'ja');
+		expect(sentence.trackId).toBe(first.id);
+	});
+
+	it('auto-creates the default track when the chapter has no tracks', () => {
+		const chapter = addChapter('C', null);
+		const sentence = addSentence(chapter.id, 'hello', 'ja');
+		expect(sentence.trackId).toBe(`tr-${chapter.id}`);
+		expect(loadTracks()).toContainEqual({
+			id: `tr-${chapter.id}`,
+			chapterId: chapter.id,
+			name: 'トラック1',
+			order: 1
+		});
+	});
+
+	it('assigns order scoped to the chapter and track', () => {
+		const chapter = addChapter('C', null);
+		const t1 = addTrack(chapter.id, 'First');
+		const t2 = addTrack(chapter.id, 'Second');
+		const s1 = addSentence(chapter.id, 'one', 'ja', t1.id);
+		const s2 = addSentence(chapter.id, 'two', 'ja', t2.id);
+		const s3 = addSentence(chapter.id, 'three', 'ja', t1.id);
+		expect(s1.order).toBe(1);
+		expect(s2.order).toBe(1);
+		expect(s3.order).toBe(2);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// deleteChapter with tracks
+// ---------------------------------------------------------------------------
+
+describe('deleteChapter with tracks', () => {
+	it('deletes tracks of the chapter and its descendants', () => {
+		const root = addChapter('Root', null);
+		const child = addChapter('Child', root.id);
+		addTrack(root.id, 'Root Track');
+		addTrack(child.id, 'Child Track');
+
+		deleteChapter(root.id);
+
+		const chapterIds = loadTracks().map((t) => t.chapterId);
+		expect(chapterIds).not.toContain(root.id);
+		expect(chapterIds).not.toContain(child.id);
 	});
 });

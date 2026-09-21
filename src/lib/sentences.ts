@@ -1,5 +1,5 @@
-import type { Chapter, Sentence } from './types';
-import { defaultChapters, defaultSentences } from './default-sentences';
+import type { Chapter, Sentence, Track } from './types';
+import { defaultChapters, defaultSentences, defaultTracks } from './default-sentences';
 
 const STORAGE_KEY = 'oboeru:v1';
 
@@ -16,15 +16,7 @@ function generateId(): string {
 // ---------------------------------------------------------------------------
 
 export function loadChapters(): Chapter[] {
-	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
-		if (raw === null) return [...defaultChapters];
-		const parsed = JSON.parse(raw);
-		if (!Array.isArray(parsed.chapters)) return [...defaultChapters];
-		return parsed.chapters as Chapter[];
-	} catch {
-		return [...defaultChapters];
-	}
+	return loadData().chapters;
 }
 
 export function saveChapters(chapters: Chapter[]): void {
@@ -34,20 +26,22 @@ export function saveChapters(chapters: Chapter[]): void {
 }
 
 export function loadSentences(): Sentence[] {
-	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
-		if (raw === null) return [...defaultSentences];
-		const parsed = JSON.parse(raw);
-		if (!Array.isArray(parsed.sentences)) return [...defaultSentences];
-		return parsed.sentences as Sentence[];
-	} catch {
-		return [...defaultSentences];
-	}
+	return loadData().sentences;
 }
 
 export function saveSentences(sentences: Sentence[]): void {
 	const data = loadData();
 	data.sentences = sentences;
+	saveData(data);
+}
+
+export function loadTracks(): Track[] {
+	return loadData().tracks;
+}
+
+export function saveTracks(tracks: Track[]): void {
+	const data = loadData();
+	data.tracks = tracks;
 	saveData(data);
 }
 
@@ -57,20 +51,50 @@ export function saveSentences(sentences: Sentence[]): void {
 
 interface StoreData {
 	chapters: Chapter[];
+	tracks: Track[];
 	sentences: Sentence[];
+}
+
+function defaultTrackFor(ch: Chapter): Track {
+	return { id: `tr-${ch.id}`, chapterId: ch.id, name: 'トラック1', order: 1 };
 }
 
 function loadData(): StoreData {
 	try {
 		const raw = localStorage.getItem(STORAGE_KEY);
-		if (raw === null) return { chapters: [...defaultChapters], sentences: [...defaultSentences] };
+		if (raw === null) {
+			return {
+				chapters: [...defaultChapters],
+				tracks: [...defaultTracks],
+				sentences: [...defaultSentences]
+			};
+		}
 		const parsed = JSON.parse(raw);
-		return {
-			chapters: Array.isArray(parsed.chapters) ? parsed.chapters : [...defaultChapters],
-			sentences: Array.isArray(parsed.sentences) ? parsed.sentences : [...defaultSentences]
-		};
+		const chapters: Chapter[] = Array.isArray(parsed.chapters)
+			? parsed.chapters
+			: [...defaultChapters];
+		const storedSentences: Sentence[] = Array.isArray(parsed.sentences)
+			? parsed.sentences
+			: [...defaultSentences];
+		if (!Array.isArray(parsed.tracks)) {
+			// Old format without tracks: synthesize a default track per chapter and
+			// backfill trackId (sentences with unknown chapterId are not skipped).
+			return {
+				chapters,
+				tracks: chapters.map(defaultTrackFor),
+				sentences: storedSentences.map((s) => ({
+					...s,
+					trackId: s.trackId ?? `tr-${s.chapterId}`
+				}))
+			};
+		}
+		return { chapters, tracks: parsed.tracks, sentences: storedSentences };
 	} catch {
-		return { chapters: [...defaultChapters], sentences: [...defaultSentences] };
+		return {
+			chapters: [...defaultChapters],
+			tracks: [...defaultTracks],
+			sentences: [...defaultSentences]
+		};
 	}
 }
 
@@ -111,16 +135,19 @@ export function updateChapter(id: string, updates: Partial<Omit<Chapter, 'id'>>)
 export function deleteChapter(id: string): void {
 	const chapters = loadChapters();
 	const sentences = loadSentences();
+	const tracks = loadTracks();
 
 	// Collect all descendant chapter IDs (depth-first)
 	const descendantIds = collectDescendantIds(chapters, id);
 	const allIds = new Set([id, ...descendantIds]);
 
-	// Remove chapters and their sentences
+	// Remove chapters, their tracks and their sentences
 	const remainingChapters = chapters.filter((c) => !allIds.has(c.id));
 	const remainingSentences = sentences.filter((s) => !allIds.has(s.chapterId));
+	const remainingTracks = tracks.filter((t) => !allIds.has(t.chapterId));
 
 	saveChapters(remainingChapters);
+	saveTracks(remainingTracks);
 	saveSentences(remainingSentences);
 }
 
@@ -135,22 +162,93 @@ function collectDescendantIds(chapters: Chapter[], parentId: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Track CRUD
+// ---------------------------------------------------------------------------
+
+export function addTrack(chapterId: string, name: string): Track {
+	if (!name.trim()) {
+		throw new Error('Track name must not be empty');
+	}
+	const tracks = loadTracks();
+	const siblings = tracks.filter((t) => t.chapterId === chapterId);
+	const maxOrder = siblings.reduce((max, t) => Math.max(max, t.order), 0);
+	const track: Track = {
+		id: generateId(),
+		chapterId,
+		name: name.trim(),
+		order: maxOrder + 1
+	};
+	tracks.push(track);
+	saveTracks(tracks);
+	return track;
+}
+
+export function updateTrack(id: string, updates: Partial<Omit<Track, 'id'>>): void {
+	const tracks = loadTracks();
+	const idx = tracks.findIndex((t) => t.id === id);
+	if (idx === -1) throw new Error(`Track not found: ${id}`);
+	tracks[idx] = { ...tracks[idx], ...updates };
+	saveTracks(tracks);
+}
+
+export function deleteTrack(id: string): void {
+	const tracks = loadTracks();
+	const sentences = loadSentences();
+
+	const remainingTracks = tracks.filter((t) => t.id !== id);
+	const remainingSentences = sentences.filter((s) => s.trackId !== id);
+
+	saveTracks(remainingTracks);
+	saveSentences(remainingSentences);
+}
+
+/**
+ * Get tracks for a specific chapter, ordered by `order`.
+ */
+export function getChapterTracks(chapterId: string, tracks: Track[]): Track[] {
+	return tracks
+		.filter((t) => t.chapterId === chapterId)
+		.sort((a, b) => a.order - b.order);
+}
+
+// ---------------------------------------------------------------------------
 // Sentence CRUD
 // ---------------------------------------------------------------------------
 
-export function addSentence(chapterId: string, text: string, language: 'ja' | 'en'): Sentence {
+export function addSentence(
+	chapterId: string,
+	text: string,
+	language: 'ja' | 'en',
+	trackId?: string
+): Sentence {
 	if (!text.trim()) {
 		throw new Error('Sentence text must not be empty');
 	}
 	if (text.length > 200) {
 		throw new Error('Sentence text must not exceed 200 characters');
 	}
+	const tracks = loadTracks();
+	let resolvedTrackId = trackId;
+	if (!resolvedTrackId) {
+		const chapterTracks = getChapterTracks(chapterId, tracks);
+		if (chapterTracks.length === 0) {
+			const track: Track = { id: `tr-${chapterId}`, chapterId, name: 'トラック1', order: 1 };
+			tracks.push(track);
+			saveTracks(tracks);
+			resolvedTrackId = track.id;
+		} else {
+			resolvedTrackId = chapterTracks[0].id;
+		}
+	}
 	const sentences = loadSentences();
-	const siblings = sentences.filter((s) => s.chapterId === chapterId);
+	const siblings = sentences.filter(
+		(s) => s.chapterId === chapterId && s.trackId === resolvedTrackId
+	);
 	const maxOrder = siblings.reduce((max, s) => Math.max(max, s.order), 0);
 	const sentence: Sentence = {
 		id: generateId(),
 		chapterId,
+		trackId: resolvedTrackId,
 		text: text.trim(),
 		language,
 		order: maxOrder + 1
@@ -217,10 +315,17 @@ export function flattenChapterTree(chapters: Chapter[]): Chapter[] {
 }
 
 /**
- * Get sentences for a specific chapter, ordered by `order`.
+ * Get sentences for a specific chapter, ordered by track order first,
+ * then by `order` within each track.
+ * Sentences whose trackId has no matching track sort last.
  */
 export function getChapterSentences(chapterId: string, sentences: Sentence[]): Sentence[] {
+	const trackOrder = new Map(loadTracks().map((t) => [t.id, t.order]));
 	return sentences
 		.filter((s) => s.chapterId === chapterId)
-		.sort((a, b) => a.order - b.order);
+		.sort(
+			(a, b) =>
+				(trackOrder.get(a.trackId) ?? 999) - (trackOrder.get(b.trackId) ?? 999) ||
+				a.order - b.order
+		);
 }
