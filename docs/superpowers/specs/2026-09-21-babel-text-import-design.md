@@ -19,14 +19,16 @@ Oboeru に取り込み、既存の練習フロー (TTS読み上げ → Space押�
 
 ## ソースデータ
 
-`/home/k319/develop/the-tower-of-babel/segments.json`
+`/home/k319/develop/the-tower-of-babel-anqi/sugatri-local/index.html` の `const textData` (ユーザー指定: こちらを信頼できるソースとする。初版の segments.json は音声順のため同言語連続があったが、こちらは**完璧な英日ペア82組**)
 
-```json
-{ "title": "...", "audio": "...mp3", "lines": [{ "start": 14.0, "end": 16.0, "text": "The Tower of Babel." }, ...] }
+```js
+const textData = [
+    { id: 1, english: "Once upon a time there was a very tall tower.", japanese: "むかし、とても高い塔がそびえていました。" },
+    ...
+];
 ```
 
-- lines: **184件 = 英92 + 日92、英→日の完全交互**
-- テキストは同プロジェクトの前処理 (polish/postproc) 済みのものをそのまま使用
+- 82ペア = 英82 + 日82。**英→日→英→日 に展開すると完全交互 164文**
 
 ## 成果物
 
@@ -34,15 +36,18 @@ Oboeru に取り込み、既存の練習フロー (TTS読み上げ → Space押�
 
 ```json
 {
+  "version": 1,
   "chapters": [
     { "id": "ch-babel", "name": "バベルの塔", "parentId": null, "order": 99 }
   ],
   "sentences": [
-    { "id": "babel-001", "chapterId": "ch-babel", "text": "The Tower of Babel.", "language": "en", "order": 1 },
-    { "id": "babel-002", "chapterId": "ch-babel", "text": "バベルの塔", "language": "ja", "order": 2 }
+    { "id": "babel-001", "chapterId": "ch-babel", "text": "Once upon a time there was a very tall tower.", "language": "en", "order": 1 },
+    { "id": "babel-002", "chapterId": "ch-babel", "text": "むかし、とても高い塔がそびえていました。", "language": "ja", "order": 2 }
   ]
 }
 ```
+
+- **`version: 1` は必須** — manage の `validateImportJson` が `obj.version !== 1` で拒否する (初版失敗の原因)
 
 ### 仕様
 
@@ -51,8 +56,8 @@ Oboeru に取り込み、既存の練習フロー (TTS読み上げ → Space押�
 | chapter.id | `ch-babel` |
 | chapter.name | `バベルの塔` |
 | chapter.order | `99` (既存チャプターの後ろに表示) |
-| sentence.id | `babel-001` … `babel-184` (0埋め3桁) |
-| sentence.order | 1 … 184 (segments.json の lines 順) |
+| sentence.id | `babel-001` … `babel-164` (0埋め3桁) |
+| sentence.order | 1 … 164 (各ペアを 英→日 で展開: item i の en = 2i-1、ja = 2i) |
 | language | 平仮名/カタカナ/漢字を含む → `ja`、それ以外 → `en` |
 | text | segments.json の text を trim (空行・空白のみの行は除外) |
 
@@ -66,10 +71,10 @@ Python ワンオフスクリプト `.omo/exports/build_babel_import.py` (gitigno
 
 ## 検証
 
-1. JSON パース成功 + manage の `validateImportJson` と同じ必須フィールド (chapters: id/name, sentences: id/chapterId/text) を満たす
-2. 件数: chapters 1件 / sentences 184件
-3. 交互パターン: ほぼ英→日の繰り返し。**ただしソースは曲の音声順のため、同言語連続 (en/en, ja/ja) が存在する** (実測: 92対中16ペア位置) — 音声順のまま取り込み、検証では崩れ箇所を**報告するのみ** (マージ・並べ替えは非目標)。マージせずとも練習は成立する (各文が独立し、language ごとに TTS 声が選択されるため)
-4. 重複テキスト・空テキストがあれば件数を報告 (そのまま残す)
+1. JSON パース成功 + manage の `validateImportJson` と同じチェック (**version === 1**、chapters: id/name、sentences: id/chapterId/text) を満たす
+2. 件数: chapters 1件 / sentences 164件 (= 82ペア × 2)
+3. 交互パターン: **完全交互 EJ × 82** (ペア展開により保証)
+4. 重複テキストがあれば件数を報告 (そのまま残す — 物語中のセリフの繰り返し)
 
 ## 導入手順 (ユーザー操作)
 
