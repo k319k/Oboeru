@@ -68,7 +68,7 @@ Python ワンオフスクリプト `.omo/exports/build_babel_import.py` (gitigno
 
 1. JSON パース成功 + manage の `validateImportJson` と同じ必須フィールド (chapters: id/name, sentences: id/chapterId/text) を満たす
 2. 件数: chapters 1件 / sentences 184件
-3. 交互パターン: `EJ` の繰り返し (184/2 = 92対)
+3. 交互パターン: ほぼ英→日の繰り返し。**ただしソースは曲の音声順のため、同言語連続 (en/en, ja/ja) が存在する** (実測: 92対中16ペア位置) — 音声順のまま取り込み、検証では崩れ箇所を**報告するのみ** (マージ・並べ替えは非目標)。マージせずとも練習は成立する (各文が独立し、language ごとに TTS 声が選択されるため)
 4. 重複テキスト・空テキストがあれば件数を報告 (そのまま残す)
 
 ## 導入手順 (ユーザー操作)
