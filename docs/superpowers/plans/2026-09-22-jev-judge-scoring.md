@@ -108,11 +108,67 @@ export function parseJudgeResponse(json: unknown):
 }
 ```
 
-- [ ] **Step 2: +server.ts** — POST ハンドラ: body 検証 (reference/transcription 非空文字列) →
-  `OPENROUTER_API_KEY` を `$env` から取得 (未設定 → `{available: false}`) →
-  `fetch('https://openrouter.ai/api/v1/systemone', ...)` + AbortController 8s →
-  429/529/5xx は 500ms 待機で1回リトライ → `parseJudgeResponse` → 応答。
-  例外は全て catch して `{available: false}` (console.error 付き)。**常に HTTP 200**
+- [ ] **Step 2: +server.ts** — 常に HTTP 200、全失敗を `{available: false}` に畳む。キー取得は
+  `src/routes/api/transcribe/+server.ts` の `GROQ_API_KEY` と**同じパターン**に従うこと:
+
+```ts
+import { json } from '@sveltejs/kit';
+import type { RequestHandler } from './$types';
+import { buildJudgeRequest, parseJudgeResponse } from '$lib/jev';
+
+const JEV_ENDPOINT = 'https://openrouter.ai/api/v1/systemone';
+const TIMEOUT_MS = 8000;
+
+async function callJev(body: unknown, apiKey: string): Promise<unknown> {
+	const doFetch = async (): Promise<Response> => {
+		const ctrl = new AbortController();
+		const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+		try {
+			return await fetch(JEV_ENDPOINT, {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+				signal: ctrl.signal
+			});
+		} finally {
+			clearTimeout(timer);
+		}
+	};
+	let res = await doFetch();
+	// 429/529/5xx は 500ms 待機で1回だけリトライ (docs推奨のバックオフを簡略化)
+	if (res.status === 429 || res.status === 529 || res.status >= 500) {
+		await new Promise((r) => setTimeout(r, 500));
+		res = await doFetch();
+	}
+	return res.json();
+}
+
+export const POST: RequestHandler = async ({ request, platform }) => {
+	const fallback = json({ available: false });
+	try {
+		const body = await request.json();
+		const reference = body?.reference;
+		const transcription = body?.transcription;
+		if (
+			typeof reference !== 'string' || !reference.trim() ||
+			typeof transcription !== 'string' || !transcription.trim()
+		) {
+			return fallback;
+		}
+		// transcribe/+server.ts の GROQ_API_KEY と同じ取得パターンを使うこと
+		const apiKey = platform?.env?.OPENROUTER_API_KEY;
+		if (!apiKey) {
+			console.error('OPENROUTER_API_KEY is not set');
+			return fallback;
+		}
+		const raw = await callJev(buildJudgeRequest(reference, transcription), apiKey);
+		return json(parseJudgeResponse(raw));
+	} catch (err) {
+		console.error('judge failed:', err);
+		return fallback;
+	}
+};
+```
 - [ ] **Step 3: ユニットテスト** — buildJudgeRequest の完全形スナップショット (model/state/questions 全フィールド)、
   parseJudgeResponse (正常 / answers欠損 / noul非数値 / choice欠損 → available:false)
 - [ ] **Step 4: `npm run check` + `npx vitest run src/lib` 全緑 → commit `feat: jev judge endpoint`**
@@ -128,11 +184,31 @@ export function parseJudgeResponse(json: unknown):
 **Interfaces:**
 - Consumes: Task 1 の `normalizeJapaneseText`、Task 2 の `/api/judge` 契約
 
-- [ ] **Step 1: 統合** — doTranscribe 内: `sim` 計算後、
-  `if (sim >= threshold) → 既存フロー (judge 呼ばない)`。
-  `sim < threshold` → `fetch('/api/judge', {method:'POST', body:{reference, transcription}})` →
-  `available && noul > 0` なら `finalScore = Math.max(sim, Math.round(noul * 100))`、
-  それ以外は `sim`。以降の閾値判定/feedback は既存ロジックをそのまま使う (finalScore を渡す)
+- [ ] **Step 1: 統合** — doTranscribe 内、正規化済み類似度 `sim` の計算直後に挿入:
+
+```ts
+// Jev semantic judge: rescue orthography-variant failures. Only called when
+// the similarity score alone would fail (a pass is already decided).
+const threshold = settings.threshold;
+let finalScore = sim;
+if (sim < threshold) {
+	try {
+		const res = await fetch('/api/judge', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ reference: currentSentence.text, transcription })
+		});
+		const judge = await res.json();
+		if (judge?.available === true && typeof judge.noul === 'number' && judge.noul > 0) {
+			finalScore = Math.max(sim, Math.round(judge.noul * 100));
+		}
+	} catch {
+		// judge unavailable → keep sim (existing behavior)
+	}
+}
+// 以降の閾値判定 / feedback / passedIds には既存コードを流用し、
+// スコア引数を sim から finalScore に差し替える (diff 表示・UI は触らない)
+```
 - [ ] **Step 2: E2E テスト** — `page.route('**/api/judge', ...)`: (a) noul 0.95 を返すと低類似度の文が
   合格になる (score 表示が持ち上がること)、(b) `{available: false}` を返すと従来どおり不合格、
   (c) 高類似度で合格する場合は judge へのリクエストが 0 回
