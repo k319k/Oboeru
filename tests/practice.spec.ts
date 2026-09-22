@@ -131,6 +131,33 @@ async function mockTranscribe(page: Page, responses: TranscribeResponse[]) {
 	});
 }
 
+interface JudgeResponse {
+	available?: boolean;
+	noul?: number;
+	category?: string;
+	confidence?: number;
+}
+
+interface JudgeMock {
+	/** Number of /api/judge requests made so far. */
+	count(): number;
+}
+
+/** Mock /api/judge. Queue of responses; the last entry repeats. Counts requests. */
+async function mockJudge(page: Page, responses: JudgeResponse[]): Promise<JudgeMock> {
+	let call = 0;
+	await page.route('**/api/judge', async (route) => {
+		const r = responses[Math.min(call, responses.length - 1)];
+		call++;
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify(r)
+		});
+	});
+	return { count: () => call };
+}
+
 /** Seed + mock TTS + (optionally) mock transcribe, then navigate. */
 async function setupPractice(
 	page: Page,
@@ -1239,5 +1266,62 @@ test.describe('Practice — T9 autoAdvance off', () => {
 
 		await page.keyboard.press(' ');
 		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。', { timeout: 2000 });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Jev semantic judge (低類似度の救済判定)
+//
+// スコアリングペア: 「こんにちは。」 vs 「ぜんぜんちがう」 → 類似度 29
+// (e2e-full の 76% 平均アサーションで実証済みの決定論的ペア)。
+// ---------------------------------------------------------------------------
+
+const JUDGE_SEED: SeedSentence[] = [
+	{ id: 'ja-01', chapterId: 'ch-ja-01', text: 'こんにちは。', language: 'ja', order: 1 }
+];
+
+test.describe('Practice — Jev judge', () => {
+	test('rescue: noul boost flips a low-similarity fail into a pass', async ({ page }) => {
+		await seedPractice(page, { sentences: JUDGE_SEED });
+		await mockTts(page);
+		await mockTranscribe(page, [{ text: 'ぜんぜんちがう' }]);
+		await mockJudge(page, [
+			{ available: true, noul: 0.95, category: 'orthography_variant', confidence: 0.9 }
+		]);
+		await page.goto('/practice?chapter=ch-ja-01');
+
+		// sim 29 (< 80) → judge is consulted → max(29, round(0.95*100)) = 95
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('score')).toHaveClass(/pass/, { timeout: 10000 });
+		await expect(page.getByTestId('score')).toHaveText('95%');
+	});
+
+	test('fallback: judge unavailable keeps the similarity score and fails', async ({ page }) => {
+		await seedPractice(page, { sentences: JUDGE_SEED });
+		await mockTts(page);
+		await mockTranscribe(page, [{ text: 'ぜんぜんちがう' }]);
+		await mockJudge(page, [{ available: false }]);
+		await page.goto('/practice?chapter=ch-ja-01');
+
+		// sim 29 stays 29 — no boost without an available judge.
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('score')).toHaveClass(/fail/, { timeout: 10000 });
+		await expect(page.getByTestId('score')).toHaveText('29%');
+	});
+
+	test('no-call: a passing similarity never consults the judge', async ({ page }) => {
+		await seedPractice(page, { sentences: JUDGE_SEED });
+		await mockTts(page);
+		await mockTranscribe(page, [{ text: 'こんにちは。' }]);
+		const judge = await mockJudge(page, [{ available: true, noul: 0.95 }]);
+		await page.goto('/practice?chapter=ch-ja-01');
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await holdAndRelease(page);
+		await expect(page.getByTestId('score')).toHaveClass(/pass/, { timeout: 10000 });
+		await expect(page.getByTestId('score')).toHaveText('100%');
+		expect(judge.count()).toBe(0);
 	});
 });

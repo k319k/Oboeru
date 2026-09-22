@@ -868,13 +868,33 @@
 
 			transcribedText = text;
 			pendingBlob = null;
-			const scoreValue = Math.round(
+			const sim = Math.round(
 				similarity(normalizeJapaneseText(s.text), normalizeJapaneseText(text))
 			);
-			score = scoreValue;
-			totalScore += scoreValue;
+
+			// Jev semantic judge: rescue orthography-variant failures. Only called
+			// when the similarity score alone would fail (a pass is already decided).
+			let finalScore = sim;
+			if (sim < threshold) {
+				try {
+					const res = await fetch('/api/judge', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ reference: s.text, transcription: text })
+					});
+					const judge = await res.json();
+					if (judge?.available === true && typeof judge.noul === 'number' && judge.noul > 0) {
+						finalScore = Math.max(sim, Math.round(judge.noul * 100));
+					}
+				} catch {
+					// judge unavailable → keep sim (existing behavior)
+				}
+			}
+
+			score = finalScore;
+			totalScore += finalScore;
 			completedCount++;
-			if (scoreValue >= threshold) {
+			if (finalScore >= threshold) {
 				if (!passedIds.includes(s.id)) passedIds.push(s.id);
 				failedEntries = failedEntries.filter((entry) => entry.id !== s.id);
 				phase = 'feedback';
