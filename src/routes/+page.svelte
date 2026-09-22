@@ -1,8 +1,12 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import { loadChapters, loadSentences, getChapterSentences } from '$lib/sentences';
-	import { ChevronRight, Play } from '@lucide/svelte';
+	import { createLiveStt } from '$lib/livestt/engine';
+	import { getLastLang } from '$lib/last-lang';
+	import { ChevronRight, Loader2, Play } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
+	import { onMount } from 'svelte';
 	import type { Chapter, Sentence } from '$lib/types';
 
 	let chapters = $state<Chapter[]>([]);
@@ -14,6 +18,31 @@
 	$effect(() => {
 		chapters = loadChapters();
 		sentences = loadSentences();
+	});
+
+	type WarmState = 'idle' | 'loading' | 'ready' | 'error';
+	let warmState = $state<WarmState>('idle');
+	let warmPercent = $state<number | null>(null);
+
+	onMount(() => {
+		// E2E drives the practice page with ?e2e=1 and mocks the engine; the top
+		// page must not trigger a real model download there.
+		if (import.meta.env.DEV && $page.url.searchParams.get('e2e') === '1') return;
+		// The studio/dev models proxy answers 503 without .stt-models/ — warm
+		// silently no-ops (createLiveStt resolves null), so this is safe in dev.
+		warmState = 'loading';
+		createLiveStt({
+			lang: getLastLang(),
+			onProgress: (p) => {
+				warmPercent = p.total ? Math.round((p.loaded / p.total) * 100) : null;
+			}
+		})
+			.then(() => {
+				warmState = 'ready';
+			})
+			.catch(() => {
+				warmState = 'error';
+			});
 	});
 
 	// Build the tree from parentId (same pattern as manage/+page.svelte getChildren).
@@ -60,6 +89,17 @@
 </svelte:head>
 
 <h1 class="mb-1 text-2xl font-bold">おぼえる</h1>
+{#if warmState === 'loading'}
+	<p
+		class="mb-4 inline-flex items-center gap-2 text-sm text-muted-foreground"
+		data-testid="warm-indicator"
+		aria-live="polite"
+	>
+		<Loader2 class="size-4 animate-spin" />
+		録音アシストを準備中…
+		{#if warmPercent !== null}{warmPercent}%{/if}
+	</p>
+{/if}
 <p class="mb-6 text-sm text-muted-foreground">カードの練習ボタンですぐに開始できます</p>
 
 {#if chapters.length === 0}
