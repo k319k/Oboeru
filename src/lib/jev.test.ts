@@ -165,6 +165,18 @@ describe('parseJudgeResponse', () => {
 		expectUnavailable(withoutConfidence());
 	});
 
+	it('clamps an out-of-contract finite noul to [0, 1]', () => {
+		expect(parseJudgeResponse(withNoul(1.5))).toEqual({
+			available: true,
+			noul: 1,
+			category: 'orthography_variant',
+			confidence: 0.88
+		});
+		expect(
+			parseJudgeResponse(withNoul(-0.2))
+		).toEqual({ available: true, noul: 0, category: 'orthography_variant', confidence: 0.88 });
+	});
+
 	it('rejects a non-numeric confidence', () => {
 		expectUnavailable(withConfidence('high'));
 	});

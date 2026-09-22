@@ -14,7 +14,6 @@
 	import { startRecording } from '$lib/recorder';
 	import { transcribe } from '$lib/transcribe';
 	import { similarity } from '$lib/similarity';
-	import { normalizeJapaneseText } from '$lib/normalize';
 	import { tokenizeSentence, ProgressAligner } from '$lib/alignment';
 	import { createLiveStt, terminateLiveStt } from '$lib/livestt/engine';
 	import type { LiveSttEngine, LiveWord } from '$lib/livestt/types';
@@ -868,9 +867,7 @@
 
 			transcribedText = text;
 			pendingBlob = null;
-			const sim = Math.round(
-				similarity(normalizeJapaneseText(s.text), normalizeJapaneseText(text))
-			);
+			const sim = Math.round(similarity(s.text, text));
 
 			// Jev semantic judge: rescue orthography-variant failures. Only called
 			// when the similarity score alone would fail (a pass is already decided).
@@ -889,8 +886,9 @@
 					if (judge?.available === true && typeof judge.noul === 'number' && judge.noul > 0) {
 						finalScore = Math.max(sim, Math.round(judge.noul * 100));
 					}
-				} catch {
+				} catch (err) {
 					// judge unavailable → keep sim (existing behavior)
+					console.debug('judge fallback:', err);
 				} finally {
 					clearTimeout(judgeTimeoutId);
 				}

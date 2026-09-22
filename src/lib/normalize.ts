@@ -1,5 +1,7 @@
 /** Normalize Japanese text for similarity scoring: NFKC, strip
- * punctuation/symbols/whitespace, unify katakana to hiragana. */
+ * punctuation/symbols/whitespace, unify katakana to hiragana.
+ * Canonical rule set — `normalize` in similarity.ts is the
+ * scoring-integrated version of this (plus Latin lowercasing). */
 export function normalizeJapaneseText(text: string): string {
 	const nfkc = text.normalize('NFKC');
 	const stripped = nfkc.replace(/[\p{P}\p{S}\s]+/gu, '');

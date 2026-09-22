@@ -3,20 +3,16 @@
  * Used to compare STT transcription against original sentence text.
  */
 
-// Matches whitespace and Unicode punctuation (works for CJK punctuation too)
-const PUNCTUATION_AND_WHITESPACE_RE = /[\s\p{P}]/gu;
+import { normalizeJapaneseText } from './normalize';
 
 /**
- * Normalize text for comparison:
- * - Unicode NFKC normalization
- * - Remove whitespace and punctuation
- * - Lowercase Latin characters
+ * Normalize text for comparison — the scoring-integrated version of the
+ * canonical Japanese normalization (normalize.ts, ONE rule set) plus Latin
+ * lowercasing: NFKC, strip punctuation/symbols/whitespace, fold katakana
+ * to hiragana, lowercase Latin characters.
  */
 export function normalize(text: string): string {
-	return text
-		.normalize('NFKC')
-		.replace(PUNCTUATION_AND_WHITESPACE_RE, '')
-		.toLowerCase();
+	return normalizeJapaneseText(text).toLowerCase();
 }
 
 /**

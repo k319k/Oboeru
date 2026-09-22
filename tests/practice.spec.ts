@@ -105,8 +105,23 @@ interface TranscribeResponse {
 	headers?: Record<string, string>;
 }
 
-/** Mock /api/transcribe. Queue of responses; the last entry repeats. */
+/** Mock /api/judge with the key-less fallback so failing-attempt tests never
+ * hit real OpenRouter. Registered FIRST; specific mockJudge mocks registered
+ * later override it (Playwright routes are last-registered-first-matched). */
+async function mockJudgeFallback(page: Page): Promise<void> {
+	await page.route('**/api/judge', (route) =>
+		route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify({ available: false })
+		})
+	);
+}
+
+/** Mock /api/transcribe. Queue of responses; the last entry repeats.
+ * Also installs the default judge fallback (see mockJudgeFallback). */
 async function mockTranscribe(page: Page, responses: TranscribeResponse[]) {
+	await mockJudgeFallback(page);
 	let call = 0;
 	await page.route('**/api/transcribe', async (route) => {
 		const r = responses[Math.min(call, responses.length - 1)];

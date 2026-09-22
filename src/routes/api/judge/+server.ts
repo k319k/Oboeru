@@ -5,6 +5,8 @@ import { buildJudgeRequest, parseJudgeResponse } from '$lib/jev';
 
 const JEV_ENDPOINT = 'https://openrouter.ai/api/v1/systemone';
 const TIMEOUT_MS = 8000;
+// 有料パス保護: 過大な入力は Jev に流さず即フォールバック
+const MAX_TEXT_LENGTH = 2000;
 
 async function callJev(body: unknown, apiKey: string): Promise<unknown> {
 	const doFetch = async (): Promise<Response> => {
@@ -49,6 +51,9 @@ export async function _handleJudgeRequest(
 			typeof reference !== 'string' || !reference.trim() ||
 			typeof transcription !== 'string' || !transcription.trim()
 		) {
+			return fallback;
+		}
+		if (reference.length > MAX_TEXT_LENGTH || transcription.length > MAX_TEXT_LENGTH) {
 			return fallback;
 		}
 		if (!apiKey) {

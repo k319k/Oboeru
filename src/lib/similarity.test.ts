@@ -39,7 +39,15 @@ describe('normalize', () => {
 		expect(result).not.toContain('、');
 		expect(result).not.toContain('！');
 		expect(result).not.toContain('。');
-		expect(result).toBe('helloworld日本語テスト');
+		expect(result).toBe('helloworld日本語てすと');
+	});
+
+	it('folds katakana to hiragana (unified with normalizeJapaneseText)', () => {
+		expect(normalize('バベルの塔')).toBe('ばべるの塔');
+	});
+
+	it('strips symbols (\\p{S}) alongside punctuation', () => {
+		expect(normalize('★がんばれ☆!')).toBe('がんばれ');
 	});
 
 	it('returns empty string for empty input', () => {

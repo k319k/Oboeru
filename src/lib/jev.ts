@@ -62,5 +62,11 @@ export function parseJudgeResponse(json: unknown):
 		return { available: false };
 	}
 
-	return { available: true, noul, category: choice, confidence };
+	// 契約外の有限 noul は [0, 1] にクランプ (スコア > 100 表示を防ぐ)
+	return {
+		available: true,
+		noul: Math.min(1, Math.max(0, noul)),
+		category: choice,
+		confidence
+	};
 }

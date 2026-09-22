@@ -58,6 +58,21 @@ describe('_handleJudgeRequest', () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it('returns 200 {available:false} when reference or transcription exceeds 2000 chars (no fetch)', async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal('fetch', fetchMock);
+		const tooLong = 'あ'.repeat(2001);
+		for (const body of [
+			{ reference: tooLong, transcription: '初め' },
+			{ reference: 'はじめ', transcription: tooLong }
+		]) {
+			const res = await _handleJudgeRequest(post(body), 'key');
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ available: false });
+		}
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
 	it('returns 200 {available:true,...} on success and calls Jev with the exact request', async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify(VALID_JEV_RESPONSE), { status: 200 })
