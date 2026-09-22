@@ -3,6 +3,9 @@ import { defaultChapters, defaultSentences, defaultTracks } from './default-sent
 
 const STORAGE_KEY = 'oboeru:v1';
 
+// 不明な trackId の文は末尾へ（破棄しない）
+const UNKNOWN_TRACK_ORDER = 999;
+
 // ---------------------------------------------------------------------------
 // ID generation
 // ---------------------------------------------------------------------------
@@ -215,6 +218,11 @@ export function getChapterTracks(chapterId: string, tracks: Track[]): Track[] {
 // Sentence CRUD
 // ---------------------------------------------------------------------------
 
+/**
+ * Add a sentence to a chapter.
+ * An empty-string `trackId` is treated as omitted: it auto-resolves to the
+ * chapter's first track (creating a default track when the chapter has none).
+ */
 export function addSentence(
 	chapterId: string,
 	text: string,
@@ -339,7 +347,7 @@ export function getChapterSentences(chapterId: string, sentences: Sentence[]): S
 		.filter((s) => s.chapterId === chapterId)
 		.sort(
 			(a, b) =>
-				(trackOrder.get(a.trackId) ?? 999) - (trackOrder.get(b.trackId) ?? 999) ||
+				(trackOrder.get(a.trackId) ?? UNKNOWN_TRACK_ORDER) - (trackOrder.get(b.trackId) ?? UNKNOWN_TRACK_ORDER) ||
 				a.order - b.order
 		);
 }

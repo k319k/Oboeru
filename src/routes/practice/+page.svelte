@@ -28,6 +28,7 @@
 	} from '$lib/practice-prefs';
 	import type { Sentence, PracticeState, Track } from '$lib/types';
 	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
 	import { Progress } from '$lib/components/ui/progress';
 	import {
 		AlertDialog,
@@ -1115,12 +1116,9 @@
 				{chapterName}
 			</h1>
 			{#if showTrackBadge}
-				<span
-					class="inline-flex max-w-28 shrink-0 items-center truncate rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground"
-					data-testid="track-badge"
-				>
+				<Badge class="max-w-28 shrink-0 truncate" data-testid="track-badge">
 					{currentTrackName}
-				</span>
+				</Badge>
 			{/if}
 			<div class="flex min-w-0 flex-1 flex-col items-center gap-1" data-testid="progress">
 				<Progress

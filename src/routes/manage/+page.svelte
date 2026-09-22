@@ -225,12 +225,16 @@
 			group.sentences.sort((a, b) => a.order - b.order);
 		}
 		const chapterPos = new Map(flatChapters.map((c, i) => [c.id, i]));
-		const groupPos = (g: TrackGroup): number => {
-			if (!g.track) return Number.MAX_SAFE_INTEGER;
+		const groupKey = (g: TrackGroup): [number, number] => {
+			if (!g.track) return [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
 			const pos = chapterPos.get(g.track.chapterId) ?? Number.MAX_SAFE_INTEGER - 1;
-			return pos * 1000 + g.track.order;
+			return [pos, g.track.order];
 		};
-		return [...groups.values()].sort((a, b) => groupPos(a) - groupPos(b));
+		return [...groups.values()].sort((a, b) => {
+			const [posA, orderA] = groupKey(a);
+			const [posB, orderB] = groupKey(b);
+			return posA - posB || orderA - orderB;
+		});
 	});
 
 	/** Distinct languages among the chapter's direct sentences (JA first).
@@ -1191,7 +1195,10 @@
 					<Select.Root
 						type="single"
 						value={filterChapterId}
-						onValueChange={(v: string) => (filterChapterId = v)}
+						onValueChange={(v: string) => {
+							cancelAddTrack();
+							filterChapterId = v;
+						}}
 					>
 						<Select.Trigger id="chapter-filter" data-testid="chapter-filter" class="w-48 data-[size=default]:h-11 sm:data-[size=default]:h-9">
 							<span data-slot="select-value">{chapterFilterLabel(filterChapterId)}</span>
