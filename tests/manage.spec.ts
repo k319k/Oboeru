@@ -587,3 +587,175 @@ test.describe('Filters', () => {
 		await expect(enRow).toContainText('(1文)');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Track groups (トラック別グループ化 + トラックCRUD)
+// ---------------------------------------------------------------------------
+
+const tracksSeed = {
+	chapters: [{ id: 'c1', name: 'チャプター1', parentId: null, order: 1 }],
+	tracks: [
+		{ id: 't1', chapterId: 'c1', name: '前半', order: 1 },
+		{ id: 't2', chapterId: 'c1', name: '後半', order: 2 }
+	],
+	sentences: [
+		{ id: 's1', chapterId: 'c1', trackId: 't1', text: '前半の文章', language: 'ja', order: 1 },
+		{ id: 's2', chapterId: 'c1', trackId: 't2', text: '後半の文章', language: 'ja', order: 1 }
+	]
+};
+
+/** Locate a track group by its header name (hasText on the whole group is
+   ambiguous once a sentence containing the track name is inside another
+   group, e.g. after moving sentences between tracks). */
+function trackGroup(page: Page, name: string) {
+	return page.getByTestId('track-group').filter({
+		has: page.getByTestId('track-name').filter({ hasText: name })
+	});
+}
+
+test.describe('Track groups', () => {
+	test('group headers show track name and sentence counts, collapse hides rows', async ({
+		page
+	}) => {
+		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
+
+		// Old-format seeds are shimmed into one トラック1 per chapter
+		await pickOption(page, 'chapter-filter', 'はじめの一歩（日本語）');
+		await expect(page.getByTestId('track-group')).toHaveCount(1);
+		await expect(page.getByTestId('track-name')).toHaveText('トラック1');
+		await expect(page.locator('.track-header')).toContainText('(2文)');
+		await expect(page.getByTestId('sentence-text')).toHaveCount(2);
+
+		// Collapse the group via its header toggle
+		await page.getByRole('button', { name: 'トラック1 を折りたたむ' }).click();
+		await expect(page.getByTestId('sentence-text')).toHaveCount(0);
+		await expect(page.getByTestId('track-name')).toBeVisible();
+
+		// Expand again
+		await page.getByRole('button', { name: 'トラック1 を展開' }).click();
+		await expect(page.getByTestId('sentence-text')).toHaveCount(2);
+
+		// The English chapter has its own group
+		await pickOption(page, 'chapter-filter', 'First Steps（English）');
+		await expect(page.getByTestId('track-group')).toHaveCount(1);
+		await expect(page.locator('.track-header')).toContainText('(1文)');
+	});
+
+	test('adds a track and renames it', async ({ page }) => {
+		await gotoManage(page, seed);
+		await page.getByRole('tab', { name: '文章' }).click();
+		await pickOption(page, 'chapter-filter', 'はじめの一歩（日本語）');
+
+		await page.getByTestId('add-track').click();
+		await page.getByTestId('new-track-name').fill('応用編');
+		await page.getByTestId('confirm-add-track').click();
+
+		// New (empty) group appears alongside the shimmed トラック1
+		await expect(page.getByTestId('track-group')).toHaveCount(2);
+		await expect(page.getByTestId('track-name').filter({ hasText: '応用編' })).toBeVisible();
+
+		// Rename via the group header
+		const group = trackGroup(page, '応用編');
+		await group.getByTestId('edit-track').click();
+		await page.getByTestId('edit-track-name').fill('上級編');
+		await page.getByTestId('confirm-edit-track').click();
+
+		await expect(page.getByTestId('track-name').filter({ hasText: '上級編' })).toBeVisible();
+		await expect(page.getByTestId('track-name').filter({ hasText: '応用編' })).toHaveCount(0);
+	});
+
+	test('deleting a track removes its sentences', async ({ page }) => {
+		await gotoManage(page, tracksSeed);
+		await page.getByRole('tab', { name: '文章' }).click();
+		await pickOption(page, 'chapter-filter', 'チャプター1');
+
+		await expect(page.getByTestId('sentence-text')).toHaveCount(2);
+
+		const t1Group = trackGroup(page, '前半');
+		await t1Group.getByTestId('delete-track').click();
+		await page.getByTestId('confirm-delete-track').click();
+
+		await expect(page.getByTestId('track-name').filter({ hasText: '前半' })).toHaveCount(0);
+		await expect(
+			page.getByTestId('sentence-text').filter({ hasText: '前半の文章' })
+		).toHaveCount(0);
+		await expect(page.getByTestId('sentence-text')).toHaveCount(1);
+
+		// Other chapter's content is untouched — switch back to すべて
+		await pickOption(page, 'chapter-filter', 'すべて');
+		await expect(page.getByTestId('sentence-text')).toHaveCount(1);
+	});
+
+	test('sentence form track selector assigns new sentences to the chosen track', async ({
+		page
+	}) => {
+		await gotoManage(page, tracksSeed);
+		await page.getByRole('tab', { name: '文章' }).click();
+		await pickOption(page, 'chapter-filter', 'チャプター1');
+
+		await page.getByTestId('add-sentence').click();
+		// Track selector defaults to the chapter's first track
+		await expect(page.getByTestId('sentence-form-track')).toContainText('前半');
+		await page.getByTestId('new-sentence-text').fill('追加の文章です。');
+		await page.getByTestId('confirm-add-sentence').click();
+
+		// Default selection → 前半 group
+		const zenhanGroup = trackGroup(page, '前半');
+		await expect(
+			zenhanGroup.getByTestId('sentence-text').filter({ hasText: '追加の文章です。' })
+		).toBeVisible();
+
+		// Second add, explicitly choosing 後半
+		await page.getByTestId('add-sentence').click();
+		await page.getByTestId('new-sentence-text').fill('後半に追加。');
+		await pickOption(page, 'sentence-form-track', '後半');
+		await page.getByTestId('confirm-add-sentence').click();
+
+		const kohanGroup = trackGroup(page, '後半');
+		await expect(
+			kohanGroup.getByTestId('sentence-text').filter({ hasText: '後半に追加。' })
+		).toBeVisible();
+		await expect(
+			zenhanGroup.getByTestId('sentence-text').filter({ hasText: '後半に追加。' })
+		).toHaveCount(0);
+	});
+
+	test('edit form track selector moves a sentence between tracks', async ({ page }) => {
+		await gotoManage(page, tracksSeed);
+		await page.getByRole('tab', { name: '文章' }).click();
+		await pickOption(page, 'chapter-filter', 'チャプター1');
+
+		const row = page.locator('.sentence-item', { hasText: '前半の文章' });
+		await row.getByTestId('edit-sentence').click();
+		await pickOption(page, 'sentence-form-track', '後半');
+		await page.getByTestId('confirm-edit-sentence').click();
+
+		const kohanGroup = trackGroup(page, '後半');
+		await expect(
+			kohanGroup.getByTestId('sentence-text').filter({ hasText: '前半の文章' })
+		).toBeVisible();
+		// 前半 group remains (chapter-scoped view shows empty tracks) with no rows
+		await expect(trackGroup(page, '前半').getByTestId('sentence-text')).toHaveCount(0);
+	});
+
+	test('reorders tracks within a chapter, boundary buttons disabled', async ({ page }) => {
+		await gotoManage(page, tracksSeed);
+		await page.getByRole('tab', { name: '文章' }).click();
+		await pickOption(page, 'chapter-filter', 'チャプター1');
+
+		const t1Group = trackGroup(page, '前半');
+		const t2Group = trackGroup(page, '後半');
+
+		await expect(t1Group.getByTestId('track-order-up')).toBeDisabled();
+		await expect(t1Group.getByTestId('track-order-down')).toBeEnabled();
+		await expect(t2Group.getByTestId('track-order-up')).toBeEnabled();
+		await expect(t2Group.getByTestId('track-order-down')).toBeDisabled();
+
+		// Move 後半 up → order swaps
+		await t2Group.getByTestId('track-order-up').click();
+		const names = page.getByTestId('track-name');
+		await expect(names.nth(0)).toHaveText('後半');
+		await expect(names.nth(1)).toHaveText('前半');
+	});
+});

@@ -91,11 +91,14 @@ test.describe('JSON Export', () => {
 		});
 		const data = JSON.parse(content);
 
-		expect(data.version).toBe(1);
+		expect(data.version).toBe(2);
 		expect(data.exportedAt).toBeTruthy();
 		expect(Array.isArray(data.chapters)).toBe(true);
+		expect(Array.isArray(data.tracks)).toBe(true);
 		expect(Array.isArray(data.sentences)).toBe(true);
 		expect(data.chapters.length).toBeGreaterThanOrEqual(2);
+		// Old-format seeds are shimmed: one default track per chapter
+		expect(data.tracks.length).toBeGreaterThanOrEqual(2);
 		expect(data.sentences.length).toBeGreaterThanOrEqual(2);
 	});
 });
@@ -111,9 +114,9 @@ test.describe('JSON Import — Valid', () => {
 		await seedData(page);
 		await page.getByRole('tab', { name: 'データ' }).click();
 
-		// Create a valid import file
+		// Create a valid import file (v2: tracks required)
 		const importData = {
-			version: 1,
+			version: 2,
 			exportedAt: new Date().toISOString(),
 			chapters: [
 				{
@@ -123,10 +126,19 @@ test.describe('JSON Import — Valid', () => {
 					order: 3
 				}
 			],
+			tracks: [
+				{
+					id: 'tr-import-01',
+					chapterId: 'ch-import-01',
+					name: 'トラック1',
+					order: 1
+				}
+			],
 			sentences: [
 				{
 					id: 'imported-01',
 					chapterId: 'ch-import-01',
+					trackId: 'tr-import-01',
 					text: 'インポートされた文章です。',
 					language: 'ja',
 					order: 1
@@ -134,6 +146,7 @@ test.describe('JSON Import — Valid', () => {
 				{
 					id: 'imported-02',
 					chapterId: 'ch-import-01',
+					trackId: 'tr-import-01',
 					text: 'Another imported sentence.',
 					language: 'en',
 					order: 2
@@ -157,6 +170,7 @@ test.describe('JSON Import — Valid', () => {
 		const message = page.getByTestId('import-message');
 		await expect(message).toBeVisible();
 		await expect(message).toContainText('1件のチャプター');
+		await expect(message).toContainText('1件のトラック');
 		await expect(message).toContainText('2件の文章をインポートしました');
 		await expect(message).toHaveClass(/success/);
 	});
@@ -171,9 +185,9 @@ test.describe('JSON Import — Merge', () => {
 		await seedData(page);
 		await page.getByRole('tab', { name: 'データ' }).click();
 
-		// Import with the same chapter ID but different name
+		// Import with the same chapter/track/sentence IDs but different values
 		const importData = {
-			version: 1,
+			version: 2,
 			exportedAt: new Date().toISOString(),
 			chapters: [
 				{
@@ -183,10 +197,19 @@ test.describe('JSON Import — Merge', () => {
 					order: 1
 				}
 			],
+			tracks: [
+				{
+					id: 'tr-ch-ja-01',
+					chapterId: 'ch-ja-01',
+					name: '上書きトラック',
+					order: 1
+				}
+			],
 			sentences: [
 				{
 					id: 'ja-01',
 					chapterId: 'ch-ja-01',
+					trackId: 'tr-ch-ja-01',
 					text: '上書きされた文章。',
 					language: 'ja',
 					order: 1
@@ -220,6 +243,11 @@ test.describe('JSON Import — Merge', () => {
 			(s: { id: string }) => s.id === 'ja-01'
 		);
 		expect(overwrittenSentence.text).toBe('上書きされた文章。');
+
+		const overwrittenTrack = stored.tracks.find(
+			(t: { id: string }) => t.id === 'tr-ch-ja-01'
+		);
+		expect(overwrittenTrack.name).toBe('上書きトラック');
 	});
 });
 
@@ -252,7 +280,8 @@ test.describe('JSON Import — Invalid', () => {
 		await page.getByRole('tab', { name: 'データ' }).click();
 
 		const importData = {
-			version: 1,
+			version: 2,
+			tracks: [],
 			sentences: []
 			// chapters missing
 		};
@@ -270,13 +299,38 @@ test.describe('JSON Import — Invalid', () => {
 		await expect(message).toContainText('チャプターデータがありません');
 	});
 
+	test('importing missing tracks array shows error', async ({ page }) => {
+		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
+
+		const importData = {
+			version: 2,
+			chapters: [],
+			sentences: []
+			// tracks missing
+		};
+
+		const fileChooserPromise = page.waitForEvent('filechooser');
+		await page.getByTestId('import-input').click({ force: true });
+		const fileChooser = await fileChooserPromise;
+		await fileChooser.setFiles({
+			name: 'no-tracks.json',
+			mimeType: 'application/json',
+			buffer: Buffer.from(JSON.stringify(importData))
+		});
+
+		const message = page.getByTestId('import-message');
+		await expect(message).toContainText('トラックデータがありません');
+	});
+
 	test('importing missing sentences array shows error', async ({ page }) => {
 		await seedData(page);
 		await page.getByRole('tab', { name: 'データ' }).click();
 
 		const importData = {
-			version: 1,
-			chapters: []
+			version: 2,
+			chapters: [],
+			tracks: []
 			// sentences missing
 		};
 
@@ -299,12 +353,12 @@ test.describe('JSON Import — Invalid', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('JSON Import — Version Mismatch', () => {
-	test('importing version 2 shows error', async ({ page }) => {
+	test('importing version 1 (pre-tracks format) shows error', async ({ page }) => {
 		await seedData(page);
 		await page.getByRole('tab', { name: 'データ' }).click();
 
 		const importData = {
-			version: 2,
+			version: 1,
 			exportedAt: new Date().toISOString(),
 			chapters: [],
 			sentences: []
@@ -314,7 +368,7 @@ test.describe('JSON Import — Version Mismatch', () => {
 		await page.getByTestId('import-input').click({ force: true });
 		const fileChooser = await fileChooserPromise;
 		await fileChooser.setFiles({
-			name: 'v2.json',
+			name: 'v1.json',
 			mimeType: 'application/json',
 			buffer: Buffer.from(JSON.stringify(importData))
 		});

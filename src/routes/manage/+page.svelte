@@ -12,18 +12,24 @@
 	import {
 		loadChapters,
 		loadSentences,
+		loadTracks,
 		saveChapters,
 		saveSentences,
+		saveTracks,
 		addChapter,
 		updateChapter,
 		deleteChapter,
+		addTrack,
+		updateTrack,
+		deleteTrack,
 		addSentence,
 		updateSentence,
 		deleteSentence,
 		flattenChapterTree,
-		getChapterSentences
+		getChapterSentences,
+		getChapterTracks
 	} from '$lib/sentences';
-	import type { Chapter, Sentence } from '$lib/types';
+	import type { Chapter, Sentence, Track } from '$lib/types';
 	import { Button, buttonVariants } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';
@@ -94,6 +100,7 @@
 	let settings = $state<Settings>(loadSettings());
 	let chapters = $state<Chapter[]>([]);
 	let sentences = $state<Sentence[]>([]);
+	let tracks = $state<Track[]>([]);
 	let importMessage = $state<{ type: 'success' | 'error'; text: string } | null>(null);
 
 	// Chapter tree expanded state
@@ -113,11 +120,23 @@
 	let editingSentenceText = $state('');
 	let editingSentenceLanguage = $state<'ja' | 'en'>('ja');
 	let editingSentenceChapterId = $state('');
+	let editingSentenceTrackId = $state('');
 	let addingSentence = $state(false);
 	let newSentenceText = $state('');
 	let newSentenceLanguage = $state<'ja' | 'en'>('ja');
 	let newSentenceChapterId = $state('');
+	let newSentenceTrackId = $state('');
 	let sentenceValidationError = $state('');
+
+	// Track form state
+	let editingTrackId = $state<string | null>(null);
+	let editingTrackName = $state('');
+	let addingTrackToChapterId = $state<string | null>(null);
+	let newTrackName = $state('');
+	let trackValidationError = $state('');
+
+	// Track group collapsed state (keyed by track id / 'unassigned')
+	let collapsedTracks = $state<Set<string>>(new Set());
 
 	// Filter state
 	let filterLanguage = $state<'all' | 'ja' | 'en'>('all');
@@ -128,6 +147,8 @@
 	let deleteChapterTarget = $state<Chapter | null>(null);
 	let deleteSentenceDialogOpen = $state(false);
 	let deleteSentenceTarget = $state<Sentence | null>(null);
+	let deleteTrackDialogOpen = $state(false);
+	let deleteTrackTarget = $state<Track | null>(null);
 
 	// Form field refs (for auto-focus when a form opens)
 	let newRootNameRef = $state<HTMLInputElement | null>(null);
@@ -135,6 +156,8 @@
 	let editChapterNameRef = $state<HTMLInputElement | null>(null);
 	let newSentenceTextRef = $state<HTMLTextAreaElement | null>(null);
 	let editSentenceTextRef = $state<HTMLTextAreaElement | null>(null);
+	let newTrackNameRef = $state<HTMLInputElement | null>(null);
+	let editTrackNameRef = $state<HTMLInputElement | null>(null);
 
 	// --- Derived ---
 	let flatChapters = $derived(flattenChapterTree(chapters));
@@ -161,6 +184,51 @@
 			counts.set(s.chapterId, (counts.get(s.chapterId) || 0) + 1);
 		}
 		return counts;
+	});
+
+	/** Sentences grouped by track (getChapterTracks order). Sentences whose
+	   trackId has no track go under one untitled group, last. In the
+	   chapter-filtered view every track of the chapter is shown (empty ones
+	   included) so freshly added tracks are visible immediately. */
+	interface TrackGroup {
+		key: string;
+		track: Track | null;
+		label: string;
+		sentences: Sentence[];
+	}
+
+	const UNASSIGNED_TRACK_KEY = 'unassigned';
+
+	let groupedSentences = $derived.by((): TrackGroup[] => {
+		const trackById = new Map(tracks.map((t) => [t.id, t]));
+		const groups = new Map<string, TrackGroup>();
+		for (const s of filteredSentences) {
+			const track = trackById.get(s.trackId) ?? null;
+			const key = track?.id ?? UNASSIGNED_TRACK_KEY;
+			let group = groups.get(key);
+			if (!group) {
+				group = { key, track, label: track?.name ?? 'トラックなし', sentences: [] };
+				groups.set(key, group);
+			}
+			group.sentences.push(s);
+		}
+		if (filterChapterId !== 'all') {
+			for (const t of getChapterTracks(filterChapterId, tracks)) {
+				if (!groups.has(t.id)) {
+					groups.set(t.id, { key: t.id, track: t, label: t.name, sentences: [] });
+				}
+			}
+		}
+		for (const group of groups.values()) {
+			group.sentences.sort((a, b) => a.order - b.order);
+		}
+		const chapterPos = new Map(flatChapters.map((c, i) => [c.id, i]));
+		const groupPos = (g: TrackGroup): number => {
+			if (!g.track) return Number.MAX_SAFE_INTEGER;
+			const pos = chapterPos.get(g.track.chapterId) ?? Number.MAX_SAFE_INTEGER - 1;
+			return pos * 1000 + g.track.order;
+		};
+		return [...groups.values()].sort((a, b) => groupPos(a) - groupPos(b));
 	});
 
 	/** Distinct languages among the chapter's direct sentences (JA first).
@@ -215,6 +283,7 @@
 	$effect(() => {
 		chapters = loadChapters();
 		sentences = loadSentences();
+		tracks = loadTracks();
 	});
 
 	// --- Chapter operations ---
@@ -318,6 +387,7 @@
 		if (!deleteChapterTarget) return;
 		deleteChapter(deleteChapterTarget.id);
 		deleteChapterTarget = null;
+		deleteChapterDialogOpen = false;
 		refreshData();
 	}
 
@@ -351,6 +421,109 @@
 		refreshData();
 	}
 
+	// --- Track operations ---
+	function getTrackName(trackId: string): string {
+		return tracks.find((t) => t.id === trackId)?.name ?? '';
+	}
+
+	function toggleTrackCollapse(key: string) {
+		const newSet = new Set(collapsedTracks);
+		if (newSet.has(key)) {
+			newSet.delete(key);
+		} else {
+			newSet.add(key);
+		}
+		collapsedTracks = newSet;
+	}
+
+	function startAddTrack(chapterId: string) {
+		cancelAllEdits();
+		addingTrackToChapterId = chapterId;
+		newTrackName = '';
+		trackValidationError = '';
+	}
+
+	function confirmAddTrack() {
+		if (!addingTrackToChapterId) return;
+		if (!newTrackName.trim()) {
+			trackValidationError = 'トラック名は必須です';
+			return;
+		}
+		addTrack(addingTrackToChapterId, newTrackName);
+		addingTrackToChapterId = null;
+		newTrackName = '';
+		trackValidationError = '';
+		refreshData();
+	}
+
+	function cancelAddTrack() {
+		addingTrackToChapterId = null;
+		newTrackName = '';
+		trackValidationError = '';
+	}
+
+	function startEditTrack(track: Track) {
+		cancelAllEdits();
+		editingTrackId = track.id;
+		editingTrackName = track.name;
+		trackValidationError = '';
+	}
+
+	function confirmEditTrack() {
+		if (!editingTrackId) return;
+		if (!editingTrackName.trim()) {
+			trackValidationError = 'トラック名は必須です';
+			return;
+		}
+		updateTrack(editingTrackId, { name: editingTrackName.trim() });
+		editingTrackId = null;
+		editingTrackName = '';
+		trackValidationError = '';
+		refreshData();
+	}
+
+	function cancelEditTrack() {
+		editingTrackId = null;
+		editingTrackName = '';
+		trackValidationError = '';
+	}
+
+	function confirmDeleteTrack() {
+		if (!deleteTrackTarget) return;
+		deleteTrack(deleteTrackTarget.id);
+		deleteTrackTarget = null;
+		deleteTrackDialogOpen = false;
+		refreshData();
+	}
+
+	// --- Track reorder (swap order with adjacent sibling in the chapter) ---
+
+	function getTrackSiblings(trackId: string): Track[] {
+		const track = tracks.find((t) => t.id === trackId);
+		if (!track) return [];
+		return getChapterTracks(track.chapterId, tracks);
+	}
+
+	function canMoveTrack(track: Track, direction: -1 | 1): boolean {
+		const siblings = getTrackSiblings(track.id);
+		const idx = siblings.findIndex((t) => t.id === track.id);
+		if (idx === -1) return false;
+		const target = idx + direction;
+		return target >= 0 && target < siblings.length;
+	}
+
+	function moveTrack(track: Track, direction: -1 | 1): void {
+		const siblings = getTrackSiblings(track.id);
+		const idx = siblings.findIndex((t) => t.id === track.id);
+		const target = idx + direction;
+		if (idx === -1 || target < 0 || target >= siblings.length) return;
+		const other = siblings[target];
+		// Swap order values so the groups re-sort correctly
+		updateTrack(track.id, { order: other.order });
+		updateTrack(other.id, { order: track.order });
+		refreshData();
+	}
+
 	// --- Sentence operations ---
 	function startAddSentence() {
 		cancelAllEdits();
@@ -358,6 +531,7 @@
 		newSentenceText = '';
 		newSentenceLanguage = 'ja';
 		newSentenceChapterId = filterChapterId !== 'all' ? filterChapterId : chapters[0]?.id || '';
+		newSentenceTrackId = getChapterTracks(newSentenceChapterId, tracks)[0]?.id ?? '';
 		sentenceValidationError = '';
 	}
 
@@ -374,7 +548,12 @@
 			sentenceValidationError = 'チャプターを選択してください';
 			return;
 		}
-		addSentence(newSentenceChapterId, newSentenceText.trim(), newSentenceLanguage);
+		addSentence(
+			newSentenceChapterId,
+			newSentenceText.trim(),
+			newSentenceLanguage,
+			newSentenceTrackId || undefined
+		);
 		addingSentence = false;
 		newSentenceText = '';
 		sentenceValidationError = '';
@@ -393,6 +572,7 @@
 		editingSentenceText = sentence.text;
 		editingSentenceLanguage = sentence.language;
 		editingSentenceChapterId = sentence.chapterId;
+		editingSentenceTrackId = sentence.trackId;
 		sentenceValidationError = '';
 	}
 
@@ -408,7 +588,8 @@
 		updateSentence(editingSentenceId, {
 			text: editingSentenceText.trim(),
 			language: editingSentenceLanguage,
-			chapterId: editingSentenceChapterId
+			chapterId: editingSentenceChapterId,
+			...(editingSentenceTrackId ? { trackId: editingSentenceTrackId } : {})
 		});
 		editingSentenceId = null;
 		sentenceValidationError = '';
@@ -424,6 +605,7 @@
 		if (!deleteSentenceTarget) return;
 		deleteSentence(deleteSentenceTarget.id);
 		deleteSentenceTarget = null;
+		deleteSentenceDialogOpen = false;
 		refreshData();
 	}
 
@@ -433,6 +615,11 @@
 		addingRootChapter = false;
 		addingSentence = false;
 		editingSentenceId = null;
+		addingTrackToChapterId = null;
+		newTrackName = '';
+		editingTrackId = null;
+		editingTrackName = '';
+		trackValidationError = '';
 		sentenceValidationError = '';
 		chapterValidationError = '';
 	}
@@ -440,6 +627,7 @@
 	function refreshData() {
 		chapters = loadChapters();
 		sentences = loadSentences();
+		tracks = loadTracks();
 		// Reset chapter filter if the selected chapter no longer exists
 		if (filterChapterId !== 'all' && !chapters.some((c) => c.id === filterChapterId)) {
 			filterChapterId = 'all';
@@ -459,6 +647,8 @@
 		if (editingChapterId) editChapterNameRef?.focus();
 		if (addingSentence) newSentenceTextRef?.focus();
 		if (editingSentenceId) editSentenceTextRef?.focus();
+		if (addingTrackToChapterId) newTrackNameRef?.focus();
+		if (editingTrackId) editTrackNameRef?.focus();
 	});
 
 	// ---------------------------------------------------------------------------
@@ -467,9 +657,10 @@
 
 	function handleExport(): void {
 		const data = {
-			version: 1,
+			version: 2,
 			exportedAt: new Date().toISOString(),
 			chapters,
+			tracks: loadTracks(),
 			sentences
 		};
 
@@ -503,11 +694,14 @@
 			return { valid: false, error: '不正なJSONファイルです' };
 		}
 		const obj = data as Record<string, unknown>;
-		if (obj.version !== 1) {
+		if (obj.version !== 2) {
 			return { valid: false, error: '対応していないバージョンです' };
 		}
 		if (!Array.isArray(obj.chapters)) {
 			return { valid: false, error: 'チャプターデータがありません' };
+		}
+		if (!Array.isArray(obj.tracks)) {
+			return { valid: false, error: 'トラックデータがありません' };
 		}
 		if (!Array.isArray(obj.sentences)) {
 			return { valid: false, error: '文章データがありません' };
@@ -524,6 +718,21 @@
 			}
 		}
 
+		// Validate required fields for tracks
+		for (const t of obj.tracks) {
+			if (typeof t !== 'object' || t === null) {
+				return { valid: false, error: '不正なトラックデータです' };
+			}
+			const track = t as Record<string, unknown>;
+			if (
+				typeof track.id !== 'string' ||
+				typeof track.chapterId !== 'string' ||
+				typeof track.name !== 'string'
+			) {
+				return { valid: false, error: 'トラックに必須フィールドがありません' };
+			}
+		}
+
 		// Validate required fields for sentences
 		for (const s of obj.sentences) {
 			if (typeof s !== 'object' || s === null) {
@@ -533,6 +742,7 @@
 			if (
 				typeof sentence.id !== 'string' ||
 				typeof sentence.chapterId !== 'string' ||
+				typeof sentence.trackId !== 'string' ||
 				typeof sentence.text !== 'string'
 			) {
 				return { valid: false, error: '文章に必須フィールドがありません' };
@@ -559,6 +769,7 @@
 				}
 
 				const importedChapters = data.chapters as Chapter[];
+				const importedTracks = data.tracks as Track[];
 				const importedSentences = data.sentences as Sentence[];
 
 				// Merge by ID: existing → overwrite, new → add
@@ -570,6 +781,14 @@
 				const mergedChapters = Array.from(chapterMap.values());
 				saveChapters(mergedChapters);
 
+				const existingTracks = loadTracks();
+				const trackMap = new Map(existingTracks.map((t) => [t.id, t]));
+				for (const t of importedTracks) {
+					trackMap.set(t.id, t);
+				}
+				const mergedTracks = Array.from(trackMap.values());
+				saveTracks(mergedTracks);
+
 				const existingSentences = loadSentences();
 				const sentenceMap = new Map(existingSentences.map((s) => [s.id, s]));
 				for (const s of importedSentences) {
@@ -580,13 +799,15 @@
 
 				// Update local state
 				chapters = mergedChapters;
+				tracks = mergedTracks;
 				sentences = mergedSentences;
 
 				const importedChapterCount = importedChapters.length;
+				const importedTrackCount = importedTracks.length;
 				const importedSentenceCount = importedSentences.length;
 				importMessage = {
 					type: 'success',
-					text: `${importedChapterCount}件のチャプター、${importedSentenceCount}件の文章をインポートしました`
+					text: `${importedChapterCount}件のチャプター、${importedTrackCount}件のトラック、${importedSentenceCount}件の文章をインポートしました`
 				};
 			} catch {
 				importMessage = { type: 'error', text: '不正なJSONファイルです' };
@@ -662,6 +883,32 @@
 		>
 			{label}
 		</span>
+	{/snippet}
+
+	{#snippet addTrackForm()}
+		<div class="mb-2 flex flex-col gap-2 rounded-md border border-border bg-background p-2">
+			<Input
+				type="text"
+				bind:value={newTrackName}
+				bind:ref={newTrackNameRef}
+				placeholder="トラック名"
+				onkeydown={(e) => handleChapterKeydown(e, confirmAddTrack, cancelAddTrack)}
+				data-testid="new-track-name"
+			/>
+			{#if trackValidationError}
+				<div
+					class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
+					role="alert"
+					data-testid="track-validation-error"
+				>
+					{trackValidationError}
+				</div>
+			{/if}
+			<div class="flex gap-2">
+				<Button size="sm" class="h-11" onclick={confirmAddTrack} data-testid="confirm-add-track">追加</Button>
+				<Button size="sm" variant="outline" class="h-11" onclick={cancelAddTrack}>キャンセル</Button>
+			</div>
+		</div>
 	{/snippet}
 
 	<h1 class="mb-1 text-2xl font-bold">管理</h1>
@@ -953,9 +1200,26 @@
 				</div>
 			</div>
 
-			<Button onclick={startAddSentence} disabled={addingSentence} class="h-11" data-testid="add-sentence">
-				新しい文章
-			</Button>
+			<div class="flex flex-wrap items-center gap-2">
+				<Button onclick={startAddSentence} disabled={addingSentence} class="h-11" data-testid="add-sentence">
+					新しい文章
+				</Button>
+				{#if filterChapterId !== 'all'}
+					<Button
+						variant="outline"
+						onclick={() => startAddTrack(filterChapterId)}
+						disabled={addingTrackToChapterId === filterChapterId}
+						class="h-11"
+						data-testid="add-track"
+					>
+						+ トラックを追加
+					</Button>
+				{/if}
+			</div>
+
+			{#if filterChapterId !== 'all' && addingTrackToChapterId === filterChapterId}
+				{@render addTrackForm()}
+			{/if}
 
 			{#if addingSentence}
 				<div class="sentence-form mb-4 mt-2 flex flex-col gap-2 rounded-md border border-border bg-background p-2">
@@ -976,8 +1240,8 @@
 					>
 						{newSentenceText.length}/200
 					</div>
-					<div class="flex gap-3">
-						<div class="flex flex-1 flex-col gap-1">
+					<div class="flex flex-wrap gap-3">
+						<div class="flex min-w-36 flex-1 flex-col gap-1">
 							<Label for="new-sentence-lang">言語:</Label>
 							<Select.Root
 								type="single"
@@ -993,12 +1257,16 @@
 								</Select.Content>
 							</Select.Root>
 						</div>
-						<div class="flex flex-1 flex-col gap-1">
+						<div class="flex min-w-36 flex-1 flex-col gap-1">
 							<Label for="new-sentence-chapter">チャプター:</Label>
 							<Select.Root
 								type="single"
 								value={newSentenceChapterId}
-								onValueChange={(v: string) => (newSentenceChapterId = v)}
+								onValueChange={(v: string) => {
+									newSentenceChapterId = v;
+									// Reset the track selection to the new chapter's first track
+									newSentenceTrackId = getChapterTracks(v, tracks)[0]?.id ?? '';
+								}}
 							>
 								<Select.Trigger id="new-sentence-chapter" data-testid="new-sentence-chapter" class="w-full">
 									<span data-slot="select-value">{getChapterName(newSentenceChapterId) || '選択してください'}</span>
@@ -1006,6 +1274,26 @@
 								<Select.Content>
 									{#each flatChapters as chapter (chapter.id)}
 										<Select.Item value={chapter.id}>{chapter.name}</Select.Item>
+									{/each}
+								</Select.Content>
+							</Select.Root>
+						</div>
+						<div class="flex min-w-36 flex-1 flex-col gap-1">
+							<Label for="new-sentence-track">トラック:</Label>
+							<Select.Root
+								type="single"
+								value={newSentenceTrackId}
+								onValueChange={(v: string) => (newSentenceTrackId = v)}
+							>
+								<Select.Trigger id="new-sentence-track" data-testid="sentence-form-track" class="w-full">
+									<span data-slot="select-value">{getTrackName(newSentenceTrackId) || 'トラック1'}</span>
+								</Select.Trigger>
+								<Select.Content>
+									{#each getChapterTracks(newSentenceChapterId, tracks) as track (track.id)}
+										<Select.Item value={track.id}>{track.name}</Select.Item>
+									{:else}
+										<!-- Storage auto-creates トラック1 when the chapter has none -->
+										<Select.Item value="">トラック1</Select.Item>
 									{/each}
 								</Select.Content>
 							</Select.Root>
@@ -1027,114 +1315,8 @@
 				</div>
 			{/if}
 
-			<div class="sentence-list mt-3 flex flex-col gap-2">
-				{#each filteredSentences as sentence (sentence.id)}
-					<div class="sentence-item overflow-hidden rounded-md border border-border bg-background">
-						{#if editingSentenceId === sentence.id}
-							<div class="flex flex-col gap-2 p-2">
-								<Textarea
-									bind:value={editingSentenceText}
-									bind:ref={editSentenceTextRef}
-									maxlength={201}
-									onkeydown={(e) => {
-										if (e.key === 'Escape') cancelEditSentence();
-									}}
-									data-testid="edit-sentence-text"
-								/>
-								<div
-									class="char-count text-right text-xs text-muted-foreground"
-									class:font-semibold={editingSentenceOverLimit}
-									class:text-destructive={editingSentenceOverLimit}
-								>
-									{editingSentenceText.length}/200
-								</div>
-								<div class="flex gap-3">
-									<div class="flex flex-1 flex-col gap-1">
-										<Label for="edit-sentence-lang-{sentence.id}">言語:</Label>
-										<Select.Root
-											type="single"
-											value={editingSentenceLanguage}
-											onValueChange={(v: string) => (editingSentenceLanguage = v as 'ja' | 'en')}
-										>
-											<Select.Trigger id="edit-sentence-lang-{sentence.id}" data-testid="edit-sentence-lang" class="w-full">
-												<span data-slot="select-value">{languageLabel(editingSentenceLanguage)}</span>
-											</Select.Trigger>
-											<Select.Content>
-												<Select.Item value="ja">日本語</Select.Item>
-												<Select.Item value="en">English</Select.Item>
-											</Select.Content>
-										</Select.Root>
-									</div>
-									<div class="flex flex-1 flex-col gap-1">
-										<Label for="edit-sentence-chapter-{sentence.id}">チャプター:</Label>
-										<Select.Root
-											type="single"
-											value={editingSentenceChapterId}
-											onValueChange={(v: string) => (editingSentenceChapterId = v)}
-										>
-											<Select.Trigger id="edit-sentence-chapter-{sentence.id}" data-testid="edit-sentence-chapter" class="w-full">
-												<span data-slot="select-value">{getChapterName(editingSentenceChapterId) || '選択してください'}</span>
-											</Select.Trigger>
-											<Select.Content>
-												{#each flatChapters as chapter (chapter.id)}
-													<Select.Item value={chapter.id}>{chapter.name}</Select.Item>
-												{/each}
-											</Select.Content>
-										</Select.Root>
-									</div>
-								</div>
-								{#if sentenceValidationError}
-									<div
-										class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
-										role="alert"
-										data-testid="sentence-validation-error"
-									>
-										{sentenceValidationError}
-									</div>
-								{/if}
-								<div class="flex gap-2">
-									<Button size="sm" class="h-11" onclick={confirmEditSentence} data-testid="confirm-edit-sentence">保存</Button>
-									<Button size="sm" variant="outline" class="h-11" onclick={cancelEditSentence}>キャンセル</Button>
-								</div>
-							</div>
-						{:else}
-							<div class="sentence-content p-3">
-								<div class="sentence-header mb-2 flex flex-wrap items-center gap-2">
-									<span class="sentence-text min-w-0 flex-1 text-sm" data-testid="sentence-text">{sentence.text}</span>
-									{@render languageBadge(sentence.language, sentence.language === 'ja' ? '日本語' : 'English')}
-									<span class="chapter-badge max-w-30 truncate rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-										{getChapterName(sentence.chapterId)}
-									</span>
-								</div>
-								<div class="sentence-actions flex flex-wrap gap-2">
-									<Button
-										size="sm"
-										variant="outline"
-										onclick={() => startEditSentence(sentence)}
-										aria-label="文章を編集"
-										data-testid="edit-sentence"
-										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
-									>
-										編集
-									</Button>
-									<Button
-										size="sm"
-										variant="destructive"
-										onclick={() => {
-											deleteSentenceTarget = sentence;
-											deleteSentenceDialogOpen = true;
-										}}
-										aria-label="文章を削除"
-										data-testid="delete-sentence"
-										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
-									>
-										削除
-									</Button>
-								</div>
-							</div>
-						{/if}
-					</div>
-				{:else}
+			<div class="sentence-list mt-3 flex flex-col gap-3">
+				{#if filteredSentences.length === 0}
 					<div class="empty-state rounded-md border border-dashed border-border bg-muted/50 p-8 text-center text-muted-foreground">
 						{#if filterLanguage !== 'all' || filterChapterId !== 'all'}
 							<p>フィルターに一致する文章がありません</p>
@@ -1142,7 +1324,260 @@
 							<p>まだ文章がありません。「新しい文章」を追加してください。</p>
 						{/if}
 					</div>
+				{:else}
+				{#each groupedSentences as group (group.key)}
+					<div
+						class="track-group flex flex-col gap-2"
+						data-testid="track-group"
+						role="group"
+						aria-label={group.label}
+					>
+						<div class="track-header flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/50 p-2 transition-colors hover:bg-muted">
+							{#if group.track && editingTrackId === group.track.id}
+								<div class="flex flex-1 flex-col gap-2 rounded-md border border-border bg-background p-2">
+									<Input
+										type="text"
+										bind:value={editingTrackName}
+										bind:ref={editTrackNameRef}
+										onkeydown={(e) =>
+											handleChapterKeydown(e, confirmEditTrack, cancelEditTrack)}
+										data-testid="edit-track-name"
+									/>
+									{#if trackValidationError}
+										<div
+											class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
+											role="alert"
+											data-testid="track-validation-error"
+										>
+											{trackValidationError}
+										</div>
+									{/if}
+									<div class="flex gap-2">
+										<Button size="sm" class="h-11" onclick={confirmEditTrack} data-testid="confirm-edit-track">保存</Button>
+										<Button size="sm" variant="outline" class="h-11" onclick={cancelEditTrack}>キャンセル</Button>
+									</div>
+								</div>
+							{:else}
+								<button
+									type="button"
+									class="flex min-h-11 min-w-0 flex-1 select-none items-center gap-2 rounded-md text-left text-sm font-semibold outline-none transition-colors duration-[var(--motion-press)] focus-visible:ring-3 focus-visible:ring-ring/50"
+								onclick={() => toggleTrackCollapse(group.key)}
+								aria-expanded={!collapsedTracks.has(group.key)}
+								aria-label={`${group.label} を${collapsedTracks.has(group.key) ? '展開' : '折りたたむ'}`}
+							>
+									<span class="text-xs text-muted-foreground" aria-hidden="true">
+										{collapsedTracks.has(group.key) ? '▶' : '▼'}
+									</span>
+									<span class="track-name min-w-0 truncate" data-testid="track-name">{group.label}</span>
+									<span class="text-xs whitespace-nowrap text-muted-foreground">({group.sentences.length}文)</span>
+								</button>
+								{#if group.track}
+									{@const t = group.track}
+									<div class="track-actions flex shrink-0 flex-wrap items-center gap-2">
+										<div class="flex gap-1" role="group" aria-label="トラック並び替え">
+											<Button
+												size="sm"
+												variant="outline"
+												onclick={() => moveTrack(t, -1)}
+												aria-label="上へ移動"
+												data-testid="track-order-up"
+												disabled={!canMoveTrack(t, -1)}
+												class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+											>
+												↑
+											</Button>
+											<Button
+												size="sm"
+												variant="outline"
+												onclick={() => moveTrack(t, 1)}
+												aria-label="下へ移動"
+												data-testid="track-order-down"
+												disabled={!canMoveTrack(t, 1)}
+												class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+											>
+												↓
+											</Button>
+										</div>
+										<Button
+											size="sm"
+											variant="outline"
+											onclick={() => startEditTrack(t)}
+											aria-label="トラック名を編集"
+											data-testid="edit-track"
+											class="h-11 min-w-16 sm:h-8 sm:min-w-14"
+										>
+											編集
+										</Button>
+										{#if filterChapterId === 'all'}
+											<Button
+												size="sm"
+												variant="outline"
+												onclick={() => startAddTrack(t.chapterId)}
+												aria-label="トラックを追加"
+												data-testid="add-track"
+												class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+											>
+												+
+											</Button>
+										{/if}
+										<Button
+											size="sm"
+											variant="destructive"
+											onclick={() => {
+												deleteTrackTarget = t;
+												deleteTrackDialogOpen = true;
+											}}
+											aria-label="トラックを削除"
+											data-testid="delete-track"
+											class="h-11 min-w-16 sm:h-8 sm:min-w-14"
+										>
+											削除
+										</Button>
+									</div>
+								{/if}
+							{/if}
+						</div>
+
+						{#if filterChapterId === 'all' && group.track && addingTrackToChapterId === group.track.chapterId}
+							{@render addTrackForm()}
+						{/if}
+
+						{#if !collapsedTracks.has(group.key)}
+							{#each group.sentences as sentence (sentence.id)}
+								<div class="sentence-item overflow-hidden rounded-md border border-border bg-background">
+									{#if editingSentenceId === sentence.id}
+										<div class="flex flex-col gap-2 p-2">
+											<Textarea
+												bind:value={editingSentenceText}
+												bind:ref={editSentenceTextRef}
+												maxlength={201}
+												onkeydown={(e) => {
+													if (e.key === 'Escape') cancelEditSentence();
+												}}
+												data-testid="edit-sentence-text"
+											/>
+											<div
+												class="char-count text-right text-xs text-muted-foreground"
+												class:font-semibold={editingSentenceOverLimit}
+												class:text-destructive={editingSentenceOverLimit}
+											>
+												{editingSentenceText.length}/200
+											</div>
+											<div class="flex flex-wrap gap-3">
+												<div class="flex min-w-36 flex-1 flex-col gap-1">
+													<Label for="edit-sentence-lang-{sentence.id}">言語:</Label>
+													<Select.Root
+														type="single"
+														value={editingSentenceLanguage}
+														onValueChange={(v: string) => (editingSentenceLanguage = v as 'ja' | 'en')}
+													>
+														<Select.Trigger id="edit-sentence-lang-{sentence.id}" data-testid="edit-sentence-lang" class="w-full">
+															<span data-slot="select-value">{languageLabel(editingSentenceLanguage)}</span>
+														</Select.Trigger>
+														<Select.Content>
+															<Select.Item value="ja">日本語</Select.Item>
+															<Select.Item value="en">English</Select.Item>
+														</Select.Content>
+													</Select.Root>
+												</div>
+												<div class="flex min-w-36 flex-1 flex-col gap-1">
+													<Label for="edit-sentence-chapter-{sentence.id}">チャプター:</Label>
+													<Select.Root
+														type="single"
+														value={editingSentenceChapterId}
+														onValueChange={(v: string) => {
+															editingSentenceChapterId = v;
+															// Reset the track selection to the new chapter's first track
+															editingSentenceTrackId = getChapterTracks(v, tracks)[0]?.id ?? '';
+														}}
+													>
+														<Select.Trigger id="edit-sentence-chapter-{sentence.id}" data-testid="edit-sentence-chapter" class="w-full">
+															<span data-slot="select-value">{getChapterName(editingSentenceChapterId) || '選択してください'}</span>
+														</Select.Trigger>
+														<Select.Content>
+															{#each flatChapters as chapter (chapter.id)}
+																<Select.Item value={chapter.id}>{chapter.name}</Select.Item>
+															{/each}
+														</Select.Content>
+													</Select.Root>
+												</div>
+												<div class="flex min-w-36 flex-1 flex-col gap-1">
+													<Label for="edit-sentence-track-{sentence.id}">トラック:</Label>
+													<Select.Root
+														type="single"
+														value={editingSentenceTrackId}
+														onValueChange={(v: string) => (editingSentenceTrackId = v)}
+													>
+														<Select.Trigger id="edit-sentence-track-{sentence.id}" data-testid="sentence-form-track" class="w-full">
+															<span data-slot="select-value">{getTrackName(editingSentenceTrackId) || 'トラック1'}</span>
+														</Select.Trigger>
+														<Select.Content>
+															{#each getChapterTracks(editingSentenceChapterId, tracks) as track (track.id)}
+																<Select.Item value={track.id}>{track.name}</Select.Item>
+															{:else}
+																<!-- Storage auto-creates トラック1 when the chapter has none -->
+																<Select.Item value="">トラック1</Select.Item>
+															{/each}
+														</Select.Content>
+													</Select.Root>
+												</div>
+											</div>
+											{#if sentenceValidationError}
+												<div
+													class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
+													role="alert"
+													data-testid="sentence-validation-error"
+												>
+													{sentenceValidationError}
+												</div>
+											{/if}
+											<div class="flex gap-2">
+												<Button size="sm" class="h-11" onclick={confirmEditSentence} data-testid="confirm-edit-sentence">保存</Button>
+												<Button size="sm" variant="outline" class="h-11" onclick={cancelEditSentence}>キャンセル</Button>
+											</div>
+										</div>
+									{:else}
+										<div class="sentence-content p-3">
+											<div class="sentence-header mb-2 flex flex-wrap items-center gap-2">
+												<span class="sentence-text min-w-0 flex-1 text-sm" data-testid="sentence-text">{sentence.text}</span>
+												{@render languageBadge(sentence.language, sentence.language === 'ja' ? '日本語' : 'English')}
+												<span class="chapter-badge max-w-30 truncate rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+													{getChapterName(sentence.chapterId)}
+												</span>
+											</div>
+											<div class="sentence-actions flex flex-wrap gap-2">
+												<Button
+													size="sm"
+													variant="outline"
+													onclick={() => startEditSentence(sentence)}
+													aria-label="文章を編集"
+													data-testid="edit-sentence"
+													class="h-11 min-w-16 sm:h-8 sm:min-w-14"
+												>
+													編集
+												</Button>
+												<Button
+													size="sm"
+													variant="destructive"
+													onclick={() => {
+														deleteSentenceTarget = sentence;
+														deleteSentenceDialogOpen = true;
+													}}
+													aria-label="文章を削除"
+													data-testid="delete-sentence"
+													class="h-11 min-w-16 sm:h-8 sm:min-w-14"
+												>
+													削除
+												</Button>
+											</div>
+										</div>
+									{/if}
+								</div>
+							{/each}
+						{/if}
+					</div>
 				{/each}
+				{/if}
 			</div>
 		</section>
 	</div>
@@ -1385,6 +1820,28 @@
 					class="h-11"
 					onclick={confirmDeleteSentence}
 					data-testid="confirm-delete-sentence"
+				>
+					削除
+				</AlertDialog.Action>
+			</AlertDialog.Footer>
+		</AlertDialog.Content>
+	</AlertDialog.Root>
+
+	<AlertDialog.Root bind:open={deleteTrackDialogOpen}>
+		<AlertDialog.Content>
+			<AlertDialog.Header>
+				<AlertDialog.Title>トラックを削除</AlertDialog.Title>
+				<AlertDialog.Description>
+					このトラックと含まれる文章を削除しますか？<br />「{deleteTrackTarget?.name}」
+				</AlertDialog.Description>
+			</AlertDialog.Header>
+			<AlertDialog.Footer>
+				<AlertDialog.Cancel class="h-11" data-testid="cancel-delete-track">キャンセル</AlertDialog.Cancel>
+				<AlertDialog.Action
+					variant="destructive"
+					class="h-11"
+					onclick={confirmDeleteTrack}
+					data-testid="confirm-delete-track"
 				>
 					削除
 				</AlertDialog.Action>
