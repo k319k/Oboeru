@@ -168,6 +168,7 @@ describe('loadModelUrl — cache miss', () => {
 		expect(fetchMock).toHaveBeenCalledOnce();
 		expect(second).toMatch(/^blob:/);
 		expect(store.has('/models/vosk-model-small-ja-0.22.zip')).toBe(true);
+		expect(store.get('/models/vosk-model-small-ja-0.22.zip')?.size).toBe(2);
 		expect(first).toMatch(/^blob:/);
 	});
 });

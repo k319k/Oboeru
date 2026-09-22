@@ -37,31 +37,37 @@ export async function loadModelUrl(
 		const response = await fetch(url, { signal: controller.signal });
 		if (!response.ok || !response.body) return null;
 
+		// Stream both destinations from a single fetch: the archive goes to the
+		// Cache API while a byte-counting TransformStream feeds the Blob. No JS
+		// chunk array is ever materialized (the old code held 2-3 copies ~90MB
+		// in the JS heap, which spiked memory during TTS playback on Android).
+		const [cacheStream, blobStream] = response.body.tee();
+
+		const persist = (async () => {
+			try {
+				const cache = await caches.open(CACHE_NAME);
+				await cache.put(url, new Response(cacheStream));
+			} catch {
+				// Cache write failed (quota / private window) — memory blob still works.
+			}
+		})();
+
 		const totalHeader = response.headers.get('content-length');
 		const total = totalHeader ? Number(totalHeader) : null;
 
-		const reader = response.body.getReader();
-		// slice() hands Blob an ArrayBuffer-backed copy (BlobPart requires it).
-		const chunks: Uint8Array<ArrayBuffer>[] = [];
 		let loaded = 0;
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			chunks.push(value.slice());
-			loaded += value.byteLength;
-			onProgress?.({ loaded, total });
-		}
+		const counted = blobStream.pipeThrough(
+			new TransformStream<Uint8Array, Uint8Array>({
+				transform(chunk, controller) {
+					loaded += chunk.byteLength;
+					onProgress?.({ loaded, total });
+					controller.enqueue(chunk);
+				}
+			})
+		);
 
-		const blob = new Blob(chunks, { type: 'application/zip' });
-
-		// Persist for the next session — best effort only.
-		try {
-			const cache = await caches.open(CACHE_NAME);
-			await cache.put(url, new Response(blob));
-		} catch {
-			// Cache write failed (quota / private window) — memory blob still works.
-		}
-
+		const blob = await new Response(counted).blob();
+		await persist;
 		return URL.createObjectURL(blob);
 	} catch {
 		return null;
