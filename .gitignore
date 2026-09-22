@@ -24,3 +24,6 @@ playwright-report/
 
 # Orchestration tool state (.omo)
 .omo/
+
+# Brainstorm mockups (visual companion)
+.superpowers/
