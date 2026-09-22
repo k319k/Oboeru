@@ -132,6 +132,8 @@
 	let editingTrackId = $state<string | null>(null);
 	let editingTrackName = $state('');
 	let addingTrackToChapterId = $state<string | null>(null);
+	// Group-anchor for the inline add-track form (すべて view); null = top-level form
+	let addingTrackToTrackId = $state<string | null>(null);
 	let newTrackName = $state('');
 	let trackValidationError = $state('');
 
@@ -436,9 +438,10 @@
 		collapsedTracks = newSet;
 	}
 
-	function startAddTrack(chapterId: string) {
+	function startAddTrack(chapterId: string, trackId: string | null = null) {
 		cancelAllEdits();
 		addingTrackToChapterId = chapterId;
+		addingTrackToTrackId = trackId;
 		newTrackName = '';
 		trackValidationError = '';
 	}
@@ -451,6 +454,7 @@
 		}
 		addTrack(addingTrackToChapterId, newTrackName);
 		addingTrackToChapterId = null;
+		addingTrackToTrackId = null;
 		newTrackName = '';
 		trackValidationError = '';
 		refreshData();
@@ -458,6 +462,7 @@
 
 	function cancelAddTrack() {
 		addingTrackToChapterId = null;
+		addingTrackToTrackId = null;
 		newTrackName = '';
 		trackValidationError = '';
 	}
@@ -616,6 +621,7 @@
 		addingSentence = false;
 		editingSentenceId = null;
 		addingTrackToChapterId = null;
+		addingTrackToTrackId = null;
 		newTrackName = '';
 		editingTrackId = null;
 		editingTrackName = '';
@@ -1217,7 +1223,7 @@
 				{/if}
 			</div>
 
-			{#if filterChapterId !== 'all' && addingTrackToChapterId === filterChapterId}
+			{#if filterChapterId !== 'all' && addingTrackToChapterId === filterChapterId && addingTrackToTrackId === null}
 				{@render addTrackForm()}
 			{/if}
 
@@ -1412,7 +1418,7 @@
 											<Button
 												size="sm"
 												variant="outline"
-												onclick={() => startAddTrack(t.chapterId)}
+												onclick={() => startAddTrack(t.chapterId, t.id)}
 												aria-label="トラックを追加"
 												data-testid="add-track"
 												class="h-11 min-w-11 sm:h-8 sm:min-w-8"
@@ -1438,9 +1444,9 @@
 							{/if}
 						</div>
 
-						{#if filterChapterId === 'all' && group.track && addingTrackToChapterId === group.track.chapterId}
-							{@render addTrackForm()}
-						{/if}
+					{#if filterChapterId === 'all' && group.track && addingTrackToTrackId === group.track.id}
+						{@render addTrackForm()}
+					{/if}
 
 						{#if !collapsedTracks.has(group.key)}
 							{#each group.sentences as sentence (sentence.id)}

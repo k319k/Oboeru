@@ -604,6 +604,23 @@ const tracksSeed = {
 	]
 };
 
+// Edit + chapter move into a chapter that has no tracks yet
+const chapterMoveSeed = {
+	chapters: [
+		{ id: 'c1', name: '移動元', parentId: null, order: 1 },
+		{ id: 'c2', name: 'トラックなし章', parentId: null, order: 2 }
+	],
+	tracks: [
+		{ id: 't1', chapterId: 'c1', name: '前半', order: 1 },
+		{ id: 't2', chapterId: 'c1', name: '後半', order: 2 }
+	],
+	sentences: [
+		{ id: 'mv1', chapterId: 'c1', trackId: 't1', text: '移動される文章', language: 'ja', order: 1 }
+	]
+};
+
+const STORAGE_KEY = 'oboeru:v1';
+
 /** Locate a track group by its header name (hasText on the whole group is
    ambiguous once a sentence containing the track name is inside another
    group, e.g. after moving sentences between tracks). */
@@ -757,5 +774,54 @@ test.describe('Track groups', () => {
 		const names = page.getByTestId('track-name');
 		await expect(names.nth(0)).toHaveText('後半');
 		await expect(names.nth(1)).toHaveText('前半');
+	});
+
+	test('add-track form renders exactly once in the all-tracks view', async ({ page }) => {
+		await gotoManage(page, tracksSeed);
+		await page.getByRole('tab', { name: '文章' }).click();
+
+		// すべて view: チャプター1 has two track groups, each offering +
+		await expect(page.getByTestId('add-track')).toHaveCount(2);
+		await page.getByTestId('add-track').first().click();
+
+		// Inline form is anchored to the clicked group only — single input on screen
+		await expect(page.getByTestId('new-track-name')).toHaveCount(1);
+		await page.getByTestId('new-track-name').fill('第3のトラック');
+		await page.getByTestId('confirm-add-track').click();
+		await expect(page.getByTestId('new-track-name')).toHaveCount(0);
+
+		// Added (empty) track shows up in the chapter-filtered view
+		await pickOption(page, 'chapter-filter', 'チャプター1');
+		await expect(page.getByTestId('track-group')).toHaveCount(3);
+		await expect(page.getByTestId('track-name').filter({ hasText: '第3のトラック' })).toBeVisible();
+	});
+
+	test('moving a sentence to a trackless chapter lands in the auto-created track', async ({
+		page
+	}) => {
+		await gotoManage(page, chapterMoveSeed);
+		await page.getByRole('tab', { name: '文章' }).click();
+		await pickOption(page, 'chapter-filter', '移動元');
+
+		const row = page.locator('.sentence-item', { hasText: '移動される文章' });
+		await row.getByTestId('edit-sentence').click();
+		// Chapter selector → chapter that has no tracks (selector falls back to トラック1)
+		await pickOption(page, 'edit-sentence-chapter', 'トラックなし章');
+		await page.getByTestId('confirm-edit-sentence').click();
+
+		// UI: the sentence now renders under the new chapter's トラック1 group
+		await pickOption(page, 'chapter-filter', 'トラックなし章');
+		await expect(page.getByTestId('track-name')).toHaveText('トラック1');
+		await expect(page.locator('.track-header')).toContainText('(1文)');
+		await expect(page.getByTestId('sentence-text')).toHaveCount(1);
+		await expect(page.getByTestId('sentence-text')).toContainText('移動される文章');
+
+		// Storage: the saved trackId belongs to the new chapter (c2)
+		const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)!), STORAGE_KEY);
+		const moved = stored.sentences.find((s: { id: string }) => s.id === 'mv1');
+		expect(moved.chapterId).toBe('c2');
+		const savedTrack = stored.tracks.find((t: { id: string }) => t.id === moved.trackId);
+		expect(savedTrack).toBeTruthy();
+		expect(savedTrack.chapterId).toBe('c2');
 	});
 });

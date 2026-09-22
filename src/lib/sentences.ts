@@ -270,7 +270,21 @@ export function updateSentence(id: string, updates: Partial<Omit<Sentence, 'id'>
 			throw new Error('Sentence text must not exceed 200 characters');
 		}
 	}
-	sentences[idx] = { ...sentences[idx], ...updates };
+	const next: Sentence = { ...sentences[idx], ...updates };
+	// Track integrity: the saved trackId must belong to the sentence's chapter.
+	// Chapter moves without a (valid) trackId resolve the chapter's first track,
+	// auto-creating the default one for trackless chapters (mirrors addSentence).
+	const chapterTracks = getChapterTracks(next.chapterId, loadTracks());
+	if (!chapterTracks.some((t) => t.id === next.trackId)) {
+		if (chapterTracks.length === 0) {
+			const track: Track = { id: `tr-${next.chapterId}`, chapterId: next.chapterId, name: 'トラック1', order: 1 };
+			saveTracks([...loadTracks(), track]);
+			next.trackId = track.id;
+		} else {
+			next.trackId = chapterTracks[0].id;
+		}
+	}
+	sentences[idx] = next;
 	saveSentences(sentences);
 }
 
