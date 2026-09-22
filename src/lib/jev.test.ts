@@ -12,10 +12,11 @@ describe('buildJudgeRequest', () => {
 					type: 'noul',
 					instructions:
 						'Does `transcription` express the same spoken utterance as `reference`? ' +
-						'Notation differences that preserve the reading count as identical: kanji vs kana ' +
-						'(はじめ = 初め), comma styles (", " vs "、"), trailing punctuation, and minor ' +
-						'colloquial variants of the same word (みな = みんな). ' +
-						'Different word, different reading, missing or extra content counts as different.',
+						'Compare PRONUNCIATION, not spelling: kanji and kana spellings of the same word ' +
+						'(争う = あらそう, 暮らし = くらし, はじめ = 初め) are THE SAME word. ' +
+						'If a native speaker reading both sentences aloud would pronounce them identically ' +
+						'(ignoring punctuation, commas, spacing, and trailing marks), answer true. ' +
+						'Different words, different pronunciations, or missing/extra content → false.',
 					criteria: {
 						true: 'Same utterance by a native reading, allowing notation and punctuation variants',
 						false: 'Different utterance, wrong reading, or missing/extra content'
