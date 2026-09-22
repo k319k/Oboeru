@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { gotoWithSeed } from './helpers';
 import { defaultChapters, defaultSentences } from '../src/lib/default-sentences';
 

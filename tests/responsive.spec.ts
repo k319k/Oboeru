@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './fixtures';
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { gotoWithSeed } from './helpers';
 import { mockTtsApi } from './tts-mock';

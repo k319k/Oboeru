@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 test.describe('App shell', () => {
 	test('skip link: first Tab focuses skip link, Enter moves focus to main content', async ({

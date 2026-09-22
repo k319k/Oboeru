@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './fixtures';
 import { mockTtsApi, silentWavBytes, type TtsMock } from './tts-mock';
 
 // ---------------------------------------------------------------------------

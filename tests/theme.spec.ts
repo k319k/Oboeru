@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 test.describe('Theme', () => {
 	test('toggle adds and removes .dark on <html>', async ({ page }) => {
