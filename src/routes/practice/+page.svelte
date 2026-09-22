@@ -14,6 +14,7 @@
 	import { startRecording } from '$lib/recorder';
 	import { transcribe } from '$lib/transcribe';
 	import { similarity } from '$lib/similarity';
+	import { normalizeJapaneseText } from '$lib/normalize';
 	import { tokenizeSentence, ProgressAligner } from '$lib/alignment';
 	import { createLiveStt, terminateLiveStt } from '$lib/livestt/engine';
 	import type { LiveSttEngine, LiveWord } from '$lib/livestt/types';
@@ -867,7 +868,9 @@
 
 			transcribedText = text;
 			pendingBlob = null;
-			const scoreValue = Math.round(similarity(s.text, text));
+			const scoreValue = Math.round(
+				similarity(normalizeJapaneseText(s.text), normalizeJapaneseText(text))
+			);
 			score = scoreValue;
 			totalScore += scoreValue;
 			completedCount++;
