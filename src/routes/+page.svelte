@@ -28,8 +28,8 @@
 		// E2E drives the practice page with ?e2e=1 and mocks the engine; the top
 		// page must not trigger a real model download there.
 		if (import.meta.env.DEV && $page.url.searchParams.get('e2e') === '1') return;
-		// The studio/dev models proxy answers 503 without .stt-models/ — warm
-		// silently no-ops (createLiveStt resolves null), so this is safe in dev.
+		// The models proxy answers 503/404 (or 502 if the upstream fetch fails)
+		// when no archive is served — warm resolves null and silently no-ops.
 		warmState = 'loading';
 		createLiveStt({
 			lang: getLastLang(),
