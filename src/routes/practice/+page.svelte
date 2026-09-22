@@ -6,6 +6,7 @@
 	import {
 		loadChapters,
 		loadSentences,
+		loadTracks,
 		flattenChapterTree,
 		getChapterSentences
 	} from '$lib/sentences';
@@ -25,7 +26,7 @@
 		clearPracticeProgress,
 		type PracticeProgress
 	} from '$lib/practice-prefs';
-	import type { Sentence, PracticeState } from '$lib/types';
+	import type { Sentence, PracticeState, Track } from '$lib/types';
 	import { Button } from '$lib/components/ui/button';
 	import { Progress } from '$lib/components/ui/progress';
 	import {
@@ -106,6 +107,10 @@
 
 	let chapterName: string = $state('');
 
+	// Tracks of the practiced chapter (loaded once at session start) — powers
+	// the current-track badge in the header.
+	let tracks: Track[] = $state([]);
+
 	// End-of-session confirmation dialog (終了 button / Esc)
 	let endDialogOpen: boolean = $state(false);
 
@@ -152,6 +157,17 @@
 	let progress = $derived(
 		sentences.length > 0 ? `${currentIndex + 1} / ${sentences.length}` : ''
 	);
+	// Track name of the current sentence ('' when unknown / unnamed).
+	// Re-derives when sentences is replaced (間違えた文だけやり直す) or moves.
+	let currentTrackName = $derived(
+		tracks.find((t) => t.id === sentences[currentIndex]?.trackId)?.name ?? ''
+	);
+	// The badge only makes sense when the chapter actually splits into tracks —
+	// single-track chapters keep the classic header (badge hidden, plain progress).
+	let chapterTrackCount = $derived(
+		sentences[0] ? tracks.filter((t) => t.chapterId === sentences[0]?.chapterId).length : 0
+	);
+	let showTrackBadge = $derived(chapterTrackCount > 1 && currentTrackName !== '');
 	let averageScore = $derived(
 		completedCount > 0 ? Math.round(totalScore / completedCount) : 0
 	);
@@ -995,6 +1011,7 @@
 		sentences = chapterSentences;
 		currentIndex = 0;
 		currentChapterId = chapterId;
+		tracks = loadTracks();
 
 		const saved = loadPracticeProgress(chapterId);
 		const hasProgress =
@@ -1097,6 +1114,14 @@
 			<h1 class="min-w-0 shrink-0 truncate text-sm font-bold sm:text-base" data-testid="chapter-name">
 				{chapterName}
 			</h1>
+			{#if showTrackBadge}
+				<span
+					class="inline-flex max-w-28 shrink-0 items-center truncate rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground"
+					data-testid="track-badge"
+				>
+					{currentTrackName}
+				</span>
+			{/if}
 			<div class="flex min-w-0 flex-1 flex-col items-center gap-1" data-testid="progress">
 				<Progress
 					value={currentIndex + 1}
@@ -1105,7 +1130,9 @@
 					aria-label="進捗"
 					data-testid="progress-bar"
 				/>
-				<span class="text-xs text-muted-foreground tabular-nums">{progress}</span>
+				<span class="text-xs text-muted-foreground tabular-nums">
+					{#if showTrackBadge}{currentTrackName} · {progress}{:else}{progress}{/if}
+				</span>
 			</div>
 			<Button
 				variant="outline"

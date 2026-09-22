@@ -16,12 +16,21 @@ const PRACTICE_UI_KEY = 'oboeru:practice-ui:v1';
 interface SeedSentence {
 	id: string;
 	chapterId: string;
+	trackId?: string;
 	text: string;
 	language: 'ja' | 'en';
 	order: number;
 }
 
+interface SeedTrack {
+	id: string;
+	chapterId: string;
+	name: string;
+	order: number;
+}
+
 interface SeedOptions {
+	tracks?: SeedTrack[];
 	sentences?: SeedSentence[];
 	settings?: {
 		threshold?: number;
@@ -57,8 +66,11 @@ async function seedPractice(page: Page, opts: SeedOptions = {}) {
 	};
 
 	await page.addInitScript(
-		({ storageKey, settingsKey, practiceUiKey, chapters, sentences, settings, practicePrefs }) => {
-			localStorage.setItem(storageKey, JSON.stringify({ chapters, sentences }));
+		({ storageKey, settingsKey, practiceUiKey, chapters, tracks, sentences, settings, practicePrefs }) => {
+			localStorage.setItem(
+				storageKey,
+				JSON.stringify({ chapters, tracks, sentences })
+			);
 			localStorage.setItem(settingsKey, JSON.stringify(settings));
 			if (practicePrefs) {
 				localStorage.setItem(practiceUiKey, JSON.stringify(practicePrefs));
@@ -69,6 +81,7 @@ async function seedPractice(page: Page, opts: SeedOptions = {}) {
 			settingsKey: SETTINGS_KEY,
 			practiceUiKey: PRACTICE_UI_KEY,
 			chapters,
+			tracks: opts.tracks,
 			sentences,
 			settings,
 			practicePrefs: opts.practicePrefs ?? null
@@ -459,6 +472,40 @@ test.describe('Practice — Manual controls', () => {
 
 		await page.getByTestId('skip-btn').click();
 		await expect(bar).toHaveAttribute('aria-valuenow', '2');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Tracks (二段ソート + トラック名バッジ)
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — Tracks', () => {
+	test('orders by track then sentence order; track badge follows the current track', async ({
+		page
+	}) => {
+		await setupPractice(page, {
+			transcribe: [{ text: 'x' }],
+			tracks: [
+				{ id: 'tr-a', chapterId: 'ch-ja-01', name: '基本', order: 1 },
+				{ id: 'tr-b', chapterId: 'ch-ja-01', name: '応用', order: 2 }
+			],
+			sentences: [
+				// トラックB (order 2) の文 order 1 — 文内順は小さいが2番目に来る
+				{ id: 'ja-01', chapterId: 'ch-ja-01', trackId: 'tr-b', text: 'こんにちは。', language: 'ja', order: 1 },
+				// トラックA (order 1) の文 order 2 — 文内順は大きいが1番目に来る
+				{ id: 'ja-02', chapterId: 'ch-ja-01', trackId: 'tr-a', text: 'おはようございます。', language: 'ja', order: 2 }
+			]
+		});
+
+		// Two-level sort: track A's sentence first despite the higher in-track order
+		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
+		await expect(page.getByTestId('track-badge')).toHaveText('基本');
+		await expect(page.getByTestId('progress')).toHaveText('基本 · 1 / 2');
+
+		await page.getByTestId('skip-btn').click();
+		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。');
+		await expect(page.getByTestId('track-badge')).toHaveText('応用');
+		await expect(page.getByTestId('progress')).toHaveText('応用 · 2 / 2');
 	});
 });
 
