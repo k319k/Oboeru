@@ -16,6 +16,7 @@
 	import { similarity } from '$lib/similarity';
 	import { tokenizeSentence, ProgressAligner } from '$lib/alignment';
 	import { createLiveStt, terminateLiveStt } from '$lib/livestt/engine';
+	import { setLastLang } from '$lib/last-lang';
 	import type { LiveSttEngine, LiveWord } from '$lib/livestt/types';
 	import type { MockWordStep } from '$lib/livestt/mock-engine';
 	import { loadSettings } from '$lib/settings';
@@ -590,7 +591,12 @@
 			const { createMockEngine } = await import('$lib/livestt/mock-engine');
 			return createMockEngine(buildE2eScript(tokenizeSentence(s.text, s.language)));
 		}
-		return createLiveStt({ lang: s.language });
+		return createLiveStt({
+			lang: s.language,
+			onProgress: import.meta.env.DEV
+				? (p) => console.debug('[memlog] model', p)
+				: undefined
+		});
 	}
 
 	// ---------------------------------------------------------------------------
@@ -619,6 +625,15 @@
 				return;
 		}
 	}
+
+	$effect(() => {
+		if (!import.meta.env.DEV) return;
+		const heap = (performance as { memory?: { usedJSHeapSize?: number } }).memory
+			?.usedJSHeapSize;
+		console.debug(
+			`[memlog] phase=${phase} heap=${heap ? `${Math.round(heap / 1e6)}MB` : 'n/a'}`
+		);
+	});
 
 	// Registered on document in the CAPTURE phase so Escape is handled before
 	// bits-ui's document-level listener — otherwise the dialog's own close and
@@ -775,6 +790,8 @@
 		if (phase !== 'hidden') return;
 		const s = currentSentence;
 		if (!s) return;
+
+		setLastLang(s.language);
 
 		recordingElapsedMs = 0;
 		recordingLevel = 0;
