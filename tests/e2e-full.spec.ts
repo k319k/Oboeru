@@ -94,6 +94,17 @@ async function mockTranscribe(page: Page, responses: TranscribeResponse[]): Prom
 	});
 }
 
+/** Mock /api/judge with the key-less fallback so behavior is key-independent. */
+async function mockJudgeFallback(page: Page): Promise<void> {
+	await page.route('**/api/judge', async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify({ available: false })
+		});
+	});
+}
+
 /** Hold Space past the 500ms short-tap guard (timer-measured ≥ 0.7s), then release. */
 async function holdAndRelease(page: Page): Promise<void> {
 	await page.keyboard.down('Space');
@@ -117,6 +128,7 @@ test('full flow: seed → top → practice complete → manage round-trip → to
 	// T13 プッシュトゥトーク: ホールド中のみ録音(fake-media はトーン音で無音停止は発火しない)
 	await seedFull(page);
 	await mockTts(page);
+	await mockJudgeFallback(page);
 	// Sentence 1: pass. Sentence 2: fail → retry → pass. Last entry repeats.
 	await mockTranscribe(page, [
 		{ text: 'おはようございます。' },
@@ -206,6 +218,7 @@ test('TTS end event fires: show → tts → hidden(ready) → hold → transcrib
 	// T13 プッシュトゥトーク: TTS 終了後は録音準備完了で待機し、ホールドで録音
 	await seedFull(page);
 	await mockTts(page);
+	await mockJudgeFallback(page);
 	await mockTranscribe(page, [{ text: 'おはようございます。', delayMs: 1000 }]);
 
 	await page.goto('/practice?chapter=ch-ja-01');
@@ -234,6 +247,7 @@ test('API down (500): error UI shown, sentence hidden, skip/stop still work', as
 	// T13 プッシュトゥトーク: ホールド中のみ録音
 	await seedFull(page);
 	await mockTts(page);
+	await mockJudgeFallback(page);
 	await mockTranscribe(page, [{ status: 500 }]);
 
 	await page.goto('/practice?chapter=ch-ja-01');

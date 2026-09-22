@@ -876,11 +876,14 @@
 			// when the similarity score alone would fail (a pass is already decided).
 			let finalScore = sim;
 			if (sim < threshold) {
+				const judgeController = new AbortController();
+				const judgeTimeoutId = setTimeout(() => judgeController.abort(), 10_000);
 				try {
 					const res = await fetch('/api/judge', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ reference: s.text, transcription: text })
+						body: JSON.stringify({ reference: s.text, transcription: text }),
+						signal: judgeController.signal
 					});
 					const judge = await res.json();
 					if (judge?.available === true && typeof judge.noul === 'number' && judge.noul > 0) {
@@ -888,7 +891,12 @@
 					}
 				} catch {
 					// judge unavailable → keep sim (existing behavior)
+				} finally {
+					clearTimeout(judgeTimeoutId);
 				}
+				// The judge call is a second await: skip/stop may have moved the
+				// attempt meanwhile — re-guard like the transcribe path above.
+				if (phase !== 'transcribing' || currentIndex !== indexAtStart) return;
 			}
 
 			score = finalScore;
