@@ -69,29 +69,59 @@ class FakeRecognizer {
 
 class FakeModel {
 	static instances: FakeModel[] = [];
-	terminated = false;
+	/** Load outcome: `true` (success), `false` (result=false), 'error', or 'hang'. */
+	static autoResult: boolean | 'error' | 'hang' = true;
 
-	constructor() {
+	modelUrl: string;
+	terminated = false;
+	private listeners = new Map<string, ((message: unknown) => void)[]>();
+
+	constructor(modelUrl: string) {
+		this.modelUrl = modelUrl;
 		FakeModel.instances.push(this);
+		// Defer: the engine attaches its listeners right after `new Model`.
+		queueMicrotask(() => this.settle());
 	}
 
 	get KaldiRecognizer(): typeof FakeRecognizer {
 		return FakeRecognizer;
 	}
 
+	on(event: string, listener: (message: unknown) => void): void {
+		const queue = this.listeners.get(event) ?? [];
+		queue.push(listener);
+		this.listeners.set(event, queue);
+	}
+
 	terminate(): void {
 		this.terminated = true;
 	}
+
+	private settle(): void {
+		if (this.terminated) return;
+		const result = FakeModel.autoResult;
+		if (result === false) this.emit('load', { event: 'load', result: false });
+		else if (result === 'error') this.emit('error', { event: 'error' });
+		else if (result === 'hang') return;
+		else this.emit('load', { event: 'load', result: true });
+	}
+
+	emit(event: string, message: unknown): void {
+		for (const listener of this.listeners.get(event) ?? []) listener(message);
+	}
 }
 
-// The mock lives in hoisted state so the vi.mock factory can reach it.
+// The fake is assigned after the class definition; vosk-browser is imported
+// lazily by the engine, so the mock factory is called only at first use.
 const h = vi.hoisted(() => {
-	return { createModelMock: vi.fn() };
+	return { ModelClass: null as unknown };
 });
 
 vi.mock('vosk-browser', () => ({
-	createModel: h.createModelMock
+	Model: h.ModelClass
 }));
+
+h.ModelClass = FakeModel;
 
 vi.mock('./model-loader', () => ({
 	loadModelUrl: vi.fn()
@@ -109,8 +139,7 @@ function expectEngine(engine: LiveSttEngine | null): LiveSttEngine {
 beforeEach(() => {
 	FakeRecognizer.instances = [];
 	FakeModel.instances = [];
-	h.createModelMock.mockReset();
-	h.createModelMock.mockImplementation(async () => new FakeModel());
+	FakeModel.autoResult = true;
 	loadModelUrlMock.mockReset();
 	loadModelUrlMock.mockResolvedValue('blob:mock-model');
 });
@@ -136,7 +165,7 @@ describe('createLiveStt — engine injection', () => {
 
 		expect(engine).toBe(injected);
 		expect(loadModelUrlMock).not.toHaveBeenCalled();
-		expect(h.createModelMock).not.toHaveBeenCalled();
+		expect(FakeModel.instances).toHaveLength(0);
 	});
 });
 
@@ -147,7 +176,6 @@ describe('createLiveStt — model singleton', () => {
 		await createLiveStt({ lang: 'ja' });
 
 		expect(loadModelUrlMock).toHaveBeenCalledOnce();
-		expect(h.createModelMock).toHaveBeenCalledOnce();
 		expect(FakeModel.instances).toHaveLength(1);
 	});
 
@@ -166,9 +194,10 @@ describe('createLiveStt — model singleton', () => {
 		loadModelUrlMock.mockResolvedValueOnce(null);
 
 		expect(await createLiveStt({ lang: 'ja' })).toBeNull();
-		expect(h.createModelMock).not.toHaveBeenCalled();
+		expect(FakeModel.instances).toHaveLength(0);
 
 		expect(await createLiveStt({ lang: 'ja' })).not.toBeNull();
+		expect(FakeModel.instances).toHaveLength(1);
 		expect(loadModelUrlMock).toHaveBeenCalledTimes(2);
 	});
 
@@ -178,6 +207,75 @@ describe('createLiveStt — model singleton', () => {
 		await createLiveStt({ lang: 'ja' });
 
 		expect(revokeSpy).toHaveBeenCalledWith('blob:mock-model');
+	});
+});
+
+// ─── Single-resident policy ────────────────────────────────────────────
+describe('createLiveStt — single resident model', () => {
+	it('terminates the previous resident Model when a different language is requested', async () => {
+		await createLiveStt({ lang: 'ja' });
+		await createLiveStt({ lang: 'en' });
+
+		expect(FakeModel.instances).toHaveLength(2);
+		expect(FakeModel.instances[0].terminated).toBe(true);
+		expect(FakeModel.instances[1].terminated).toBe(false);
+	});
+
+	it('frees a stale model that settles after its language was evicted', async () => {
+		let releaseJa!: (v: string | null) => void;
+		loadModelUrlMock.mockImplementation((lang) =>
+			lang === 'ja'
+				? new Promise((r) => (releaseJa = r))
+				: Promise.resolve('blob:en')
+		);
+
+		const jaEngine = createLiveStt({ lang: 'ja' });
+		await createLiveStt({ lang: 'en' }); // evicts ja while it is still loading
+
+		releaseJa('blob:ja');
+		await jaEngine;
+
+		// Exactly one model survives the eviction race.
+		expect(FakeModel.instances.filter((m) => !m.terminated)).toHaveLength(1);
+		expect(FakeModel.instances.find((m) => m.modelUrl === 'blob:ja')?.terminated).toBe(true);
+	});
+});
+
+// ─── createModelSafely failure paths ──────────────────────────────────
+describe('createLiveStt — model load failure', () => {
+	it('terminates the worker and returns null when the Model reports result=false', async () => {
+		FakeModel.autoResult = false;
+
+		expect(await createLiveStt({ lang: 'ja' })).toBeNull();
+		expect(FakeModel.instances[0].terminated).toBe(true);
+	});
+
+	it('terminates the worker and returns null when the Model reports an error', async () => {
+		FakeModel.autoResult = 'error';
+
+		expect(await createLiveStt({ lang: 'ja' })).toBeNull();
+		expect(FakeModel.instances[0].terminated).toBe(true);
+	});
+
+	it('resolves null instead of hanging when the Model never narrates its load', async () => {
+		vi.useFakeTimers();
+		FakeModel.autoResult = 'hang';
+
+		const pending = createLiveStt({ lang: 'ja' });
+		let done = false;
+		void pending.then(
+			() => (done = true),
+			() => (done = true)
+		);
+		// The async chain (dynamic import + new Model) registers the watchdog at
+		// its own pace; advance in steps so the clock never outruns it.
+		for (let i = 0; i < 100 && !done; i++) {
+			await vi.advanceTimersByTimeAsync(1_000);
+		}
+
+		expect(done).toBe(true);
+		expect(await pending).toBeNull();
+		expect(FakeModel.instances[0].terminated).toBe(true);
 	});
 });
 

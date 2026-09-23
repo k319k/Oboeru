@@ -953,6 +953,22 @@
 	function startSession(): void {
 		sessionReady = true;
 		phase = 'show';
+		warmLiveModel();
+	}
+
+	/**
+	 * Pre-load the vosk model for the upcoming first sentence while the user is
+	 * still reading / hearing the TTS — the model (and its worker) then stands
+	 * ready when the first push-to-talk starts, so the load never lands inside
+	 * a recording. Fire-and-forget: the engine singleton keeps the model alive;
+	 * a failure just means live captions start lazy as before.
+	 */
+	function warmLiveModel(): void {
+		// E2E injects a mock engine — never trigger a real model download there.
+		if (import.meta.env.DEV && page.url.searchParams.get('e2e') === '1') return;
+		const first = sentences[currentIndex];
+		if (!first) return;
+		void createLiveStt({ lang: first.language });
 	}
 
 	function applyRestore(): void {

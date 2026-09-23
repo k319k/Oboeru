@@ -3,10 +3,14 @@
  * vosk-browser is imported dynamically inside createLiveStt(), never at
  * module load, so importing this module during SSR is harmless.
  *
- * The vosk Model is a per-language singleton — the ~40MB expansion happens
- * once per session and every sentence only allocates a fresh recognizer.
- * terminateLiveStt() (practice screen unmount) is the only place that
- * frees the Model and its worker.
+ * The vosk Model is per-language and owns a Worker + ~40MB WASM heap. Only
+ * ONE language is resident at a time: requesting a different language frees
+ * the previous model (single-resident policy), because keeping two resident
+ * pushed the phone renderer into an out-of-memory kill. Model loads never
+ * reject and never hang — a failed or timed-out load frees its worker and
+ * returns null (live captions degrade off), and the singleton stays
+ * retryable. terminateLiveStt() (practice screen unmount) frees whatever is
+ * left.
  */
 
 import type { LiveSttEngine, LiveWord, ModelLoadProgress } from './types';
@@ -16,9 +20,13 @@ import type { ModelLang } from './urls';
 type VoskModule = typeof import('vosk-browser');
 type VoskModel = InstanceType<VoskModule['Model']>;
 type VoskRecognizer = InstanceType<VoskModel['KaldiRecognizer']>;
+type VoskModelMessage = { event: string; result?: boolean };
 
 /** Upper bound for pre-start buffering: the last ~5 seconds at 16kHz. */
 const RING_BUFFER_CAPACITY_SAMPLES = 16000 * 5;
+
+/** Safety net: a worker that never narrates its load never poisons anything. */
+const MODEL_LOAD_TIMEOUT_MS = 60_000;
 
 export interface CreateLiveSttOptions {
 	lang: ModelLang;
@@ -28,35 +36,88 @@ export interface CreateLiveSttOptions {
 	engine?: LiveSttEngine;
 }
 
-const modelPromises = new Map<ModelLang, Promise<VoskModel | null>>();
+const modelLeases = new Map<ModelLang, Promise<VoskModel | null>>();
 
 function loadModel(
 	lang: ModelLang,
 	onProgress?: (progress: ModelLoadProgress) => void,
 	signal?: AbortSignal
 ): Promise<VoskModel | null> {
-	const pending = modelPromises.get(lang);
-	if (pending) return pending;
+	const existing = modelLeases.get(lang);
+	if (existing) return existing;
+
+	// Single-resident: a different language evicts whatever is resident.
+	// Late-settling loads are freed by the identity check on settle below.
+	for (const [otherLang, other] of modelLeases) {
+		modelLeases.delete(otherLang);
+		void other.then((model) => model?.terminate());
+	}
 
 	const promise = (async () => {
 		const blobUrl = await loadModelUrl(lang, onProgress, signal);
 		if (!blobUrl) return null;
-		const { createModel } = await import('vosk-browser');
 		try {
-			return await createModel(blobUrl);
+			return await createModelSafely(blobUrl, signal);
 		} finally {
 			// The worker has read the archive into its own filesystem by now.
 			URL.revokeObjectURL(blobUrl);
 		}
 	})();
 
-	// A failed load must not poison the singleton — allow a later retry.
 	void promise.then((model) => {
-		if (!model) modelPromises.delete(lang);
+		if (!model) {
+			// A failed load must not poison the singleton — allow a later retry.
+			modelLeases.delete(lang);
+			return;
+		}
+		// Evicted while loading (a different language superseded it) → free now.
+		if (modelLeases.get(lang) !== promise) model.terminate();
 	});
 
-	modelPromises.set(lang, promise);
+	modelLeases.set(lang, promise);
 	return promise;
+}
+
+/**
+ * Create a vosk Model from an already-resolved blob URL without ever leaking
+ * its worker or hanging. The stock `createModel` rejects without terminating
+ * its Model on failure and never settles if the worker is silent, so this own
+ * factory wraps `new Model()` with load/error/abort/timeout listeners — every
+ * non-success path terminates the worker and resolves null.
+ */
+async function createModelSafely(
+	blobUrl: string,
+	signal?: AbortSignal
+): Promise<VoskModel | null> {
+	const { Model } = await import('vosk-browser');
+	const model = new Model(blobUrl);
+	try {
+		return await new Promise<VoskModel | null>((resolve) => {
+			let settled = false;
+			const finish = (value: VoskModel | null) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeoutId);
+				signal?.removeEventListener('abort', onAbort);
+				if (value !== model) model.terminate();
+				resolve(value);
+			};
+			const onAbort = () => finish(null);
+			model.on('load', (message: VoskModelMessage) => {
+				finish(message?.result === true ? model : null);
+			});
+			model.on('error', () => finish(null));
+			const timeoutId = setTimeout(() => finish(null), MODEL_LOAD_TIMEOUT_MS);
+			if (signal?.aborted) {
+				onAbort();
+				return;
+			}
+			signal?.addEventListener('abort', onAbort, { once: true });
+		});
+	} finally {
+		// URL revocation is the caller's job; the worker archive handling is
+		// already done here.
+	}
 }
 
 /** Resolves to null when the model cannot be loaded (caller degrades to no live captions). */
@@ -70,8 +131,8 @@ export async function createLiveStt(options: CreateLiveSttOptions): Promise<Live
 
 /** Free the shared Models and their workers. Only the practice screen unmount should call this. */
 export async function terminateLiveStt(): Promise<void> {
-	const pending = [...modelPromises.values()];
-	modelPromises.clear();
+	const pending = [...modelLeases.values()];
+	modelLeases.clear();
 	const models = await Promise.all(pending);
 	for (const model of models) model?.terminate();
 }
