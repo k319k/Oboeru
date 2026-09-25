@@ -214,19 +214,42 @@ div.flex.flex-none.flex-col.gap-2.border-t.border-border.bg-background.p-3
 
 **主操作のマッピング**（常に 1 個・全幅・塗りの緑）:
 
+`hidden` には 3 つの亜状態（`micConnecting` / `micError` / ready）があるため、
+行を分けて網羅する。
+
 | フェーズ | 主操作 | サブ |
 |---|---|---|
-| `show` | `もう一度再生`（`replay-btn`） | `スキップ` |
-| `hidden`（ready） | `押して録音`（`record-hold-btn`、4.5rem 高を維持） | `スキップ` |
+| `show` | `もう一度聴く`（`replay-btn`） | `スキップ` |
+| `hidden` / `micConnecting` | なし | `スキップ` |
+| `hidden` / `micError` | `マイクをもう一度許可`（`error-retry-btn`） | `スキップ` |
+| `hidden` / ready | `押して録音`（`record-hold-btn`、4.5rem 高を維持） | `スキップ` |
 | `recording` | なし | `スキップ`（**disabled**） |
 | `transcribing` | なし | `スキップ` |
-| `feedback`（error） | `{errorRetryLabel}`（`error-retry-btn`） | `スキップ` |
-| `feedback`（pass） | `次へ`（`next-btn`） | `もう一度聴く` / `スキップ` |
-| `feedback`（fail） | `もう一度試す`（`retry-btn`） | `もう一度聴く` / `スキップ` |
+| `feedback` / error | `{errorRetryLabel}`（`error-retry-btn`） | `スキップ` |
+| `feedback` / pass | `次へ`（`next-btn`） | `もう一度聴く` / `スキップ` |
+| `feedback` / fail | `もう一度試す`（`retry-btn`） | `もう一度聴く` / `スキップ` |
 
-`recording` と `transcribing` では主操作のスロットが空になる。この 2 フェーズでは
-主操作を包むラッパ要素を出さない（`feedback` フェーズでは `data-testid="feedback-actions"` を付ける）。
-`skip-btn` は全フェーズで必ず 1 個だけ出る。
+`error-retry-btn` は 2 箇所（mic エラーと文字起こしエラー）で使われるが、
+どちらも「そのフェーズで唯一の操作」なので主操作になる。`{errorRetryLabel}` の実値は
+`もう一度再生` / `マイクをもう一度許可` / `もう一度採点` の 3 種。
+
+`record-hold-btn` の `data-hold-btn` 属性（ポインタハンドラが使う）と
+`aria-label="押している間、録音します"` は**必ず残す**。
+
+`hidden` / ready では `record-ready-hint`（§4.3 で出し分け）も
+主操作ボタンと同じ zone 内の上に置く。`short-press-hint` は
+「前の試行へのフィードバック」なので本文側に残す。
+
+`recording` / `transcribing` / `hidden`+`micConnecting` の 3 状態では主操作のスロットが空になる。
+この 3 状態では主操作を包むラッパ要素を出さない
+（`feedback` フェーズでは `data-testid="feedback-actions"` を付ける）。
+`skip-btn` は全フェーズ・全状態 で必ず 1 個だけ出る。
+
+**本文側（スクロール領域）に残すもの**（アクションではないpure表示）:
+`phase-hint` / `sentence-text` / `sentence-hidden`（マイク準備中）/ `error-message`（マイク拒否）/
+`record-ready` ラッパと `short-press-hint` / `recording` のタイマ・`level-meter`・`max-duration-note` /
+`release-hint` / `sentence-transcribing` / `score-label` / `score` / `word-diff` / `diff-legend` /
+`transcribed-text` / `summary` 全体。
 
 サブ操作は**全幅の縦積み**とする。`tests/responsive.spec.ts:290-297` が
 「390px で、コンテナ内の全ボタンが縦積みであること」を契約化しているため。
