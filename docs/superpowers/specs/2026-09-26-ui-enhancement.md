@@ -131,13 +131,22 @@ Space / Enter は「ボタンを押す」ことと等価の明示操作として
 ```
 div.flex.min-h-0.flex-1.flex-col            ← was: min-h-dvh flex-col gap-6
 ├─ p.sr-only[role=status][aria-live=polite]  flex-none
-├─ header[data-testid=practice-header]      flex.flex-none.items-center.gap-2
-├─ div.flex.flex-none.flex-col.gap-1         ← 進捗（独立した全幅1行）
-├─ div.flex-1.min-h-0.overflow-y-auto        ← ここだけがスクロール
-├─ div[data-testid=action-zone]             flex.flex-none.flex-col.gap-2
+├─ {#if phase === 'summary'}
+│   └─ div.flex-1.min-h-0.overflow-y-auto   ← サマリー専用スクロール（下記 注意）
+├─ {:else}
+│   ├─ header[data-testid=practice-header]   flex.flex-none.items-center.gap-2
+│   ├─ div.flex.flex-none.flex-col.gap-1      ← 進捗（独立した全幅1行）
+│   ├─ div.flex-1.min-h-0.overflow-y-auto     ← ここだけがスクロール
+│   └─ div[data-testid=action-zone]          flex.flex-none.flex-col.gap-2
 ├─ AlertDialog ×2
 └─ Toaster
 ```
+
+**サマリー分岐もスクロール領域が必要。** `summary` は
+`{#if phase === 'summary'}` 里有るPAY 折り返し（`summary-failed-list`）があり
+縦に長くなりうる。`min-h-0` 化したルートの中で直接の子にすると
+スクロール領域を持たないため、はみ出した分がoverflowして読めなくなる。
+`flex-1 min-h-0 overflow-y-auto` のラッパで包むこと。
 
 `gap-6` は撤去し、各 zone が `p-*` と `border-t` で自分のスペーシングを持つ。
 `min-h-0` を付けることで、flex 子の高さが `min-height: auto` でコンテンツに押し広げられるのを防ぐ。
