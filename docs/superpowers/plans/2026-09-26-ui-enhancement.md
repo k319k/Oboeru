@@ -334,6 +334,16 @@ git status --short -- src/lib tests
 git commit -m "refactor: remove time-based auto-advance from the practice flow"
 ```
 
+削除したテストと、そのカバレッジが失われていない理由をコミット.Body に書くこと:
+
+- `tests/io-settings.spec.ts` の「練習の操作」describe 2 件と
+  `tests/practice.spec.ts` の T9 describe の `practicePrefs` seed は、
+  **削除した機能（autoAdvance / dwell 設定）のテスト**なので対象。
+- `tests/practice.spec.ts` の T9 describe は **テスト自体は残し**、
+  seed から `practicePrefs` を外すだけで「新デフォルトの契約」として継続させる。
+- `disableAutoAdvance` ヘルパーは不要になったので削除（feedback が手動操作まで
+  保持されるようになったため）。
+
 ---
 
 ## Task 2: 練習中のグローバルナビ非表示と main の flex カラム化
@@ -801,6 +811,10 @@ Expected: 全て PASS。`practice.spec.ts` の
 
 - [ ] **Step 6: 実測で 390px を確認する**
 
+`.omo/tools/shoot-390.mjs` は 390px の実測スクリプトで、`.omo/` は **gitignore 対象**
+なので `git add` してはいけない（ Measurements 用のスクリーショットは
+`/tmp/opencode/oboeru-shots/out/` に出る）。
+
 Run: `node .omo/tools/shoot-390.mjs 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{for(const e of JSON.parse(s)){if(e.label?.startsWith('!!')){console.log('FAIL',e.label);continue;}console.log('== '+e.label+'  docScrollH='+e.docScrollH+' vh='+e.vh+'  overflow='+e.hOverflow);if(e.offscreen?.length)console.log('   offscreen: '+e.offscreen.map(o=>o.id+'('+o.top+'..'+o.bottom+')').join(', '));}})"`
 
 Expected: practice の各フェーズで `offscreen` に `skip-btn` / `action-zone` が現れない。
@@ -1135,13 +1149,23 @@ Expected: FAIL。`.kbd-hint` が 390px でも可視なため `toBeHidden()` が�
 - [ ] **Step 4: 6 箇所の `<kbd>` に Tailwind の responsive クラスを付ける**
 
 `class="kbd-hint"` を `class="kbd-hint hidden sm:inline-block"` に置き換える。
-置き換える対象は `show` フェーズFermats の `replay-btn` / アクションゾーンの
-`record-hold-btn` / `feedback-actions` の `replay-btn` / `next-btn` / `retry-btn` /
-`skip-btn` の合計 6 箇所。
+
+**置き換えるのは 7 箇所**（Task 4 で `stop-btn` の kbd を消した後なので 7 つ）:
+
+| # | 場所 | キー |
+|---|---|---|
+| 1 | `{:else if phase === 'show'}` の `replay-btn` | `R` |
+| 2 | `record-ready` の `record-hold-btn` | `Space` |
+| 3 | `feedback-actions` の `next-btn` | `Space` |
+| 4 | `feedback-actions` の `retry-btn` | `Space` |
+| 5 | `feedback-actions` の `replay-btn` | `R` |
+| 6 | `feedback-actions` の `skip-btn` | `S` |
+| 7 | `{:else}` 側の `skip-btn` | `S` |
 
 `record-hold-btn` のものは class 属性が `class="record-hold-btn"` なので、
-`class="record-hold-btn"` の中に `<kbd class="kbd-hint">Space</kbd>` として現れる。
-kbd 側だけを書き換える。
+kbd 側だけを書き換える。`skip-btn` は Task 3 のテンプレートで **2 箇所** legit に
+存在するので両方を必ず書き換える（1 箇所だけだと `{:else}` 側のフェーズで
+ヒントが Episodic 見える）。
 
 `record-ready-hint` の `<p>` の class に `hidden sm:block` を追加する:
 
@@ -1295,8 +1319,17 @@ Expected: FAIL。`theme-system` などの testid が存在しないため、
 丸ごと削除する。`Moon` / `Sun` の import も未使用になるため削除する。
 `toggleTheme` の import も削除する（他で使っていないことを確認してから）。
 
-Run: `grep -n "toggleTheme\|Moon\|Sun" src/routes/+layout.svelte`
-Expected: 削除対象がこれらのみであることを確認してから削除する。
+Run: `grep -rn "toggleTheme" src/ tests/`
+Expected（2026-09-26 時点で確認済み）:
+```
+src/routes/+layout.svelte:6:	import { getResolvedTheme, subscribeTheme, toggleTheme } from '$lib/theme';
+src/routes/+layout.svelte:63:					onclick={toggleTheme}
+src/lib/theme.ts:117:export function toggleTheme(): void {
+```
+`+layout.svelte` 以外の参照は無い。`Moon` / `Sun` の import も
+`+layout.svelte` でのみ使われていることを確認してから削除する。
+`getResolvedTheme` / `subscribeTheme` は `+layout.svelte` の
+`$effect` で使われているので**残す**。
 
 - [ ] **Step 4: `src/lib/theme.ts` から `toggleTheme()` を削除する**
 
