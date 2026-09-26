@@ -1152,11 +1152,11 @@
 				>
 					{#if score >= threshold}
 						<Button class="h-11 w-full" data-testid="next-btn" onclick={advanceToNext}>
-							次へ <kbd class="kbd-hint">Space</kbd>
+							次へ <kbd class="kbd-hint hidden sm:inline-block">Space</kbd>
 						</Button>
 					{:else}
 						<Button class="h-11 w-full" data-testid="retry-btn" onclick={retrySentence}>
-							もう一度試す <kbd class="kbd-hint">Space</kbd>
+							もう一度試す <kbd class="kbd-hint hidden sm:inline-block">Space</kbd>
 						</Button>
 					{/if}
 					<Button
@@ -1165,7 +1165,7 @@
 						data-testid="replay-btn"
 						onclick={replaySentence}
 					>
-						<Volume2 /> もう一度聴く <kbd class="kbd-hint">R</kbd>
+						<Volume2 /> もう一度聴く <kbd class="kbd-hint hidden sm:inline-block">R</kbd>
 					</Button>
 					<Button
 						variant="outline"
@@ -1174,13 +1174,13 @@
 						onclick={skip}
 						data-testid="skip-btn"
 					>
-						スキップ <kbd class="kbd-hint">S</kbd>
+						スキップ <kbd class="kbd-hint hidden sm:inline-block">S</kbd>
 					</Button>
 				</div>
 			{:else}
 				{#if phase === 'show'}
 					<Button class="h-11 w-full" data-testid="replay-btn" onclick={replaySentence}>
-						<Volume2 /> もう一度聴く <kbd class="kbd-hint">R</kbd>
+						<Volume2 /> もう一度聴く <kbd class="kbd-hint hidden sm:inline-block">R</kbd>
 					</Button>
 				{:else if phase === 'hidden' && micError}
 					<Button class="h-11 w-full" data-testid="error-retry-btn" onclick={retryMic}>
@@ -1188,7 +1188,7 @@
 					</Button>
 				{:else if phase === 'hidden' && !micConnecting && !micError}
 					<div class="flex flex-col items-center gap-3" data-testid="record-ready">
-						<p class="text-base font-medium" data-testid="record-ready-hint">
+						<p class="hidden text-base font-medium sm:block" data-testid="record-ready-hint">
 							Spaceを押しながら読み上げてね
 						</p>
 						<button
@@ -1202,7 +1202,7 @@
 						>
 							<Mic class="size-5 shrink-0" aria-hidden="true" />
 							<span class="whitespace-nowrap">押して録音</span>
-							<kbd class="kbd-hint">Space</kbd>
+							<kbd class="kbd-hint hidden sm:inline-block">Space</kbd>
 						</button>
 					</div>
 				{:else if phase === 'feedback' && errorMessage}
@@ -1217,7 +1217,7 @@
 					onclick={skip}
 					data-testid="skip-btn"
 				>
-					スキップ <kbd class="kbd-hint">S</kbd>
+					スキップ <kbd class="kbd-hint hidden sm:inline-block">S</kbd>
 				</Button>
 			{/if}
 		</div>
@@ -1403,7 +1403,6 @@
 	/* Key-cap hint badges (T13): small rounded keycaps trailing button labels
 	   ([Space] / [R] / [S] / [Esc]). */
 	.kbd-hint {
-		display: inline-block;
 		padding: 0.05rem 0.45rem;
 		border: 1px solid color-mix(in oklab, var(--foreground) 18%, transparent);
 		border-bottom-width: 2px;

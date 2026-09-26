@@ -336,6 +336,10 @@ test.describe('Responsive layout (390px)', () => {
 			'/practice show: the progress bar must span the full width at 390px'
 		).toBeGreaterThanOrEqual((await page.evaluate(() => window.innerWidth)) * 0.8);
 
+		// Keyboard hints are meaningless without a keyboard.
+		await expect(page.locator('.kbd-hint').first()).toBeHidden();
+		await expect(page.getByTestId('record-ready-hint')).toBeHidden();
+
 		// T6 layout: 終了 moved to the header row; スキップ stays as the
 		// full-width bottom action at 390px.
 		const layout = await page.evaluate(() => {
