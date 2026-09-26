@@ -46,7 +46,7 @@ Chromium のこの headless ビルドでは CDP のタッチ経路が**選択可
 |---|---|---|
 | computed `user-select` | ○（宣言の存在） | CSS の回帰としては十分 |
 | マウス長押＋ドラッグ（非 button の散文） | ○（挙動） | `record-ready-hint` が対象 |
-| マウス長押＋ドラッグ（`<button>` 内側） | × | Chromium は button 内側で CSS ＼ 無関係に選択しない |
+| マウス長押＋ドラッグ（`<button>` 内側） | × | Chromium は button 内側で CSS に関係なく選択しない |
 | CDP `Input.dispatchTouchEvent` | × | 選択可能テキストでも 0 → 恒真 |
 
 選択範囲の生成自体は実機では起きている（指が微小に動くと範囲が拡張し、テキスト選択と
@@ -226,7 +226,7 @@ practice 页面内で完結させる。
 `level meter renders a non-zero width while recording` は削除せず**書き換える**。
 現状のアサーションは `level-meter-fill` の `style.width > 0` と
 `level-value` の `/レベル \d+%/` で、どちらも新デザインに存在しない。
-意図（「無音でないことの検証」）は保持し、可視的实证に置き換える。
+意図（「無音でないことの検証」）は保持し、可視的実証に置き換える。
 
 ```ts
 	test('level history grows and reacts while recording', async ({ page }) => {
@@ -316,12 +316,19 @@ npm run test:e2e   # Playwright 全体
 | 対象 | 期待値 | 判別力 |
 |---|---|---|
 | `record-ready-hint`（アクション zone 内の散文） | **0** | ○ 宣言を消すと 1 になるので検出できる |
-| `record-hold-btn` | **0** | × `<button>` 内側は CSS ＼ 無関係に 0 |
-| アクション zone の中心 | **0** | × 中心が hold button なので × |
+| `record-hold-btn` | **0** | × `<button>` 内側は CSS に関係なく 0 |
+| アクション zone の中心 | **0** | × 中心が hold button なので |
 | `sentence-text`（対照） | **1 以上** | 対照。0 だとジェスチャ自体が空振り |
 
 **CDP `Input.dispatchTouchEvent` は使わない。** Chromium のこのビルドでは選択可能テキストに
-対しても 0 のままなので、修正前でも 0 で恒真になる。-spec の「現状の実測」節も訂正済み。
+対しても 0 のままなので、修正前でも 0 で恒真になる。この spec の「現状の実測」節も訂正済み。
+
+**幅の注意**: この節は 390px 実測の節だが、判別ケースの `record-ready-hint` は
+`src/routes/practice/+page.svelte:1191` の `class="hidden ... sm:block"` なので
+**640px 未満には存在しない**（390px で待つと 30s タイムアウトする）。
+よって**判別はデスクトップ幅（既定 1280×720）で行い、390px では computed `user-select`
+の確認だけ**を行う。`record-ready-hint` は `show` フェーズにも存在しないので、
+対照の `sentence-text` は `show` フェーズ、残り 3 要素は `hidden` フェーズで採る。
 
 なお、この自動テストが通ることは「宣言が存在して Chromium では抑止される」ことの証明であって、
 **「実機（Android Chrome）で長押しが直った」ことの証明ではない**。実機での確認は別途必要。

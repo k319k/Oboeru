@@ -239,7 +239,7 @@ git commit -m "fix: suppress text selection and the callout menu on the record c
 - [ ] **Step 1: 失敗するテストを書き換える**
 
 `tests/practice.spec.ts` の `test('level meter renders a non-zero width while recording', …)` を、
-次のテストで**置き換える**（削除しない。意図「無音でないことの検証」を新しい可視的实证に換える）:
+次のテストで**置き換える**（削除しない。意図「無音でないことの検証」を新しい可視的実証に換える）:
 
 ```ts
 	test('level history grows and reacts while recording', async ({ page }) => {
@@ -482,17 +482,31 @@ Expected: 全て PASS
 
 - [ ] **Step 4: 実機相当の長押し検証（マウス長押＋ドラッグ）**
 
-  `/tmp/` にスクリプトを書いて、390px のコンテキストで
+  `/tmp/` にスクリプトを書いて、**デスクトップ幅（既定 1280×720）**のコンテキストで
   **マウス長押し＋ドラッグ**（`mouse.move` → `mouse.down` → 一定距離の `mouse.move` を数回 →
   `mouse.up`）を 4 要素に対して行い、`document.getSelection().rangeCount` を読み取る。
   抑止の 3 要素に加えて対照の `sentence-text` を含める。
 
-  | 試行 | 期待値 |
-  |---|---|
-  | `record-ready-hint`（アクション zone 内の散文） | **0**（`user-select: none` が効いている） |
-  | `record-hold-btn` | **0** |
-  | アクション zone の中心 | **0** |
-  | `sentence-text`（対照・選択可能なまま） | **1 以上** |
+  | 試行 | フェーズ | 期待値 |
+  |---|---|---|
+  | `sentence-text`（対照・選択可能なまま） | `show` | **1 以上** |
+  | `record-ready-hint`（アクション zone 内の散文） | `hidden`（録音準備完了） | **0**（`user-select: none` が効いている） |
+  | `record-hold-btn` | `hidden` | **0** |
+  | アクション zone の中心 | `hidden` | **0** |
+
+  **幅の注意（重要）**: `record-ready-hint` は `src/routes/practice/+page.svelte:1191` の
+  `class="hidden ... sm:block"` なので **640px 未満には存在しない**。
+  390px で `getByTestId('record-ready-hint')` を待っても **30s でタイムアウトする**。
+  よって**この判別はデスクトップ幅で行う**。
+
+  **390px で行うのは computed `user-select` の確認だけ**にする
+  （`record-hold-btn` / `action-zone` / `sentence-text` の 3 要素）。
+  390px の実行可能な確認は「宣言が存在すること」までで、
+  挙動の判別（0 になること）は 640px 以上で行う。
+
+  **フェーズ注意**: `record-ready-hint` は `show` フェーズに存在しない。
+  対照の `sentence-text` は `show` フェーズで採り、
+  残り 3 要素は TTS 終了を待って `hidden` フェーズ（`record-ready` 可視）で採る。
 
   **対照ケースを必ず実行する。** `sentence-text` が 1 以上になることを先に確認し、
   初めて 0 が「抑止が効いている」証拠になる。ジェスチャ自体が常に 0 なら何も証明にならない。
@@ -502,7 +516,7 @@ Expected: 全て PASS
   修正前でも 0 で**恒真**（＝空振り検証）になる。マウス経路だけが識別力を持つ。
 
   **なお `record-hold-btn` とアクション zone の中心は宣言を消しても 0 のまま**になる。
-  Chromium は `<button>` -widget の内側では CSS に関係なく選択が始まらないためで、
+  Chromium は `<button>` ウィジェットの内側では CSS に関係なく選択が始まらないためで、
   この 2 つの CSS を守るのは上の computed `user-select` のテストである。
   宣言の欠落を検出する役割は `record-ready-hint` が担う。
 

@@ -1105,6 +1105,11 @@ test.describe('Practice — text selection is suppressed on the record controls'
 	test('a long press with a drag selects nothing on the record controls', async ({ page }) => {
 		await seedPractice(page);
 		await mockTts(page);
+		// The holds below end the recording, so the pipeline runs to the scoring
+		// step. Both mocks are mandatory: mockTranscribe installs mockJudgeFallback
+		// as its first statement, and without them the transcribe call reaches Groq
+		// and the judge call reaches OpenRouter with the real .env keys.
+		await mockTranscribe(page, [{ text: 'おはようございます。' }]);
 		await page.goto('/practice?chapter=ch-ja-01');
 		await expect(page.getByTestId('sentence-text')).toBeVisible();
 
@@ -1132,9 +1137,30 @@ test.describe('Practice — text selection is suppressed on the record controls'
 		// to select inside a <button> widget whatever the CSS says, and the centre
 		// of the action zone is the hold button. Their rc=0 is recorded as observed
 		// behaviour; the computed `user-select` test above guards their CSS.
-		// Both need a fresh ready phase because pressing them starts a recording.
-		for (const id of ['action-zone', 'record-hold-btn']) {
-			await page.reload();
+		//
+		// The action zone is measured in the ready phase this test is already in;
+		// pressing it starts a recording, so `record-hold-btn` needs a fresh one.
+		const controls = ['action-zone', 'record-hold-btn'];
+		for (const [index, id] of controls.entries()) {
+			if (index > 0) {
+				// The previous hold was scored, so oboeru:progress:v1 ends up with
+				// completedCount >= 1 and onMount raises the restore dialog on the next
+				// load, which would hide `record-ready` forever. Wait for that write to
+				// land first — clearing earlier just loses the race and lets scoring
+				// write the key again after the clear — then drop it.
+				await expect
+					.poll(() => page.evaluate(() => sessionStorage.getItem('oboeru:progress:v1')))
+					.toContain('"completedCount":1');
+				await page.evaluate(() => sessionStorage.removeItem('oboeru:progress:v1'));
+				await page.reload();
+				// A reloaded document has no user activation, and the practice shell plays
+				// its TTS on entry, so play() is rejected and the app lands in the
+				// "音声の再生がブロックされました" error instead of `record-ready`. Click the
+				// non-interactive chapter heading to grant activation before that plays.
+				// Nothing is wired to it, so the click has no side effect.
+				await page.getByTestId('chapter-name').click({ position: { x: 5, y: 5 } });
+				await expect(page.getByTestId('restore-dialog')).toHaveCount(0);
+			}
 			await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 			const rangeCount = await longPressDragRangeCount(page, id);
 			expect(rangeCount, `${id}: selection ranges after a long press + drag`).toBe(0);
