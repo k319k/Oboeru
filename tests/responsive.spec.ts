@@ -247,6 +247,16 @@ test.describe('Responsive layout (390px)', () => {
 		expect(layout!.fullWidth, '/practice: skip button must be full-width').toBe(true);
 		expect(layout!.stopInHeader, '/practice: 終了 must sit in the header row').toBe(true);
 
+		// The bottom action zone is fixed: it never scrolls out of the viewport.
+		const zone = await page.evaluate(() => {
+			const el = document.querySelector('[data-testid="action-zone"]');
+			if (!el) return null;
+			const r = el.getBoundingClientRect();
+			return { top: r.top, bottom: r.bottom, vh: window.innerHeight };
+		});
+		expect(zone, '/practice show: action-zone not found').not.toBeNull();
+		expect(zone?.bottom ?? Infinity).toBeLessThanOrEqual((zone?.vh ?? 0) + 1);
+
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/practice.png`, fullPage: true });
 	});
 
@@ -278,29 +288,59 @@ test.describe('Responsive layout (390px)', () => {
 		await expectNoHorizontalOverflow(page, '/practice feedback');
 		await expectTapTargets(page, '/practice feedback');
 
-		// 操作ボタン縦積み: もう一度聴く / 次へ stack vertically, each spanning
-		// the feedback container (the flex-col sm:flex-row pattern).
-		const stacked = await page.evaluate(() => {
-			const container = document.querySelector('[data-testid="feedback"]');
-			if (!container) return null;
-			const rects = Array.from(container.querySelectorAll('button'))
-				.map((b) => b.getBoundingClientRect())
-				.sort((a, b) => a.top - b.top);
-			if (rects.length < 2) return null;
-			const eachFullWidth = rects.every((r) => r.width >= 0.85 * container!.clientWidth);
-			const verticallyStacked = rects[1].top >= rects[0].bottom - 2;
-			return { eachFullWidth, verticallyStacked };
+		// 操作ボタン縦積み: 次へ / もう一度聴く / スキップ live in the bottom
+		// action zone, stacked vertically, each spanning the zone width.
+		await expect(page.locator('[data-testid="feedback-actions"]')).toBeVisible();
+
+		const rects = await page.evaluate(() => {
+			const el = document.querySelector('[data-testid="feedback-actions"]');
+			if (!el) return null;
+			return Array.from(el.querySelectorAll('button')).map((b) => {
+				const r = b.getBoundingClientRect();
+				return { width: r.width, top: r.top, bottom: r.bottom };
+			});
 		});
-		expect(stacked, '/practice feedback: buttons not found').not.toBeNull();
-		expect(
-			stacked!.verticallyStacked,
-			'/practice feedback: action buttons must stack vertically at 390px'
-		).toBe(true);
-		expect(
-			stacked!.eachFullWidth,
-			'/practice feedback: action buttons must span the container'
-		).toBe(true);
+		expect(rects, '/practice feedback: action buttons not found').not.toBeNull();
+
+		const containerWidth = await page.evaluate(() => {
+			const el = document.querySelector('[data-testid="feedback-actions"]');
+			return el ? (el as HTMLElement).clientWidth : 0;
+		});
+
+		for (const r of rects ?? []) {
+			expect(
+				r.width,
+				'/practice feedback: action buttons must span the container'
+			).toBeGreaterThanOrEqual(containerWidth * 0.85);
+		}
+
+		const sorted = [...(rects ?? [])].sort((a, b) => a.top - b.top);
+		for (let i = 1; i < sorted.length; i++) {
+			expect(
+				sorted[i].top,
+				'/practice feedback: action buttons must stack vertically at 390px'
+			).toBeGreaterThanOrEqual(sorted[i - 1].bottom - 2);
+		}
 		logEvidence('practice feedback: action buttons stacked vertically, container-width ✓');
+
+		// アクションゾーンは常にビューポート内に収まること
+		await page.evaluate(() => window.scrollTo(0, 0));
+		await page.waitForTimeout(200);
+		const zone = await page.evaluate(() => {
+			const el = document.querySelector('[data-testid="action-zone"]');
+			if (!el) return null;
+			const r = el.getBoundingClientRect();
+			return { top: r.top, bottom: r.bottom, vh: window.innerHeight };
+		});
+		expect(zone, '/practice feedback: action-zone not found').not.toBeNull();
+		expect(
+			(zone?.bottom ?? Infinity),
+			'/practice feedback: the action zone must stay inside the viewport'
+		).toBeLessThanOrEqual((zone?.vh ?? 0) + 1);
+		expect(
+			(zone?.top ?? -Infinity),
+			'/practice feedback: the action zone must not start above the viewport'
+		).toBeGreaterThanOrEqual(-1);
 
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/practice-feedback.png`, fullPage: true });
 	});

@@ -869,88 +869,92 @@
 	<title>練習 - おぼえる</title>
 </svelte:head>
 
-<div class="mx-auto flex min-h-dvh w-full max-w-2xl flex-col gap-6 px-4 py-6">
+<!-- Horizontal padding comes from the layout <main>; only the vertical
+     padding is local, so the fixed action zone spans the full content width. -->
+<div class="mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col py-4">
 	<p class="sr-only" role="status" aria-live="polite">{phaseLabel}</p>
 
 	{#if phase === 'summary'}
 		<!-- ==================== SUMMARY VIEW ==================== -->
-		<div
-			class="flex flex-1 flex-col items-center justify-center gap-6 text-center"
-			data-testid="summary"
-		>
-			<h1 class="text-2xl font-bold" data-testid="summary-title">
-				{endedEarly ? 'おつかれさま!' : '練習完了!'}
-			</h1>
+		<div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+			<div
+				class="flex flex-1 flex-col items-center justify-center gap-6 text-center"
+				data-testid="summary"
+			>
+				<h1 class="text-2xl font-bold" data-testid="summary-title">
+					{endedEarly ? 'おつかれさま!' : '練習完了!'}
+				</h1>
 
-			{#if errorMessage}
-				<p class="text-sm text-destructive" data-testid="error-message">{errorMessage}</p>
-			{/if}
+				{#if errorMessage}
+					<p class="text-sm text-destructive" data-testid="error-message">{errorMessage}</p>
+				{/if}
 
-			<div class="grid w-full max-w-2xl grid-cols-1 gap-4 sm:grid-cols-3">
-				<Card>
-					<CardHeader>
-						<CardTitle>完了文数</CardTitle>
-					</CardHeader>
-					<CardContent>
-						<p class="text-3xl font-bold tabular-nums" data-testid="summary-completed">
-							{passedIds.length} / {sentences.length}
-						</p>
-						<p class="mt-1 text-sm text-muted-foreground">
-							総文数
-							<span class="tabular-nums" data-testid="summary-sentences">
-								{sentences.length}
-							</span>
-						</p>
-					</CardContent>
-				</Card>
-				<Card>
-					<CardHeader>
-						<CardTitle>平均類似度</CardTitle>
-					</CardHeader>
-					<CardContent>
-						<p class="text-3xl font-bold tabular-nums" data-testid="summary-average">
-							{averageScore}%
-						</p>
-					</CardContent>
-				</Card>
-				<Card>
-					<CardHeader>
-						<CardTitle>スキップ</CardTitle>
-					</CardHeader>
-					<CardContent>
-						<p class="text-3xl font-bold tabular-nums" data-testid="summary-skipped">
-							{skippedCount}
-						</p>
-					</CardContent>
-				</Card>
-			</div>
-
-			{#if failedEntries.length > 0}
-				<div class="w-full max-w-md text-left">
-					<p class="mb-2 text-sm font-medium">間違えた文 ({failedEntries.length}問)</p>
-					<ul class="flex flex-col gap-2" data-testid="summary-failed-list">
-						{#each failedEntries as failed (failed.id)}
-							<li
-								class="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
-								data-testid="summary-failed-item"
-							>
-								{failed.text}
-							</li>
-						{/each}
-					</ul>
-					<Button class="mt-4 h-11 w-full" data-testid="retry-failed-btn" onclick={retryFailedOnly}>
-						間違えた文だけやり直す
-					</Button>
+				<div class="grid w-full max-w-2xl grid-cols-1 gap-4 sm:grid-cols-3">
+					<Card>
+						<CardHeader>
+							<CardTitle>完了文数</CardTitle>
+						</CardHeader>
+						<CardContent>
+							<p class="text-3xl font-bold tabular-nums" data-testid="summary-completed">
+								{passedIds.length} / {sentences.length}
+							</p>
+							<p class="mt-1 text-sm text-muted-foreground">
+								総文数
+								<span class="tabular-nums" data-testid="summary-sentences">
+									{sentences.length}
+								</span>
+							</p>
+						</CardContent>
+					</Card>
+					<Card>
+						<CardHeader>
+							<CardTitle>平均類似度</CardTitle>
+						</CardHeader>
+						<CardContent>
+							<p class="text-3xl font-bold tabular-nums" data-testid="summary-average">
+								{averageScore}%
+							</p>
+						</CardContent>
+					</Card>
+					<Card>
+						<CardHeader>
+							<CardTitle>スキップ</CardTitle>
+						</CardHeader>
+						<CardContent>
+							<p class="text-3xl font-bold tabular-nums" data-testid="summary-skipped">
+								{skippedCount}
+							</p>
+						</CardContent>
+					</Card>
 				</div>
-			{/if}
 
-			<Button href="/" class="h-11" data-testid="home-link">トップに戻る</Button>
+				{#if failedEntries.length > 0}
+					<div class="w-full max-w-md text-left">
+						<p class="mb-2 text-sm font-medium">間違えた文 ({failedEntries.length}問)</p>
+						<ul class="flex flex-col gap-2" data-testid="summary-failed-list">
+							{#each failedEntries as failed (failed.id)}
+								<li
+									class="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
+									data-testid="summary-failed-item"
+								>
+									{failed.text}
+								</li>
+							{/each}
+						</ul>
+						<Button class="mt-4 h-11 w-full" data-testid="retry-failed-btn" onclick={retryFailedOnly}>
+							間違えた文だけやり直す
+						</Button>
+					</div>
+				{/if}
+
+				<Button href="/" class="h-11" data-testid="home-link">トップに戻る</Button>
+			</div>
 		</div>
 	{:else}
 		<!-- ==================== PRACTICE VIEW ==================== -->
 
-		<header class="flex items-center gap-3" data-testid="practice-header">
-			<h1 class="min-w-0 shrink-0 truncate text-sm font-bold sm:text-base" data-testid="chapter-name">
+		<header class="flex flex-none items-center gap-2 pb-3" data-testid="practice-header">
+			<h1 class="min-w-0 flex-1 truncate text-sm font-bold sm:text-base" data-testid="chapter-name">
 				{chapterName}
 			</h1>
 			{#if showTrackBadge}
@@ -962,7 +966,7 @@
 				<Progress
 					value={currentIndex + 1}
 					max={sentences.length}
-					class="h-3 w-full rounded-full"
+					class="h-2 w-full rounded-full"
 					aria-label="進捗"
 					data-testid="progress-bar"
 				/>
@@ -980,210 +984,202 @@
 			</Button>
 		</header>
 
-		<div
-			class="flex min-h-40 flex-1 flex-col items-center justify-center gap-4 rounded-xl border border-border bg-muted/40 p-8 dark:bg-transparent"
-		>
-			{#if phase === 'show' || phase === 'tts'}
-				{#if currentSentence}
-					<p class="text-xs font-medium text-muted-foreground" data-testid="phase-hint">
-						{phase === 'show' ? '聴いてね' : '読み上げ中'}
-					</p>
-					<p class="text-center text-2xl font-medium leading-relaxed" data-testid="sentence-text">
-						{currentSentence.text}
-					</p>
-					{#if phase === 'show'}
-						<Button
-							variant="outline"
-							class="mt-2 h-11"
-							data-testid="replay-btn"
-							onclick={replaySentence}
-						>
-							<Volume2 /> もう一度聴く <kbd class="kbd-hint">R</kbd>
-						</Button>
+		<div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+			<div
+				class="flex min-h-40 flex-1 flex-col items-center justify-center gap-4 pb-4"
+			>
+				{#if phase === 'show' || phase === 'tts'}
+					{#if currentSentence}
+						<p class="text-xs font-medium text-muted-foreground" data-testid="phase-hint">
+							{phase === 'show' ? '聴いてね' : '読み上げ中'}
+						</p>
+						<p class="text-center text-2xl font-medium leading-relaxed" data-testid="sentence-text">
+							{currentSentence.text}
+						</p>
 					{/if}
-				{/if}
-			{:else if phase === 'hidden'}
-				{#if micConnecting}
-					<p
-						class="flex items-center gap-2 text-base text-muted-foreground"
-						data-testid="sentence-hidden"
-					>
-						<Loader2 class="animate-spin" size={18} aria-hidden="true" /> マイクを準備中…
-					</p>
-				{:else if micError}
-					<div class="flex flex-col items-center gap-4 text-center">
+				{:else if phase === 'hidden'}
+					{#if micConnecting}
+						<p
+							class="flex items-center gap-2 text-base text-muted-foreground"
+							data-testid="sentence-hidden"
+						>
+							<Loader2 class="animate-spin" size={18} aria-hidden="true" /> マイクを準備中…
+						</p>
+					{:else if micError}
 						<p class="text-sm text-destructive" data-testid="error-message">
 							マイクの使用が拒否されました
 						</p>
-						<Button
-							variant="outline"
-							class="h-11"
-							data-testid="error-retry-btn"
-							onclick={retryMic}
-						>
-							マイクをもう一度許可
-						</Button>
-					</div>
-				{:else}
-					<div class="flex flex-col items-center gap-5" data-testid="record-ready">
-						<p class="text-base font-medium" data-testid="record-ready-hint">
-							Spaceを押しながら読み上げてね
+					{:else if shortPressHint}
+						<p class="text-sm font-medium text-destructive" data-testid="short-press-hint">
+							もう少し長く押してね
 						</p>
-					<button
-						type="button"
-						class="record-hold-btn"
-						data-hold-btn
-						data-testid="record-hold-btn"
-						aria-label="押している間、録音します"
-						onpointerdown={startPointerHold}
-						oncontextmenu={(e) => e.preventDefault()}
-					>
-							<Mic class="size-5" aria-hidden="true" />
-							押して録音
-							<kbd class="kbd-hint">Space</kbd>
-						</button>
-						{#if shortPressHint}
-							<p class="text-sm font-medium text-destructive" data-testid="short-press-hint">
-								もう少し長く押してね
-							</p>
-						{/if}
-					</div>
-				{/if}
-			{:else if phase === 'recording'}
-				<div class="flex flex-col items-center gap-4" data-testid="sentence-recording">
-					<p class="flex items-center gap-2 text-base text-muted-foreground">
-						<span
-							class="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-destructive"
-							aria-hidden="true"
-						></span>
-						録音中
-					</p>
-					<p class="flex items-baseline gap-2 text-sm text-muted-foreground tabular-nums">
-						<span data-testid="recording-timer">
-							{(recordingElapsedMs / 1000).toFixed(1)} 秒
-						</span>
-						<span class="text-xs" data-testid="max-duration-note">最長30秒で自動採点</span>
-					</p>
-					<div
-						class="flex w-56 flex-col gap-1"
-						data-testid="level-meter"
-						role="img"
-						aria-label={`録音レベル ${levelPct}%`}
-					>
-						<div class="h-3 w-full overflow-hidden rounded-full bg-muted">
-							<div
-								class="h-full rounded-full bg-primary"
-								style:width={`${levelPct}%`}
-								data-testid="level-meter-fill"
-							></div>
+					{/if}
+				{:else if phase === 'recording'}
+					<div class="flex flex-col items-center gap-4" data-testid="sentence-recording">
+						<p class="flex items-center gap-2 text-base text-muted-foreground">
+							<span
+								class="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-destructive"
+								aria-hidden="true"
+							></span>
+							録音中
+						</p>
+						<p class="flex items-baseline gap-2 text-sm text-muted-foreground tabular-nums">
+							<span data-testid="recording-timer">
+								{(recordingElapsedMs / 1000).toFixed(1)} 秒
+							</span>
+							<span class="text-xs" data-testid="max-duration-note">最長30秒で自動採点</span>
+						</p>
+						<div
+							class="flex w-56 flex-col gap-1"
+							data-testid="level-meter"
+							role="img"
+							aria-label={`録音レベル ${levelPct}%`}
+						>
+							<div class="h-3 w-full overflow-hidden rounded-full bg-muted">
+								<div
+									class="h-full rounded-full bg-primary"
+									style:width={`${levelPct}%`}
+									data-testid="level-meter-fill"
+								></div>
+							</div>
+							<span class="text-xs text-muted-foreground tabular-nums" data-testid="level-value">
+								レベル {levelPct}%
+							</span>
 						</div>
-					<span class="text-xs text-muted-foreground tabular-nums" data-testid="level-value">
-						レベル {levelPct}%
-					</span>
-				</div>
-				<p class="text-sm font-medium" data-testid="release-hint">離すと採点します</p>
-				</div>
-			{:else if phase === 'transcribing'}
-				<p
-					class="flex items-center gap-2 text-base text-muted-foreground"
-					data-testid="sentence-transcribing"
-				>
-					<Loader2 class="animate-spin" size={18} aria-hidden="true" /> 聞き取ってるよ…
-				</p>
-			{:else if phase === 'feedback'}
-				{#if errorMessage}
-					<div class="flex flex-col items-center gap-4 text-center">
+						<p class="text-sm font-medium" data-testid="release-hint">離すと採点します</p>
+					</div>
+				{:else if phase === 'transcribing'}
+					<p
+						class="flex items-center gap-2 text-base text-muted-foreground"
+						data-testid="sentence-transcribing"
+					>
+						<Loader2 class="animate-spin" size={18} aria-hidden="true" /> 聞き取ってるよ…
+					</p>
+				{:else if phase === 'feedback'}
+					{#if errorMessage}
 						<p class="text-center text-sm text-destructive" data-testid="error-message">
 							{errorMessage}
 						</p>
-						<Button
-							variant="outline"
-							class="h-11"
-							data-testid="error-retry-btn"
-							onclick={retryFromError}
-						>
-							{errorRetryLabel}
-						</Button>
-					</div>
-				{:else if score !== null}
-					<div class="flex flex-col items-center gap-4 text-center" data-testid="feedback">
-						<div class="flex flex-col items-center">
-							<p class="text-sm font-medium text-muted-foreground" data-testid="score-label">
-								類似度
-							</p>
-							<p
-								class="score text-5xl font-bold tabular-nums"
-								class:pass={score >= threshold}
-								class:fail={score < threshold}
-								class:celebrate={score >= threshold}
-								data-testid="score"
-							>
-								{score}%
-							</p>
-						</div>
-						{#if diffTokens}
-							<p class="max-w-full text-lg leading-loose" data-testid="word-diff">
-								{#each diffTokens as token, i (i)}
-									<span
-										class="diff-token"
-										data-status={token.status}
-										data-testid="diff-token">{token.text}</span
-									>
-								{/each}
-							</p>
-							<p class="diff-legend" data-testid="diff-legend">
-								<span class="legend-item">
-									<span class="legend-swatch" data-status="match" aria-hidden="true"></span>
-									正しく読めた
-								</span>
-								<span class="legend-item">
-									<span class="legend-swatch" data-status="mismatch" aria-hidden="true"></span>
-									聞き取りに差
-								</span>
-								<span class="legend-item">
-									<span class="legend-swatch" data-status="unread" aria-hidden="true"></span>
-									未読
-								</span>
-							</p>
-						{/if}
-						{#if transcribedText}
-							<p class="text-sm text-muted-foreground italic" data-testid="transcribed-text">
-								「{transcribedText}」
-							</p>
-						{/if}
-						<div
-							class="flex w-full flex-col items-stretch gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-center"
-						>
-							<Button
-								variant="outline"
-								class="h-11 w-full sm:w-auto"
-								data-testid="replay-btn"
-								onclick={replaySentence}
-							>
-								<Volume2 /> もう一度聴く <kbd class="kbd-hint">R</kbd>
-							</Button>
-							{#if score >= threshold}
-								<Button class="h-11 w-full sm:w-auto" data-testid="next-btn" onclick={advanceToNext}>
-									次へ <kbd class="kbd-hint">Space</kbd>
-								</Button>
-							{:else}
-								<Button
-									variant="secondary"
-									class="h-11 w-full sm:w-auto"
-									data-testid="retry-btn"
-									onclick={retrySentence}
+					{:else if score !== null}
+						<div class="flex flex-col items-center gap-4 text-center" data-testid="feedback">
+							<div class="flex flex-col items-center">
+								<p class="text-sm font-medium text-muted-foreground" data-testid="score-label">
+									類似度
+								</p>
+								<p
+									class="score text-5xl font-bold tabular-nums"
+									class:pass={score >= threshold}
+									class:fail={score < threshold}
+									class:celebrate={score >= threshold}
+									data-testid="score"
 								>
-									もう一度試す <kbd class="kbd-hint">Space</kbd>
-								</Button>
+									{score}%
+								</p>
+							</div>
+							{#if diffTokens}
+								<p class="max-w-full text-lg leading-loose" data-testid="word-diff">
+									{#each diffTokens as token, i (i)}
+										<span
+											class="diff-token"
+											data-status={token.status}
+											data-testid="diff-token">{token.text}</span
+										>
+									{/each}
+								</p>
+								<p class="diff-legend" data-testid="diff-legend">
+									<span class="legend-item">
+										<span class="legend-swatch" data-status="match" aria-hidden="true"></span>
+										正しく読めた
+									</span>
+									<span class="legend-item">
+										<span class="legend-swatch" data-status="mismatch" aria-hidden="true"></span>
+										聞き取りに差
+									</span>
+									<span class="legend-item">
+										<span class="legend-swatch" data-status="unread" aria-hidden="true"></span>
+										未読
+									</span>
+								</p>
+							{/if}
+							{#if transcribedText}
+								<p class="text-sm text-muted-foreground italic" data-testid="transcribed-text">
+									「{transcribedText}」
+								</p>
 							{/if}
 						</div>
-					</div>
+					{/if}
 				{/if}
-			{/if}
+			</div>
 		</div>
 
-		<div class="flex w-full flex-col items-stretch gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-center">
-			<Button variant="outline" class="h-11 w-full sm:w-auto" onclick={skip} data-testid="skip-btn">スキップ <kbd class="kbd-hint">S</kbd></Button>
+		<!-- 下部アクションゾーン: 常にビューポート内に見える -->
+		<div
+			class="flex flex-none flex-col gap-2 border-t border-border bg-background p-3"
+			data-testid="action-zone"
+		>
+			{#if phase === 'feedback' && score !== null && !errorMessage}
+				<div
+					class="flex flex-col items-stretch gap-2"
+					data-testid="feedback-actions"
+				>
+					{#if score >= threshold}
+						<Button class="h-11 w-full" data-testid="next-btn" onclick={advanceToNext}>
+							次へ <kbd class="kbd-hint">Space</kbd>
+						</Button>
+					{:else}
+						<Button class="h-11 w-full" data-testid="retry-btn" onclick={retrySentence}>
+							もう一度試す <kbd class="kbd-hint">Space</kbd>
+						</Button>
+					{/if}
+					<Button
+						variant="outline"
+						class="h-11 w-full"
+						data-testid="replay-btn"
+						onclick={replaySentence}
+					>
+						<Volume2 /> もう一度聴く <kbd class="kbd-hint">R</kbd>
+					</Button>
+					<Button variant="outline" class="h-11 w-full" onclick={skip} data-testid="skip-btn">
+						スキップ <kbd class="kbd-hint">S</kbd>
+					</Button>
+				</div>
+			{:else}
+				{#if phase === 'show'}
+					<Button class="h-11 w-full" data-testid="replay-btn" onclick={replaySentence}>
+						<Volume2 /> もう一度聴く <kbd class="kbd-hint">R</kbd>
+					</Button>
+				{:else if phase === 'hidden' && micError}
+					<Button class="h-11 w-full" data-testid="error-retry-btn" onclick={retryMic}>
+						マイクをもう一度許可
+					</Button>
+				{:else if phase === 'hidden' && !micConnecting && !micError}
+					<div class="flex flex-col items-center gap-3" data-testid="record-ready">
+						<p class="text-base font-medium" data-testid="record-ready-hint">
+							Spaceを押しながら読み上げてね
+						</p>
+						<button
+							type="button"
+							class="record-hold-btn"
+							data-hold-btn
+							data-testid="record-hold-btn"
+							aria-label="押している間、録音します"
+							onpointerdown={startPointerHold}
+							oncontextmenu={(e) => e.preventDefault()}
+						>
+							<Mic class="size-5 shrink-0" aria-hidden="true" />
+							<span class="whitespace-nowrap">押して録音</span>
+							<kbd class="kbd-hint">Space</kbd>
+						</button>
+					</div>
+				{:else if phase === 'feedback' && errorMessage}
+					<Button class="h-11 w-full" data-testid="error-retry-btn" onclick={retryFromError}>
+						{errorRetryLabel}
+					</Button>
+				{/if}
+				<Button variant="outline" class="h-11 w-full" onclick={skip} data-testid="skip-btn">
+					スキップ <kbd class="kbd-hint">S</kbd>
+				</Button>
+			{/if}
 		</div>
 	{/if}
 
