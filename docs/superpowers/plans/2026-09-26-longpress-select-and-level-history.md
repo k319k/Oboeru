@@ -73,6 +73,11 @@
 // finger drift expands the range into visible text selection with Android's
 // selection handles, which competes with the press.
 // ---------------------------------------------------------------------------
+// ⚠ 以下のコードは**実行すると通らない**。`cs.webkitTouchCallout` は (a) DOM lib に型が無く
+// (b) Chromium が `-webkit-touch-callout` をパース時に捨てるので常に空文字。
+// CDP タッチ経路も空振り。Step 2 の訂正コメントと AGENTS.md「既知の落とし穴」を参照。
+// 実際の tests/practice.spec.ts は computed `user-select` + マウス長押＋ドラッグの
+// 挙動テストの 2 本に置き換えてある。
 
 test.describe('Practice — text selection is suppressed on the record controls', () => {
 	test('the hold button and the action zone refuse text selection', async ({ page }) => {
@@ -114,8 +119,15 @@ test.describe('Practice — text selection is suppressed on the record controls'
 
 Run: `npx playwright test tests/practice.spec.ts --workers=1 --reporter=list -g "text selection is suppressed"`
 Expected: FAIL。`record-hold-btn` の `userSelect` は `none` だが
-`touchCallout` は空文字（宣言が無い）なので `expect(style.touchCallout).toBe('none')` で失敗する。
+`touchCallout` は空文字（宣言が無い）ので `expect(style.touchCallout).toBe('none')` で失敗する。
 `action-zone` は `userSelect` が `auto` なので最初の assert で失敗する。
+
+> **訂正（Task 1 実行後の実測）**: この Step の `cs.webkitTouchCallout` は
+> **通りえない**。DOM lib に型が無く（`as any` 禁止）、Chromium の CSS パーサが
+> `-webkit-touch-callout` をパース時に捨てるので `getPropertyValue` でも常に空文字になる。
+> 実際の Task 1 ではこの assert をやめ、computed `user-select` の検証 +
+> マウス長押＋ドラッグの挙動テストに置き換えた。CDP タッチ経路も空振りなので
+> 使っていない。詳細は `AGENTS.md`「既知の落とし穴」と task-1-report.md。
 
 - [ ] **Step 3: `.record-hold-btn` に `-webkit-touch-callout: none` を追加する**
 
@@ -451,8 +463,8 @@ Task 1 Step 7 で「録音中はスキップ不可」の直後に追加した文
 ただし「完了条件」に 1 項目追加する:
 
 ```diff
- 8. デプロイ後のスモーク（`GET /` 200、`POST /api/judge` が `available: true`）
-+9. 390px で長押し 1.2 秒（CDP `Input.dispatchTouchEvent`）し、`document.getSelection().rangeCount` が **0** になる
+  8. デプロイ後のスモーク（`GET /` 200、`POST /api/judge` が `available: true`）
++9. 390px でマウス長押＋ドラッグ（3 要素）し、`document.getSelection().rangeCount` が 0 になる。対照の `sentence-text` は 1 以上になること
 ```
 
 - [ ] **Step 3: 全体を検証する**
@@ -468,15 +480,33 @@ Expected: 全て PASS
 `practice.spec.ts` は並列負荷で稀にフレーキーなので、落ちたら単独再実行する:
 `npx playwright test tests/practice.spec.ts --workers=1 --reporter=list`
 
-- [ ] **Step 4: 実機相当の長押し検証（CDP）**
+- [ ] **Step 4: 実機相当の長押し検証（マウス長押＋ドラッグ）**
 
-`/tmp/` にスクリプトを書いて、390px のコンテキストで
-CDP `Input.dispatchTouchEvent` を 1.2 秒長押しし、
-`document.getSelection().rangeCount` を読み取る。
-Expected: **0**（修正前は 1 だった）
+  `/tmp/` にスクリプトを書いて、390px のコンテキストで
+  **マウス長押し＋ドラッグ**（`mouse.move` → `mouse.down` → 一定距離の `mouse.move` を数回 →
+  `mouse.up`）を 3 要素に対して行い、`document.getSelection().rangeCount` を読み取る。
 
-スクリーンショットも撮って `record-hold-btn` と `action-zone` の
-周辺に選択ハイライトが出ていないことを目視確認する。
+  | 試行 | 期待値 |
+  |---|---|
+  | `record-ready-hint`（アクション zone 内の散文） | **0**（`user-select: none` が効いている） |
+  | `record-hold-btn` | **0** |
+  | アクション zone の中心 | **0** |
+  | `sentence-text`（対照・選択可能なまま） | **1 以上** |
+
+  **対照ケースを必ず実行する。** `sentence-text` が 1 以上になることを先に確認し、
+  初めて 0 が「抑止が効いている」証拠になる。ジェスチャ自体が常に 0 なら何も証明にならない。
+
+  **CDP のタッチ経路は使ってはいけない。** `Input.dispatchTouchEvent` は
+  Chromium のこのビルドでは選択可能テキストに対しても `rangeCount` が 0 になるため、
+  修正前でも 0 で**恒真**（＝空振り検証）になる。マウス経路だけが識別力を持つ。
+
+  **なお `record-hold-btn` とアクション zone の中心は宣言を消しても 0 のまま**になる。
+  Chromium は `<button>` -widget の内側では CSS に関係なく選択が始まらないためで、
+  この 2 つの CSS を守るのは上の computed `user-select` のテストである。
+  宣言の欠落を検出する役割は `record-ready-hint` が担う。
+
+  スクリーンショットも撮って `record-hold-btn` と `action-zone` の
+  周辺に選択ハイライトが出ていないことを目視確認する。
 
 - [ ] **Step 5: コミットする**
 
@@ -526,7 +556,12 @@ Expected: 1 行目は `200`、2 行目は `{"available":true,"noul":0.8 以上,.
 | `[data-testid="action-zone"]` の `rect.bottom` | `<= innerHeight + 1`（②の回帰確認） |
 | `record-hold-btn` の computed `user-select` | `none` |
 | `action-zone` の computed `user-select` | `none` |
-| `action-zone` の computed `-webkit-touch-callout` | `none` |
+| `sentence-text` の computed `user-select` | `none` 以外（選択可能なまま） |
+
+`action-zone` の computed `-webkit-touch-callout` は**確認しない。**
+Chromium の CSS パーサが宣言を落とすため常に空文字で、この行は必ず失敗する。
+宣言の存在と非検証성은 `AGENTS.md`「既知の落とし穴」に記録済み。
+iOS 専用プロパティとしての実効は本番自動テストでは確認できない。
 
 スクリーンショットを撮って目視確認する（棒が右から左へ流れているか、
 外部ナビが出ていないか、進捗バーが全幅か）。

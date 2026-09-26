@@ -102,6 +102,7 @@ npm install
 - `src/lib/components/ui/badge/index.ts` は LSP が誤検出する (svelte-check は 0 エラーが真実)
 - コミット禁止物: `.env` / `.omo/` / `.superpowers/` / `babel-import.json` / `test-results/`
 - 録音採点の文字起こしは Groq Whisper。表記ゆらぎ (3階/三階、あらそう/争う) は Jev+正規化で吸収済み — モデル変更は不要 (ユーザー決定済み)
+- **長押しの文字選択抑止は自動テストで完全には検証できない。** Chromium の CSS パーサは `-webkit-touch-callout` をパース時に落とす（`CSS.supports('touch-callout')` は false、CSSOM からも消える）ので、iOS Safari 専用のプロパティとして宣言は残すが Chromium では検証不能。挙動は**マウス長押＋ドラッグ**なら Chromium でも検証できる（`user-select: none` の要素は `getSelection().rangeCount === 0`、選択可能な要素は 1）。CDP のタッチ経路は選択可能テキストでも 0 になるため空振り。**ただし 2 つ陷阱がある**: (1) Chromium は `<button>` -widget の内側では CSS に関係なく選択が始まらないため、`record-hold-btn` や action zone の中心は**判定に使えない**（宣言を消しても 0 のまま）。検出するのは `record-ready-hint` のような**非 button の散文**。(2) `CSS.supports('user-select')` も false になるので `CSS.supports` による判別は不可
 
 ## 運用
 

@@ -21,16 +21,37 @@
 
 ## 現状の実測（2026-09-26 / dev サーバー / 390×844）
 
-Playwright の CDP `Input.dispatchTouchEvent` で長押しを再現した結果。
-
 ### バグ 1: テキスト選択
+
+**訂正（Task 1 実行中の実測による）**: 当初この節は「CDP `Input.dispatchTouchEvent` で
+1.2 秒長押し → `rangeCount` が **1**」と記録していたが、**この測定値は正しくない**。
+Chromium のこの headless ビルドでは CDP のタッチ経路が**選択可能な要素に対しても
+`rangeCount` を 0 のままに保つ**ため、`rangeCount: 1` はCDP経路では再現しない。
+以下の表は訂正後の実測（**マウス長押＋ドラッグ**経路）である。
 
 | 試行 | `getSelection().rangeCount` | `getSelection().toString()` |
 |---|---|---|
-| ボタン上で 1.2 秒長押し | **1** | `""`（空だが範囲は生成される） |
-| ボタン直下 24px で 1.2 秒長押し | **1** | `""` |
+| ボタン上で 1.2 秒長押し（CDP タッチ） | 0 | `""` — **CDP 経路は選択を作らない（空振り）** |
+| ボタン直下 24px で 1.2 秒長押し（CDP タッチ） | 0 | `""` — 同上 |
+| 任意の `<div>` をマウス長押＋ドラッグ | 1 | 選択される（マウス経路は有効） |
+| 任意の `<button>` をマウス長押＋ドラッグ | 0 | **CSS に関係なく選択されない**（後述の罠） |
 
-選択範囲自体は生成されている。実機では指が微小に動くと範囲が拡張して、テキスト選択と Android の選択ハンドルが操作を妨げる。
+つまり **CDP タッチ経路では元のバグを再現できない**（対照ケースも 0）。
+実機（Android Chrome）で起きている事象は自動化環境では観測できず、
+自動テストで代替できるのは**マウス長押＋ドラッグ経路**だけである。
+
+**検証経路の能力和上限**:
+
+| 経路 | 抑止の検出 | 備考 |
+|---|---|---|
+| computed `user-select` | ○（宣言の存在） | CSS の回帰としては十分 |
+| マウス長押＋ドラッグ（非 button の散文） | ○（挙動） | `record-ready-hint` が対象 |
+| マウス長押＋ドラッグ（`<button>` 内側） | × | Chromium は button 内側で CSS ＼ 無関係に選択しない |
+| CDP `Input.dispatchTouchEvent` | × | 選択可能テキストでも 0 → 恒真 |
+
+選択範囲の生成自体は実機では起きている（指が微小に動くと範囲が拡張し、テキスト選択と
+Android の選択ハンドルが操作を妨げる）。ただし **その指数を Chromium で再現することはできない**
+ため、「自動テストが通った」は「実機でも直った」の証明にはならない。
 
 原因（コード根拠）:
 
@@ -239,25 +260,34 @@ practice 页面内で完結させる。
 ```ts
 // ---------------------------------------------------------------------------
 // Long-press text selection: the record controls must not start a selection.
-// Reproduced with a 1.2s touch hold; a real finger drift expands the range
-// into visible text selection with Android's selection handles.
+// The gesture is reproduced with a mouse long press + drag. The CDP touch path
+// is NOT usable: it leaves rangeCount at 0 even on selectable text, so it is
+// vacuously true.
 // ---------------------------------------------------------------------------
 
 test.describe('Practice — text selection is suppressed on the record controls', () => {
-	test('the hold button and the action zone refuse text selection', async ({ page }) => {
+	test('the hold button and the action zone declare user-select: none', async ({ page }) => {
 		await seedPractice(page);
 		await mockTts(page);
 		await page.goto('/practice?chapter=ch-ja-01');
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 
 		for (const id of ['record-hold-btn', 'action-zone']) {
-			const style = await page.getByTestId(id).evaluate((el) => {
-				const cs = getComputedStyle(el);
-				return { userSelect: cs.userSelect, touchCallout: cs.webkitTouchCallout };
-			});
-			expect(style.userSelect, `${id}: user-select`).toBe('none');
-			expect(style.touchCallout, `${id}: -webkit-touch-callout`).toBe('none');
+			const userSelect = await page
+				.getByTestId(id)
+				.evaluate((el) => getComputedStyle(el).userSelect);
+			expect(userSelect, `${id}: user-select`).toBe('none');
 		}
+	});
+
+	test('a long press with a drag selects nothing on the record controls', async ({ page }) => {
+		// Positive control first: the same gesture over `sentence-text` must
+		// select, otherwise the 0s below prove nothing.
+		//   sentence-text        → >= 1
+		//   record-ready-hint    → 0   (plain prose; guards the .action-zone rule)
+		//   action-zone (centre) → 0   (cannot discriminate: it is the hold button)
+		//   record-hold-btn      → 0   (cannot discriminate: <button> widgets
+		//                                  never select in Chromium)
 	});
 });
 ```
@@ -280,9 +310,21 @@ npm run test:e2e   # Playwright 全体
 - 縦横 overflow 0
 - アクション zone が `rect.bottom <= innerHeight + 1` を満たす
 
-さらに実機相当の検証として、CDP `Input.dispatchTouchEvent` で 1.2 秒長押しし、
-`document.getSelection().rangeCount` が **0** になることを確認する
-（現状は 1 になる）。
+さらに実機相当の検証として、**マウス長押＋ドラッグ**（`mouse.move` → `mouse.down` →
+一定距離の `mouse.move` を数回 → `mouse.up`）で `document.getSelection().rangeCount` を読む。
+
+| 対象 | 期待値 | 判別力 |
+|---|---|---|
+| `record-ready-hint`（アクション zone 内の散文） | **0** | ○ 宣言を消すと 1 になるので検出できる |
+| `record-hold-btn` | **0** | × `<button>` 内側は CSS ＼ 無関係に 0 |
+| アクション zone の中心 | **0** | × 中心が hold button なので × |
+| `sentence-text`（対照） | **1 以上** | 対照。0 だとジェスチャ自体が空振り |
+
+**CDP `Input.dispatchTouchEvent` は使わない。** Chromium のこのビルドでは選択可能テキストに
+対しても 0 のままなので、修正前でも 0 で恒真になる。-spec の「現状の実測」節も訂正済み。
+
+なお、この自動テストが通ることは「宣言が存在して Chromium では抑止される」ことの証明であって、
+**「実機（Android Chrome）で長押しが直った」ことの証明ではない**。実機での確認は別途必要。
 
 ---
 
@@ -296,7 +338,7 @@ npm run test:e2e   # Playwright 全体
 | 無音 | 全棒が 3px の下限で平坦になる。「録音は動いているが音が入っていない」ことが伝わる |
 | `levelHistory` の肥大 | `slice(-(LEVEL_HISTORY_MAX - 1))` で常に 32 以下に保たれる |
 | `-webkit-touch-callout` 非対応ブラウザ | 未知のプロパティとして無視される。`user-select: none` は残るため主要ブラウザでは抑止される |
-| `cs.webkitTouchCallout` が空文字を返すブラウザ | 3.2 のテストが失敗する。非対応ブラウザでは `none` を返さないため、`|| 'none'` のような寛容化は**しない**（緩めるとテストが無意味になる） |
+| `-webkit-touch-callout` が存在しないブラウザ | Chromium は宣言をパース時に落とす（CSSOM にも残らない）ので、宣言を検証する手段が無い。`user-select: none` は残るため主要ブラウザでは抑止される。「`rangeCount` を 0 にする」ことを証拠にする検証は**しない**（CDP タッチ経路は選択可能テキストでも 0 になるため恒真）。§3.4 のマウス長押＋ドラッグのみを使う |
 
 ## 5. 非目標
 
@@ -355,7 +397,7 @@ npm run test:e2e   # Playwright 全体
 2. `npm test` 緑
 3. `npm run test:e2e` 緑
 4. 390px 実測で棒が右→左に流れることを確認（スクリーンショット目視）
-5. CDP 長押し 1.2 秒で `getSelection().rangeCount === 0`
+5. マウス長押＋ドラッグで `getSelection().rangeCount` が 0（`record-ready-hint` / `record-hold-btn` / アクション zone）、かつ対照の `sentence-text` は 1 以上。CDP タッチ経路は恒真なので使わない
 6. アクション zone が `rect.bottom <= innerHeight + 1`
 7. コミットして **push とデプロイまで完了**（ユーザー明示依頼）
 8. デプロイ後のスモーク（`GET /` 200、`POST /api/judge` が `available: true`）

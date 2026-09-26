@@ -1034,13 +1034,40 @@ test.describe('Practice — T13 push-to-talk', () => {
 	});
 });
 
+/** Press at the centre of `testId`, hold, drag a short distance in small steps,
+ *  then report how many selection ranges the gesture produced.
+ *
+ *  The mouse path is the one that discriminates: Chromium's CDP touch path
+ *  (`Input.dispatchTouchEvent`) never seeds a range in this headless build — not
+ *  even on plainly selectable text — so a touch-based check is always 0 and
+ *  proves nothing. See AGENTS.md 「既知の落とし穴」. */
+async function longPressDragRangeCount(page: Page, testId: string): Promise<number> {
+	const box = await page.getByTestId(testId).boundingBox();
+	if (!box) throw new Error(`${testId} has no bounding box`);
+	const startX = box.x + box.width / 2;
+	const startY = box.y + box.height / 2;
+
+	// Drop any range a previous gesture left behind, otherwise the next reading
+	// would just report that stale range.
+	await page.evaluate(() => document.getSelection()?.removeAllRanges());
+
+	await page.mouse.move(startX, startY);
+	await page.mouse.down();
+	await page.waitForTimeout(700);
+	for (let step = 1; step <= 4; step++) {
+		await page.mouse.move(startX + step * 10, startY);
+	}
+	const rangeCount = await page.evaluate(() => document.getSelection()?.rangeCount ?? 0);
+	await page.mouse.up();
+	return rangeCount;
+}
+
 // ---------------------------------------------------------------------------
 // Long-press text selection: the record controls must not start a selection.
 // On a real device a 1.2s hold plus a small finger drift expands the range into
 // visible text selection with Android's selection handles, which competes with
-// the press. Chromium's headless CDP touch emulation never seeds a range (even
-// on plainly selectable text), so the hold itself is not reproducible here and
-// the contract is asserted through the computed `user-select` instead.
+// the press. The gesture is reproduced with a mouse long press + drag, which
+// Chromium does honour (unlike the CDP touch path — see longPressDragRangeCount).
 // ---------------------------------------------------------------------------
 
 test.describe('Practice — text selection is suppressed on the record controls', () => {
@@ -1073,6 +1100,45 @@ test.describe('Practice — text selection is suppressed on the record controls'
 			.getByTestId('sentence-text')
 			.evaluate((el) => getComputedStyle(el).userSelect);
 		expect(userSelect).not.toBe('none');
+	});
+
+	test('a long press with a drag selects nothing on the record controls', async ({ page }) => {
+		await seedPractice(page);
+		await mockTts(page);
+		await page.goto('/practice?chapter=ch-ja-01');
+		await expect(page.getByTestId('sentence-text')).toBeVisible();
+
+		// Positive control: the very same gesture over the sentence does select,
+		// so the 0s asserted below can only come from the suppression and not
+		// from a gesture that never selects anything in this browser.
+		const sentence = await longPressDragRangeCount(page, 'sentence-text');
+		expect(
+			sentence,
+			'sentence-text: selection ranges after a long press + drag'
+		).toBeGreaterThanOrEqual(1);
+
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByTestId('record-ready-hint')).toBeVisible();
+
+		// `record-ready-hint` is plain prose inside the action zone rather than a
+		// <button>, so its selectability is governed by `.action-zone` alone. It is
+		// the case that goes red if the `user-select: none` declaration is dropped.
+		const hintRanges = await longPressDragRangeCount(page, 'record-ready-hint');
+		expect(hintRanges, 'record-ready-hint: selection ranges after a long press + drag').toBe(
+			0
+		);
+
+		// `action-zone` and `record-hold-btn` cannot discriminate: Chromium refuses
+		// to select inside a <button> widget whatever the CSS says, and the centre
+		// of the action zone is the hold button. Their rc=0 is recorded as observed
+		// behaviour; the computed `user-select` test above guards their CSS.
+		// Both need a fresh ready phase because pressing them starts a recording.
+		for (const id of ['action-zone', 'record-hold-btn']) {
+			await page.reload();
+			await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+			const rangeCount = await longPressDragRangeCount(page, id);
+			expect(rangeCount, `${id}: selection ranges after a long press + drag`).toBe(0);
+		}
 	});
 });
 
