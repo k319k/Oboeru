@@ -51,11 +51,12 @@ npm install
 | header | `flex flex-none items-center gap-2 pb-3` (`data-testid="practice-header"`) | 章名 + 終了アイコン (アイコンのみ) |
 | progress | `flex flex-none flex-col gap-1` (`data-testid="progress"`) | 全幅 1 行。`progress-bar` + `<span>` 2 個 |
 | 本文 | `flex min-h-0 flex-1 flex-col overflow-y-auto` (`data-testid="practice-body"`) | **ここだけが内部スクロール** |
-| action-zone | `flex flex-none flex-col gap-2 border-t border-border bg-background p-3` (`data-testid="action-zone"`) | 主操作 1 + サブ 0〜2 + `skip-btn`。常にビューポート内に見える |
+| action-zone | `action-zone flex flex-none flex-col gap-2 border-t border-border bg-background p-3` (`data-testid="action-zone"`) | 主操作 1 + サブ 0〜2 + `skip-btn`。常にビューポート内に見える |
 
 - **`h-dvh` と `src/routes/+layout.svelte` の `class:py-6={!isPractice}` は相互結合。戻してはいけない。** `h-dvh` を `min-h-*` にすると本文の `min-h-0 flex-1` チェーンが clamp せず、document 全体がスクロールして `action-zone` が画面外に出る。`<main>` 側に `py-*` を足すのも同じ壊し方 (root の 100dvh がビューポートを超えて document スクロールが戻る)。横 padding は `<main>`、縦だけ root が持つ、という役割分担も維持する
 - **練習中はグローバルナビが出ない。** `+layout.svelte` の `<header>` (`おぼえる` / `管理`) は `pathname === '/practice'` で条件付き非表示。`skip link` (`#main-content`) は全ルートで残る
 - **録音中はスキップ不可。** `recording` フェーズでは `skip-btn` が `disabled` で、`skip()` 自体も no-op (誤タップで録音した音声を捨てないため)。判定は `isRecording = $derived.by(() => phase === 'recording')` を使う。`feedback-actions` 内の `skip-btn` では `phase` が `'feedback'` へ narrowing されるため、`phase === 'recording'` を直接書くと svelte-check の "no overlap" エラーになる
+- **長押しでテキスト選択が始まらない。** 録音ボタン (`.record-hold-btn`) と下部アクションゾーン (`.action-zone`) は `user-select: none` + `-webkit-touch-callout: none`。録音操作を長押しで妨害しないため。`sentence-text` と `diff-token` は選択可能なまま残す
 - **390px ではキーボードヒント非表示。** `kbd-hint` は `hidden sm:inline-block`、散文の指示文 `record-ready-hint` も `hidden sm:block` (640px 未満で消す)。**注意**: `.kbd-hint` の scoped style には `display` を書いていない。書くと unlayered scoped style が Tailwind の `utilities` レイヤーに勝って `hidden` が効かない
 
 ## データモデル規約

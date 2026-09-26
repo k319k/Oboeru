@@ -1142,7 +1142,7 @@
 
 		<!-- 下部アクションゾーン: 常にビューポート内に見える -->
 		<div
-			class="flex flex-none flex-col gap-2 border-t border-border bg-background p-3"
+			class="action-zone flex flex-none flex-col gap-2 border-t border-border bg-background p-3"
 			data-testid="action-zone"
 		>
 			{#if phase === 'feedback' && score !== null && !errorMessage}
@@ -1385,6 +1385,7 @@
 		touch-action: none;
 		user-select: none;
 		-webkit-user-select: none;
+		-webkit-touch-callout: none;
 		transition:
 			transform var(--motion-press, 180ms) var(--ease-out-standard, ease),
 			box-shadow var(--motion-press, 180ms) var(--ease-out-standard, ease);
@@ -1414,5 +1415,14 @@
 		font-weight: 700;
 		line-height: 1.5;
 		white-space: nowrap;
+	}
+
+	/* 長押しでのテキスト選択とコンテキストメニューを抑止する。録音操作中は
+	   意図しない選択が押下の妨げになる。ボタンとアクション zone にだけ適用し、
+	   文テキストと差异トークンは選択可能なまま残す。 */
+	.action-zone {
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-touch-callout: none;
 	}
 </style>

@@ -1035,6 +1035,48 @@ test.describe('Practice — T13 push-to-talk', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Long-press text selection: the record controls must not start a selection.
+// On a real device a 1.2s hold plus a small finger drift expands the range into
+// visible text selection with Android's selection handles, which competes with
+// the press. Chromium's headless CDP touch emulation never seeds a range (even
+// on plainly selectable text), so the hold itself is not reproducible here and
+// the contract is asserted through the computed `user-select` instead.
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — text selection is suppressed on the record controls', () => {
+	test('the hold button and the action zone refuse text selection', async ({ page }) => {
+		await seedPractice(page);
+		await mockTts(page);
+		await page.goto('/practice?chapter=ch-ja-01');
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		// `user-select` is the only one of the three declarations Chromium can
+		// compute: `-webkit-touch-callout` is dropped by Chromium's CSS parser, so
+		// it is unverifiable here and exists for iOS Safari. See task-1-report.md.
+		for (const id of ['record-hold-btn', 'action-zone']) {
+			const userSelect = await page
+				.getByTestId(id)
+				.evaluate((el) => getComputedStyle(el).userSelect);
+			expect(userSelect, `${id}: user-select`).toBe('none');
+		}
+	});
+
+	test('sentence text and diff tokens stay selectable', async ({ page }) => {
+		await seedPractice(page);
+		await mockTts(page);
+		await page.goto('/practice?chapter=ch-ja-01');
+		await expect(page.getByTestId('sentence-text')).toBeVisible();
+
+		// The suppression is scoped to the record controls; the sentence itself
+		// must remain copyable.
+		const userSelect = await page
+			.getByTestId('sentence-text')
+			.evaluate((el) => getComputedStyle(el).userSelect);
+		expect(userSelect).not.toBe('none');
+	});
+});
+
+// ---------------------------------------------------------------------------
 // T6: Summary normalization
 // ---------------------------------------------------------------------------
 
