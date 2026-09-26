@@ -347,7 +347,7 @@ const LEVEL_HISTORY_MAX = 32;
 
 ```svelte
 						<div
-							class="flex h-[72px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
+							class="flex h-[240px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
 							data-testid="level-history"
 							data-testid-level="meter"
 							role="img"
@@ -355,14 +355,14 @@ const LEVEL_HISTORY_MAX = 32;
 						>
 							{#each levelHistory as level, i (i)}
 								<!--
-									高さはコンテンツボックス (h-[72px] - p-2*2 = 56px) に収める。
-									係数 224 = 56 / 0.25 で、level 0.25 で満高 = levelPct
+									高さはコンテンツボックス (h-[240px] - p-2*2 = 224px) に収める。
+									係数 896 = 224 / 0.25 で、level 0.25 で満高 = levelPct
 									(min(100, round(level * 400))) が 100% に到達する点と一致。
-									Math.min(56) により overflow は構造的に起きない。
+									Math.min(224) により overflow は構造的に起きない。
 								-->
 								<span
 									class="w-2 shrink-0 rounded-sm"
-									style:height={`${Math.max(3, Math.min(56, Math.round(level * 224)))}px`}
+									style:height={`${Math.max(3, Math.min(224, Math.round(level * 896)))}px`}
 									style:background={i >= levelHistory.length - 6
 										? 'var(--primary)'
 										: `color-mix(in oklab, var(--primary) ${Math.round(
@@ -380,21 +380,21 @@ const LEVEL_HISTORY_MAX = 32;
 ```svelte
 						<div class="flex w-full flex-col gap-1" data-testid="level-meter">
 							<div
-								class="flex h-[72px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
+								class="flex h-[240px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
 								data-testid="level-history"
 								role="img"
 								aria-label={`録音レベル ${levelPct}%`}
 							>
 								{#each levelHistory as level, i (i)}
 								<!--
-									高さはコンテンツボックス (h-[72px] - p-2*2 = 56px) に収める。
-									係数 224 = 56 / 0.25 で、level 0.25 で満高 = levelPct
+									高さはコンテンツボックス (h-[240px] - p-2*2 = 224px) に収める。
+									係数 896 = 224 / 0.25 で、level 0.25 で満高 = levelPct
 									(min(100, round(level * 400))) が 100% に到達する点と一致。
-									Math.min(56) により overflow は構造的に起きない。
+									Math.min(224) により overflow は構造的に起きない。
 								-->
 									<span
 										class="w-2 shrink-0 rounded-sm"
-										style:height={`${Math.max(3, Math.min(56, Math.round(level * 224)))}px`}
+										style:height={`${Math.max(3, Math.min(224, Math.round(level * 896)))}px`}
 										style:background={i >= levelHistory.length - 6
 											? 'var(--primary)'
 											: `color-mix(in oklab, var(--primary) ${Math.round(

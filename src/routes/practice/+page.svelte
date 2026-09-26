@@ -1024,7 +1024,22 @@
 			data-testid="practice-body"
 			bind:this={bodyEl}
 		>
-			<div class="flex flex-col items-center justify-start gap-4 py-4">
+			<!--
+				`recording` だけ縦中央寄せ。内容（録音中・タイマ・メーター・離すと採点します）
+				は約 352px で、390×844 の practice-body（659px）に対して上寄せだと下に
+				459px の空白が残る。録音中は「見ているだけ」の画面なので中央寄せにして
+				空白を上下に散らす。`feedback` は内容が高いので上寄せのまま。
+
+				中央寄せは `my-auto` で行う（`justify-content: center` ではない）。
+				親が `overflow-y-auto` の縦フレックスなので、justify-content で centering すると
+				コンテンツが親より高いときに上端がスクロールで到達不能になる既知の落とし穴に
+				当たる。`margin-block: auto` は free space がない場合 0 に解決され、
+				overflow 時も上寄せに戻るため安全。
+			-->
+			<div
+				class="flex flex-col items-center gap-4 py-4"
+				class:my-auto={phase === 'recording'}
+			>
 				{#if phase === 'show' || phase === 'tts'}
 					{#if currentSentence}
 						<p class="text-xs font-medium text-muted-foreground" data-testid="phase-hint">
@@ -1091,17 +1106,21 @@
 						-->
 						<div class="flex w-full min-w-0 flex-col gap-1" data-testid="level-meter">
 							<div
-								class="flex h-[72px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
+								class="flex h-[240px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
 								data-testid="level-history"
 								role="img"
 								aria-label={`録音レベル ${levelPct}%`}
 							>
 							<!--
 								棒の高さはコンテンツボックス内に収める。コンテナのコンテンツボックスは
-								h-[72px] から p-2×2 を引いて 56px。係数 224 は 56 / 0.25 で、
+								h-[240px] から p-2×2 を引いて 224px。係数 896 は 224 / 0.25 で、
 								level 0.25 で満高になる = levelPct (min(100, round(level * 400)))
-								が 100% に到達する点と一致させている。Math.min(56) により、
+								が 100% に到達する点と一致させている。Math.min(224) により、
 								係数やコンテナの寸法が変わっても absolute に overflow しない。
+								高さを 72px から 240px に上げたのは、録音中が「見ているだけ」の
+								画面で小さいメーターだと録音している実感が薄くなるため。
+								小さい画面（375×667）でも practice-body は 482px なので、
+								内容合計 346px が収まる。
 								フェード先は --muted ではなく --muted-foreground。--muted は
 								コンテナの背景 (bg-muted/40) と同系で、ライトテーマでは最古の棒が
 								背景とほぼ同値 (コントラスト比 1.03:1) になり実質不可視になる。
@@ -1115,7 +1134,7 @@
 								-->
 								<span
 									class="w-2 shrink-0 rounded-sm"
-									style:height={`${Math.max(3, Math.min(56, Math.round(level * 224)))}px`}
+									style:height={`${Math.max(3, Math.min(224, Math.round(level * 896)))}px`}
 									style:background={i >= levelHistory.length - 6
 										? 'var(--primary)'
 										: `color-mix(in oklab, var(--primary) ${Math.round(

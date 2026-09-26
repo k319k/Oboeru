@@ -6,14 +6,14 @@ import { test, expect, type Page } from './fixtures';
 import { loudWavBytes, silentWavBytes } from './tts-mock';
 
 /**
- * Deterministic loud-source coverage for the level history meter's 56px clamp.
+ * Deterministic loud-source coverage for the level history meter's 224px clamp.
  *
  * Why this file exists
  * --------------------
  * The level history bars are clamped in the template:
- * `Math.max(3, Math.min(56, Math.round(level * 224)))`. Verifying that clamp
+ * `Math.max(3, Math.min(224, Math.round(level * 896)))`. Verifying that clamp
  * needs a *loud* sample, because quiet samples floor out at 3px and can never
- * exceed 56.
+ * exceed 224.
  *
  * Chromium's built-in fake audio device emits a **bursty** beep — one loud beep
  * per 500ms, silence in between — and a parallel Playwright worker throttles
@@ -102,7 +102,7 @@ async function setupPractice(page: Page) {
 }
 
 test.describe('level history overflow — deterministic loud source', () => {
-	test('every bar is clamped to the 56px content box', async ({ page }) => {
+	test('every bar is clamped to the 224px content box', async ({ page }) => {
 		await setupPractice(page);
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 10000 });
 
@@ -117,7 +117,7 @@ test.describe('level history overflow — deterministic loud source', () => {
 				const bars = document.querySelectorAll('[data-testid="level-history"] span');
 				return (
 					bars.length >= 8 &&
-					[...bars].some((b) => parseFloat((b as HTMLElement).style.height) === 56)
+					[...bars].some((b) => parseFloat((b as HTMLElement).style.height) === 224)
 				);
 			},
 			null,
@@ -145,12 +145,12 @@ test.describe('level history overflow — deterministic loud source', () => {
 		// of these fail loudly instead of passing 5 times out of 6.
 		expect(observed.declaredHeights.length).toBe(observed.barCount);
 		for (const h of observed.declaredHeights) {
-			expect(h).toBeLessThanOrEqual(56);
+			expect(h).toBeLessThanOrEqual(224);
 		}
 
 		// And the loud end really was reached — otherwise the loop above would be
-		// vacuous (3px floor always satisfies `<= 56`).
-		expect(Math.max(...observed.declaredHeights)).toBe(56);
+		// vacuous (3px floor always satisfies `<= 224`).
+		expect(Math.max(...observed.declaredHeights)).toBe(224);
 
 		// The layout invariant: the tallest bar does not escape the padding box.
 		expect(observed.tallestBarHeight).toBeLessThanOrEqual(observed.contentBoxHeight + 0.5);

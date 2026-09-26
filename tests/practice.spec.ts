@@ -768,13 +768,13 @@ test.describe('Practice — T6 keyboard', () => {
 
 		// Chromium's fake audio emits a bursty 1-loud-per-500ms beep, and a
 		// parallel worker throttles requestAnimationFrame, so a *loud* sample
-		// (the only one that can reach the 56px clamp) is not guaranteed to
+		// (the only one that can reach the 224px clamp) is not guaranteed to
 		// arrive within any fixed timeout. Waiting for it made this test flaky.
 		// We therefore wait for samples to accumulate — the sibling test
 		// `level history grows and reacts while recording` already proves audio
 		// is flowing — and assert the geometry invariant on whatever is present.
 		// The assertion is at its strongest when a loud sample does arrive (a
-		// bar sits at the 56px clamp); with only quiet samples it passes
+		// bar sits at the 224px clamp); with only quiet samples it passes
 		// trivially, which is the deliberate trade for stability.
 		//
 		// Count only. A "loud" predicate here (e.g. `style.height > 3`) would
@@ -802,7 +802,7 @@ test.describe('Practice — T6 keyboard', () => {
 				tallestBarHeight: Math.max(...bars.map((b) => b.getBoundingClientRect().height)),
 				barCount: bars.length,
 				// The declared (template-computed) height, which already went
-				// through `Math.min(56, …)` in practice/+page.svelte.
+				// through `Math.min(224, …)` in practice/+page.svelte.
 				declaredHeights: bars.map((b) => parseFloat((b as HTMLElement).style.height))
 			};
 		});
@@ -815,7 +815,7 @@ test.describe('Practice — T6 keyboard', () => {
 		// sample is present.
 		expect(observed.declaredHeights.length).toBe(observed.barCount);
 		for (const h of observed.declaredHeights) {
-			expect(h).toBeLessThanOrEqual(56);
+			expect(h).toBeLessThanOrEqual(224);
 		}
 
 		await page.keyboard.up('Space');

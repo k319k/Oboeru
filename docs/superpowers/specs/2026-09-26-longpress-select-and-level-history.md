@@ -176,7 +176,7 @@ practice ページ内で完結させる。
 
 ```svelte
 						<div
-							class="flex h-[72px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
+							class="flex h-[240px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
 							data-testid="level-history"
 							role="img"
 							aria-label={`録音レベル ${levelPct}%`}
@@ -184,7 +184,7 @@ practice ページ内で完結させる。
 							{#each levelHistory as level, i (i)}
 								<span
 									class="w-2 shrink-0 rounded-sm"
-									style:height={`${Math.max(3, Math.min(56, Math.round(level * 224)))}px`}
+									style:height={`${Math.max(3, Math.min(224, Math.round(level * 896)))}px`}
 									style:background={i >= levelHistory.length - 6
 										? 'var(--primary)'
 										: `color-mix(in oklab, var(--primary) ${Math.round(
@@ -217,12 +217,12 @@ practice ページ内で完結させる。
     将来 `w-full` を触る者は
     `tests/responsive.spec.ts` の「level history stays inside the viewport」4 ケースを
     必ず実行すること（この 4 テストは `w-full` を外すと 320/360px で赤になる）
-- 高さは `Math.max(3, Math.min(56, Math.round(level * 224)))` px。
+- 高さは `Math.max(3, Math.min(224, Math.round(level * 896)))` px。
   - `3px` は「無音でも棒が見える」下限
-  - `56` はコンテナのコンテンツボックス（`h-[72px]` − `p-2`×2 = 56px）。
-    `Math.min(56)` により、係数やコンテナ寸法が変わっても
+  - `224` はコンテナのコンテンツボックス（`h-[240px]` − `p-2`×2 = 224px）。
+    `Math.min(224)` により、係数やコンテナ寸法が変わっても
     棒がコンテナをはみ出することが構造的に起こらない
-  - 係数 `224` は `56 / 0.25`。つまり `level 0.25` で満高になり、
+  - 係数 `896` は `224 / 0.25`。つまり `level 0.25` で満高になり、
     既存の `levelPct = min(100, round(recordingLevel * 400))` が
     100% に到達する点（`recordingLevel = 0.25`）と一致する。
     260 を使っていた間は `rms ≳ 0.22` で飽和し、
