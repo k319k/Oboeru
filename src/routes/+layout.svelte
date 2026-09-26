@@ -1,9 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { Home, Settings, Sun, Moon } from '@lucide/svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { getResolvedTheme, subscribeTheme, toggleTheme } from '$lib/theme';
+	import { Home, Settings } from '@lucide/svelte';
+	import { getResolvedTheme, subscribeTheme } from '$lib/theme';
 	import { unlockAudio } from '$lib/tts';
 	import '../app.css';
 	let { children } = $props();
@@ -56,21 +55,6 @@
 					<Settings class="size-4" />
 					管理
 				</a>
-				<div class="ml-auto">
-					<Button
-						variant="ghost"
-						size="icon"
-						aria-label="テーマ切替"
-						class="size-11 text-muted-foreground"
-						onclick={toggleTheme}
-					>
-						{#if resolvedTheme === 'dark'}
-							<Moon />
-						{:else}
-							<Sun />
-						{/if}
-					</Button>
-				</div>
 			</nav>
 		</header>
 	{/if}

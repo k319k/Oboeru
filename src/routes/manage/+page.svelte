@@ -2,6 +2,7 @@
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { loadSettings, saveSettings, type Settings } from '$lib/settings';
+	import { getTheme, setTheme, type Theme } from '$lib/theme';
 	import { CURATED_VOICES } from '$lib/tts-voices';
 	import { cn } from '$lib/utils';
 	import {
@@ -845,6 +846,20 @@
 	function handleRetryFromChange(value: 'tts' | 'rerecord'): void {
 		settings = { ...settings, retryFrom: value };
 		saveSettings(settings);
+	}
+
+	// ---------------------------------------------------------------------------
+	// Theme
+	// ---------------------------------------------------------------------------
+
+	// The theme preference lives outside Settings (its own localStorage key) and
+	// is only ever changed from this panel, so reading it once on mount is
+	// enough — no subscription needed.
+	let theme = $state<Theme>(getTheme());
+
+	function handleThemeChange(next: string): void {
+		setTheme(next as Theme);
+		theme = getTheme();
 	}
 </script>
 
@@ -1713,6 +1728,35 @@
 						もう一度録音
 					</Label>
 				</RadioGroup.Root>
+			</fieldset>
+
+			<!-- Theme -->
+			<fieldset
+				class="setting-row flex flex-col gap-3 rounded-md border border-border bg-muted/40 p-3"
+				aria-labelledby="theme-heading"
+			>
+				<legend id="theme-heading" class="px-1 text-sm font-semibold">表示テーマ</legend>
+				<div class="flex flex-col gap-1.5">
+					<span class="text-sm font-medium">テーマ:</span>
+					<RadioGroup.Root
+						value={theme}
+						onValueChange={handleThemeChange}
+						class="flex flex-wrap gap-4"
+					>
+						<Label class="flex items-center gap-2 font-normal">
+							<RadioGroup.Item value="system" data-testid="theme-system" class="size-11 sm:size-4" />
+							端末に合わせる
+						</Label>
+						<Label class="flex items-center gap-2 font-normal">
+							<RadioGroup.Item value="light" data-testid="theme-light" class="size-11 sm:size-4" />
+							ライト
+						</Label>
+						<Label class="flex items-center gap-2 font-normal">
+							<RadioGroup.Item value="dark" data-testid="theme-dark" class="size-11 sm:size-4" />
+							ダーク
+						</Label>
+					</RadioGroup.Root>
+				</div>
 			</fieldset>
 		</section>
 	</div>

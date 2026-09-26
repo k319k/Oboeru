@@ -56,8 +56,21 @@ test.describe('App shell', () => {
 		expect(matches).toBe(true);
 	});
 
-	test('theme toggle button is present with aria-label テーマ切替', async ({ page }) => {
+	test('no theme toggle in the global nav; the 3-way control lives in manage › 設定', async ({
+		page
+	}) => {
 		await page.goto('/');
-		await expect(page.getByRole('button', { name: 'テーマ切替' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'テーマ切替' })).toHaveCount(0);
+
+		await page.goto('/manage');
+		// The tab strip is in the SSR HTML before Svelte attaches its click
+		// handler during hydration — an earlier click is lost and the settings
+		// panel stays `hidden`.
+		await page.waitForLoadState('networkidle');
+		await page.getByRole('tab', { name: '設定' }).click();
+		await expect(page.getByRole('group', { name: '表示テーマ' })).toBeVisible();
+		await expect(page.getByTestId('theme-system')).toBeVisible();
+		await expect(page.getByTestId('theme-light')).toBeVisible();
+		await expect(page.getByTestId('theme-dark')).toBeVisible();
 	});
 });

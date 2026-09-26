@@ -110,14 +110,6 @@ export function setTheme(next: Theme): void {
 	apply();
 }
 
-/**
- * Toggle between explicit light/dark based on the currently resolved theme.
- * A user click leaves `system` and pins an explicit preference.
- */
-export function toggleTheme(): void {
-	setTheme(resolved === 'dark' ? 'light' : 'dark');
-}
-
 /** Subscribe to theme changes. Returns an unsubscribe function. */
 export function subscribeTheme(listener: Listener): () => void {
 	listeners.add(listener);

@@ -1,41 +1,44 @@
-import { test, expect } from './fixtures';
+import { test, expect, type Page } from './fixtures';
+
+/**
+ * Open manage › 設定 and return the 3 theme radio buttons.
+ *
+ * `networkidle` is required: the tab strip is in the SSR HTML before Svelte
+ * attaches its click handler during hydration, so a click issued earlier is
+ * lost and the settings panel stays `hidden`.
+ */
+async function openThemeControls(page: Page) {
+	await page.goto('/manage');
+	await page.waitForLoadState('networkidle');
+	await page.getByRole('tab', { name: '設定' }).click();
+	await expect(page.getByTestId('theme-system')).toBeVisible();
+}
 
 test.describe('Theme', () => {
-	test('toggle adds and removes .dark on <html>', async ({ page }) => {
-		await page.goto('/');
-		// The toggle button exists in the SSR HTML before Svelte attaches its
-		// click handler during hydration — wait for hydration to avoid losing
-		// the first click to the hydration race.
-		await page.waitForLoadState('networkidle');
-
+	test('defaults to system; selecting dark then light pins the theme', async ({ page }) => {
+		await openThemeControls(page);
 		const html = page.locator('html');
-		const toggle = page.getByRole('button', { name: 'テーマ切替' });
 
 		// Default (system → light in headless Chromium) → no .dark
 		await expect(html).not.toHaveClass(/dark/);
+		await expect(page.getByTestId('theme-system')).toBeChecked();
 
-		// First click → explicit dark
-		await toggle.click();
+		await page.getByTestId('theme-dark').click();
 		await expect(html).toHaveClass(/dark/);
-		await expect(page.locator('svg.lucide-moon')).toBeVisible();
 
-		// Second click → explicit light
-		await toggle.click();
+		await page.getByTestId('theme-light').click();
 		await expect(html).not.toHaveClass(/dark/);
-		await expect(page.locator('svg.lucide-sun')).toBeVisible();
 	});
 
 	test('theme persists across reload', async ({ page }) => {
-		await page.goto('/');
-		await page.waitForLoadState('networkidle');
-		const html = page.locator('html');
-		const toggle = page.getByRole('button', { name: 'テーマ切替' });
-
-		await toggle.click();
-		await expect(html).toHaveClass(/dark/);
+		await openThemeControls(page);
+		await page.getByTestId('theme-dark').click();
+		await expect(page.locator('html')).toHaveClass(/dark/);
 
 		await page.reload();
-		await expect(html).toHaveClass(/dark/);
+		await expect(page.locator('html')).toHaveClass(/dark/);
+		await page.getByRole('tab', { name: '設定' }).click();
+		await expect(page.getByTestId('theme-dark')).toBeChecked();
 	});
 
 	test('system mode follows prefers-color-scheme', async ({ page }) => {
@@ -53,16 +56,15 @@ test.describe('Theme', () => {
 
 	test('explicit theme overrides system preference', async ({ page }) => {
 		await page.emulateMedia({ colorScheme: 'dark' });
-		await page.goto('/');
+		await page.goto('/manage');
 		await page.waitForLoadState('networkidle');
 		const html = page.locator('html');
-		const toggle = page.getByRole('button', { name: 'テーマ切替' });
 
 		// system + dark OS → dark
 		await expect(html).toHaveClass(/dark/);
 
-		// Click → explicit light, stays light even though the OS is dark
-		await toggle.click();
+		await page.getByRole('tab', { name: '設定' }).click();
+		await page.getByTestId('theme-light').click();
 		await expect(html).not.toHaveClass(/dark/);
 
 		// OS changes no longer affect the explicit choice
