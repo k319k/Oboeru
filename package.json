@@ -10,13 +10,11 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest run",
-    "test:e2e": "playwright test",
-    "stt:fetch": "node scripts/fetch-stt-models.mjs"
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "budoux": "^0.9.1",
-    "groq-sdk": "^0.16.0",
-    "vosk-browser": "^0.0.8"
+    "groq-sdk": "^0.16.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

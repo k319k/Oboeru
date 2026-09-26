@@ -135,45 +135,6 @@ describe('ProgressAligner recoloring prevention', () => {
 	});
 });
 
-// ─── ProgressAligner: feedPartial (ghost) ────────────────────────────
-describe('ProgressAligner feedPartial', () => {
-	it('returns ghost state for partial input inside the next token', () => {
-		const aligner = new ProgressAligner(['コーヒーを', '飲みます']);
-		expect(aligner.feedPartial('こーひ')).toEqual({ nextTokenIndex: 0, ghost: 'こーひ' });
-	});
-
-	it('walks across fully covered tokens and reports the next pending one', () => {
-		const aligner = new ProgressAligner(['コーヒーを', 'のみます']);
-		expect(aligner.feedPartial('こーひーを の')).toEqual({ nextTokenIndex: 1, ghost: 'の' });
-	});
-
-	it('reports full coverage with an empty ghost', () => {
-		const aligner = new ProgressAligner(['コーヒーを', '飲みます']);
-		expect(aligner.feedPartial('こーひーを')).toEqual({ nextTokenIndex: 1, ghost: '' });
-	});
-
-	it('returns empty ghost when the partial matches nothing', () => {
-		const aligner = new ProgressAligner(['コーヒーを']);
-		expect(aligner.feedPartial(' xxxx ')).toEqual({ nextTokenIndex: 0, ghost: '' });
-	});
-
-	it('returns null for empty input or an exhausted aligner', () => {
-		const aligner = new ProgressAligner(['hello']);
-		expect(aligner.feedPartial('')).toBeNull();
-		expect(aligner.feedPartial('   ')).toBeNull();
-		aligner.feed('hello');
-		expect(aligner.feedPartial('hel')).toBeNull();
-	});
-
-	it('ghost never recolors confirmed tokens', () => {
-		const aligner = new ProgressAligner(['hello', 'world']);
-		aligner.feed('hello');
-		// token 0 is confirmed → ghost can only point at token 1
-		expect(aligner.feedPartial('hel')).toEqual({ nextTokenIndex: 1, ghost: '' });
-		expect(aligner.feedPartial('wor')).toEqual({ nextTokenIndex: 1, ghost: 'wor' });
-	});
-});
-
 // ─── ProgressAligner: invalid feeds and state snapshot ───────────────
 describe('ProgressAligner edge cases', () => {
 	it('returns null for words that normalize to empty and leaves state untouched', () => {
@@ -193,7 +154,6 @@ describe('ProgressAligner edge cases', () => {
 	it('handles an empty target list', () => {
 		const aligner = new ProgressAligner([]);
 		expect(aligner.feed('hello')).toBeNull();
-		expect(aligner.feedPartial('hello')).toBeNull();
 		expect(aligner.getMatched()).toEqual([]);
 	});
 

@@ -14,9 +14,6 @@ build/
 test-results/
 playwright-report/
 
-# STT model archives (npm run stt:fetch — never commit, never into static/)
-.stt-models/
-
 # OS / editor
 .DS_Store
 # Cloudflare Workers local dev state

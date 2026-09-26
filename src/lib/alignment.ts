@@ -1,11 +1,11 @@
 /**
- * Word-level alignment engine for live shadowing feedback.
+ * Word-level alignment engine for recorded-feedback word coloring.
  *
  * Tokenizes target sentences (budoux for ja, whitespace for en) and aligns a
  * stream of spoken words against target tokens. Matching reuses the
  * similarity.ts normalization (NFKC + punctuation/whitespace removal + lowercase)
  * and adds an alignment-internal kana-folding layer (katakana → hiragana) so
- * STT spelling drift (Vosk ja emits こーひー for target コーヒー) still matches.
+ * kana spelling drift (こーひー for target コーヒー) still matches.
  */
 import { loadDefaultJapaneseParser, type HTMLProcessingParser } from 'budoux';
 import { normalize, levenshteinDistance } from './similarity';
@@ -17,14 +17,6 @@ export interface WordMatch {
 	tokenIndex: number;
 	word: string;
 	status: WordMatchStatus;
-}
-
-/** Transient ghost state for partial (not yet final) STT text. */
-export interface GhostState {
-	/** Index of the pending token the next confirmed word will land on. */
-	nextTokenIndex: number;
-	/** Normalized portion of the partial text that covers that token ('' if none). */
-	ghost: string;
 }
 
 const FUZZY_THRESHOLD = 0.7;
@@ -107,30 +99,6 @@ export class ProgressAligner {
 
 		this.mismatchStreak += 1;
 		return this.record({ tokenIndex: this.cursor, word, status: 'mismatch' });
-	}
-
-	/**
-	 * Match incomplete STT text against the pending region without mutating
-	 * any state. Confirmed tokens (before the cursor) are never reported.
-	 */
-	feedPartial(text: string): GhostState | null {
-		const rest = normalizeForAlign(text);
-		if (rest.length === 0 || this.cursor >= this.norms.length) return null;
-
-		const end = Math.min(this.cursor + this.lookahead(), this.norms.length - 1);
-		let remaining = rest;
-		for (let i = this.cursor; i <= end; i++) {
-			const tokenNorm = this.norms[i];
-			if (tokenNorm.length === 0) continue;
-			if (remaining.startsWith(tokenNorm)) {
-				remaining = remaining.slice(tokenNorm.length);
-				if (remaining.length === 0) return { nextTokenIndex: i + 1, ghost: '' };
-				continue;
-			}
-			if (tokenNorm.startsWith(remaining)) return { nextTokenIndex: i, ghost: remaining };
-			return { nextTokenIndex: this.cursor, ghost: '' };
-		}
-		return { nextTokenIndex: end + 1, ghost: '' };
 	}
 
 	/** All confirmed verdicts (matches and mismatches) in feed order. */
