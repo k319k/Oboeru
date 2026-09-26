@@ -8,6 +8,7 @@
 	import '../app.css';
 	let { children } = $props();
 	let pathname = $derived(page.url.pathname);
+	let isPractice = $derived(pathname === '/practice');
 	let resolvedTheme = $state(getResolvedTheme());
 	$effect(() => {
 		return subscribeTheme(() => {
@@ -74,10 +75,18 @@
 		</header>
 	{/if}
 
+	<!-- The practice route is a 3-zone app shell (fixed header / scrolling
+	     body / fixed action zone) and pins its own root to `h-dvh`. Its
+	     vertical padding is therefore owned by the practice root itself, so
+	     <main> must not add any here — a second py-* would push the root's
+	     100dvh past the viewport and bring back document-level scrolling,
+	     which would drag the action zone out of view. Every other route
+	     keeps the normal py-6 breathing room. -->
 	<main
 		id="main-content"
 		tabindex="-1"
-		class="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col px-4 py-6 outline-none"
+		class="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col px-4 outline-none"
+		class:py-6={!isPractice}
 	>
 		{@render children()}
 	</main>

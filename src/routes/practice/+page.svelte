@@ -118,6 +118,10 @@
 	let pendingRestore: PracticeProgress | null = null;
 	let restoreDialogOpen: boolean = $state(false);
 
+	// The scrolling body container (the only scroll region in the practice
+	// shell). Bound so a phase change can rewind it to the top.
+	let bodyEl: HTMLElement | null = $state(null);
+
 	// ---------------------------------------------------------------------------
 	// Derived
 	// ---------------------------------------------------------------------------
@@ -780,6 +784,14 @@
 		if (!open && !sessionReady) startFresh();
 	}
 
+	// Rewind the scrolling body on every phase change. The body is the only
+	// scroll region, so a long feedback read to the bottom would otherwise
+	// leave the next sentence (and its heading) scrolled out of view.
+	$effect(() => {
+		phase; // dependency: re-runs on every phase transition
+		if (bodyEl) bodyEl.scrollTop = 0;
+	});
+
 	// Track the session in sessionStorage so a reload can offer to resume.
 	// A passing feedback rounds forward (the attempt is settled); every other
 	// phase keeps the snapshot at the current sentence — recording /
@@ -869,9 +881,16 @@
 	<title>練習 - おぼえる</title>
 </svelte:head>
 
-<!-- Horizontal padding comes from the layout <main>; only the vertical
-     padding is local, so the fixed action zone spans the full content width. -->
-<div class="mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col py-4">
+<!-- Definite height: `h-dvh` (not min-h-*) so the `min-h-0 flex-1` chain
+     below actually clamps instead of growing to the content. Without it the
+     body container never scrolls internally, the document scrolls instead,
+     and the fixed action zone leaves the viewport on long feedback.
+     `h-dvh` only works because +layout.svelte drops <main>'s vertical padding
+     on /practice — the two must stay in sync (a py-* on <main> here would
+     reintroduce document-level scrolling).
+     Horizontal padding comes from <main>; only the vertical padding is local,
+     so the action zone spans the full content width. -->
+<div class="mx-auto flex h-dvh w-full max-w-2xl flex-col py-4">
 	<p class="sr-only" role="status" aria-live="polite">{phaseLabel}</p>
 
 	{#if phase === 'summary'}
@@ -984,7 +1003,11 @@
 			</Button>
 		</header>
 
-		<div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+		<div
+			class="flex min-h-0 flex-1 flex-col overflow-y-auto"
+			data-testid="practice-body"
+			bind:this={bodyEl}
+		>
 			<div
 				class="flex min-h-40 flex-1 flex-col items-center justify-center gap-4 pb-4"
 			>
