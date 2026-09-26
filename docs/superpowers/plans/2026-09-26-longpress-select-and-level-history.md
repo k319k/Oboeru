@@ -303,12 +303,13 @@ const LEVEL_HISTORY_MAX = 32;
 ```ts
 				r.onLevel = (rms) => {
 					recordingLevel = rms;
-					levelHistory = [...levelHistory.slice(-(LEVEL_HISTORY_MAX - 1)), rms];
+					levelHistory = [...levelHistory, rms].slice(-LEVEL_HISTORY_MAX);
 				};
 ```
 
-`slice(-(LEVEL_HISTORY_MAX - 1))` で直前の 31 個だけを残して新しい `rms` を足すことで、
-配列が常に `LEVEL_HISTORY_MAX` 以下に収まる。
+新的 `rms` を足してから `.slice(-LEVEL_HISTORY_MAX)` で末尾だけを残す。
+先に `slice(-(LEVEL_HISTORY_MAX - 1))` すると `LEVEL_HISTORY_MAX` が 1 のとき
+`slice(-0)` = `slice(0)` となり既存全件が返って上限が消失し、無限成長する。
 
 - [ ] **Step 5: 録音開始時に履歴をリセットする**
 
@@ -337,14 +338,20 @@ const LEVEL_HISTORY_MAX = 32;
 							aria-label={`録音レベル ${levelPct}%`}
 						>
 							{#each levelHistory as level, i (i)}
+								<!--
+									高さはコンテンツボックス (h-[72px] - p-2*2 = 56px) に収める。
+									係数 224 = 56 / 0.25 で、level 0.25 で満高 = levelPct
+									(min(100, round(level * 400))) が 100% に到達する点と一致。
+									Math.min(56) により overflow は構造的に起きない。
+								-->
 								<span
 									class="w-2 shrink-0 rounded-sm"
-									style:height={`${Math.max(3, Math.round(level * 260))}px`}
+									style:height={`${Math.max(3, Math.min(56, Math.round(level * 224)))}px`}
 									style:background={i >= levelHistory.length - 6
 										? 'var(--primary)'
 										: `color-mix(in oklab, var(--primary) ${Math.round(
 												(i / Math.max(1, levelHistory.length - 1)) * 100
-											)}%, var(--muted))`}
+											)}%, var(--muted-foreground))`}
 								></span>
 							{/each}
 						</div>
@@ -363,14 +370,20 @@ const LEVEL_HISTORY_MAX = 32;
 								aria-label={`録音レベル ${levelPct}%`}
 							>
 								{#each levelHistory as level, i (i)}
+								<!--
+									高さはコンテンツボックス (h-[72px] - p-2*2 = 56px) に収める。
+									係数 224 = 56 / 0.25 で、level 0.25 で満高 = levelPct
+									(min(100, round(level * 400))) が 100% に到達する点と一致。
+									Math.min(56) により overflow は構造的に起きない。
+								-->
 									<span
 										class="w-2 shrink-0 rounded-sm"
-										style:height={`${Math.max(3, Math.round(level * 260))}px`}
+										style:height={`${Math.max(3, Math.min(56, Math.round(level * 224)))}px`}
 										style:background={i >= levelHistory.length - 6
 											? 'var(--primary)'
 											: `color-mix(in oklab, var(--primary) ${Math.round(
 													(i / Math.max(1, levelHistory.length - 1)) * 100
-												)}%, var(--muted))`}
+												)}%, var(--muted-foreground))`}
 									></span>
 								{/each}
 							</div>
@@ -417,7 +430,7 @@ Expected: PASS
 | 項目 | 期待値 |
 |---|---|
 | `[data-testid="level-history"] span` の個数 | 1 以上 32 以下 |
-| 末尾の棒の `style.height` | 3px より大きい（fake-media は音を出す） |
+| `[data-testid="level-history"] span` の**いずれかが** 3px より大きい | （fake device は 500ms ごとに 1 本だけ音を出す断続 beep なので、固定時刻の末尾 1 本では判定不能） |
 | `documentElement.scrollWidth - clientWidth` | 0 |
 | `[data-testid="action-zone"]` の `rect.bottom` | `<= innerHeight + 1` |
 | スクリーンショット | 右端に新しい棒、左に向かって古い棒が小さい/灰色 |
@@ -620,7 +633,7 @@ iOS 専用プロパティとしての実効は本番自動テストでは確認�
 ### 3. 型の一貫性
 
 - `levelHistory: number[]` は Step 3 で定義、Step 4 の `slice` と Step 6 の `{#each}` で使用
-- `LEVEL_HISTORY_MAX: number` は Step 3 で定義、Step 4 の `slice(-(LEVEL_HISTORY_MAX - 1))` で使用
+- `LEVEL_HISTORY_MAX: number` は Step 3 で定義、Step 4 の `.slice(-LEVEL_HISTORY_MAX)` で使用
 - `levelPct` は既存（`$derived`）。Step 6 の `aria-label` で使用。`$derived` として残す指示あり
 - `data-testid="level-meter"` は Step 6 の外側ラッパに残す。`level-meter-fill` / `level-value` は削除
 - Task 1 のテストが参照する `record-hold-btn` / `action-zone` / `sentence-text` はすべて既存または Step 5 で追加

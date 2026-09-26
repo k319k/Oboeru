@@ -153,7 +153,7 @@ Tailwind のユーティリティに優先して効く。`.action-zone` は scop
 ```ts
 				r.onLevel = (rms) => {
 					recordingLevel = rms;
-					levelHistory = [...levelHistory.slice(-(LEVEL_HISTORY_MAX - 1)), rms];
+					levelHistory = [...levelHistory, rms].slice(-LEVEL_HISTORY_MAX);
 				};
 ```
 
@@ -184,12 +184,12 @@ practice 页面内で完結させる。
 							{#each levelHistory as level, i (i)}
 								<span
 									class="w-2 shrink-0 rounded-sm"
-									style:height={`${Math.max(3, Math.round(level * 260))}px`}
+									style:height={`${Math.max(3, Math.min(56, Math.round(level * 224)))}px`}
 									style:background={i >= levelHistory.length - 6
 										? 'var(--primary)'
 										: `color-mix(in oklab, var(--primary) ${Math.round(
 												(i / Math.max(1, levelHistory.length - 1)) * 100
-											)}%, var(--muted))`}
+											)}%, var(--muted-foreground))`}
 								></span>
 							{/each}
 						</div>
@@ -201,9 +201,21 @@ practice 页面内で完結させる。
   古い棒は左へ押し出されて消える。これにより**画面幅の計測が不要**になり、
   320px でも 430px でも自然に追従する（`32 本 × (8px + 3px) = 352px` なので
   390px 幅でちょうど 1 回分の履歴が収まる）
-- 高さは `Math.max(3, level * 260)` px。3px は「無音でも棒が見える」下限
+- 高さは `Math.max(3, Math.min(56, Math.round(level * 224)))` px。
+  - `3px` は「無音でも棒が見える」下限
+  - `56` はコンテナのコンテンツボックス（`h-[72px]` − `p-2`×2 = 56px）。
+    `Math.min(56)` により、係数やコンテナ寸法が変わっても
+    棒がコンテナをはみ出することが構造的に起こらない
+  - 係数 `224` は `56 / 0.25`。つまり `level 0.25` で満高になり、
+    既存の `levelPct = min(100, round(recordingLevel * 400))` が
+    100% に到達する点（`recordingLevel = 0.25`）と一致する。
+    260 を使っていた間は `rms ≳ 0.22` で飽和し、
+    0.32 / 0.70 / 1.00 がすべて同じ満高表示になっていた
 - 色は末尾 6 本を `--primary`（緑）、それより前の棒は `--primary` から
-  `--muted` へ線形補間した `color-mix` で、左に向かって灰色になる
+  `--muted-foreground` へ線形補間した `color-mix` で、左に向かって灰色になる。
+  フェード先には `--muted` を使わない。`--muted` はコンテナの背景
+  （`bg-muted/40`）と同系で、ライトテーマでは最古の棒が背景と
+  ほぼ同値（コントラスト比 約 1.03:1）になり実質不可視になる
 - `role="img"` + `aria-label` は現状の `level-meter` から引き継ぐ
   （スクリーンリーダー向けの数値 Contract）
 - `data-testid="level-meter"` は**コンテナに付け替える**（外から見た hook を保つ）
@@ -350,7 +362,7 @@ CSS の回帰は computed `user-select` のテストが担う。
 |---|---|
 | 録音開始直後（履歴 0 個） | `{#each}` が空なので何も描かれない。次の `onLevel`（100ms 後）で最初の棒が現れる |
 | 無音 | 全棒が 3px の下限で平坦になる。「録音は動いているが音が入っていない」ことが伝わる |
-| `levelHistory` の肥大 | `slice(-(LEVEL_HISTORY_MAX - 1))` で常に 32 以下に保たれる |
+| `levelHistory` の肥大 | `.slice(-LEVEL_HISTORY_MAX)` で常に 32 以下に保たれる（`MAX = 1` でも正しく 1 に収まる） |
 | `-webkit-touch-callout` 非対応ブラウザ | 未知のプロパティとして無視される。`user-select: none` は残るため主要ブラウザでは抑止される |
 | `-webkit-touch-callout` が存在しないブラウザ | Chromium は宣言をパース時に落とす（CSSOM にも残らない）ので、宣言を検証する手段が無い。`user-select: none` は残るため主要ブラウザでは抑止される。「`rangeCount` を 0 にする」ことを証拠にする検証は**しない**（CDP タッチ経路は選択可能テキストでも 0 になるため恒真）。§3.4 のマウス長押＋ドラッグのみを使う |
 

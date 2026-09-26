@@ -749,6 +749,52 @@ test.describe('Practice — T6 keyboard', () => {
 		expect(count).toBeGreaterThanOrEqual(3);
 		expect(count).toBeLessThanOrEqual(32);
 
+		// The numeric level is still exposed to assistive tech (it used to be
+		// asserted via the now-removed `level-value` text).
+		await expect(page.getByTestId('level-history')).toHaveAttribute(
+			'aria-label',
+			/録音レベル \d+%/
+		);
+
+		await page.keyboard.up('Space');
+	});
+
+	test('level history bars never overflow the meter content box', async ({ page }) => {
+		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+
+		// Wait for a saturated bar (pinned to the 56px clamp) so the check below
+		// runs against a loud sample rather than a silent one. Without the clamp
+		// no bar can reach 56px, so this doubles as the regression signal.
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('[data-testid="level-history"] span')].some(
+					(b) => parseFloat((b as HTMLElement).style.height) >= 56
+				),
+			null,
+			{ timeout: 10000 }
+		);
+
+		const geometry = await page.evaluate(() => {
+			const row = document.querySelector<HTMLElement>('[data-testid="level-history"]');
+			if (!row) throw new Error('level-history is missing');
+			const rr = row.getBoundingClientRect();
+			const cs = getComputedStyle(row);
+			const contentTop = rr.top + parseFloat(cs.paddingTop);
+			const contentBottom = rr.bottom - parseFloat(cs.paddingBottom);
+			const bars = [...row.querySelectorAll('span')];
+			return {
+				contentBoxHeight: contentBottom - contentTop,
+				tallestBarHeight: Math.max(...bars.map((b) => b.getBoundingClientRect().height)),
+				barCount: bars.length
+			};
+		});
+
+		expect(geometry.tallestBarHeight).toBeLessThanOrEqual(geometry.contentBoxHeight + 0.5);
+
 		await page.keyboard.up('Space');
 	});
 });

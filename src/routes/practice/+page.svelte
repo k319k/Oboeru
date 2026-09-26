@@ -393,7 +393,9 @@
 				};
 				r.onLevel = (rms) => {
 					recordingLevel = rms;
-					levelHistory = [...levelHistory.slice(-(LEVEL_HISTORY_MAX - 1)), rms];
+					// 追加してから末尾で切り詰める。先に slice(-(MAX - 1)) すると
+					// MAX = 1 のとき slice(-0) = slice(0) となり上限が消失して無限成長する。
+					levelHistory = [...levelHistory, rms].slice(-LEVEL_HISTORY_MAX);
 				};
 				// Space was released while the mic was connecting — treat the
 				// instant stop as a short tap.
@@ -1071,17 +1073,33 @@
 								role="img"
 								aria-label={`録音レベル ${levelPct}%`}
 							>
-								{#each levelHistory as level, i (i)}
-									<span
-										class="w-2 shrink-0 rounded-sm"
-										style:height={`${Math.max(3, Math.round(level * 260))}px`}
-										style:background={i >= levelHistory.length - 6
-											? 'var(--primary)'
-											: `color-mix(in oklab, var(--primary) ${Math.round(
-													(i / Math.max(1, levelHistory.length - 1)) * 100
-												)}%, var(--muted))`}
-									></span>
-								{/each}
+							<!--
+								棒の高さはコンテンツボックス内に収める。コンテナのコンテンツボックスは
+								h-[72px] から p-2×2 を引いて 56px。係数 224 は 56 / 0.25 で、
+								level 0.25 で満高になる = levelPct (min(100, round(level * 400)))
+								が 100% に到達する点と一致させている。Math.min(56) により、
+								係数やコンテナの寸法が変わっても absolute に overflow しない。
+								フェード先は --muted ではなく --muted-foreground。--muted は
+								コンテナの背景 (bg-muted/40) と同系で、ライトテーマでは最古の棒が
+								背景とほぼ同値 (コントラスト比 1.03:1) になり実質不可視になる。
+							-->
+							{#each levelHistory as level, i (i)}
+								<!--
+									インデックスキーでよいのは、このメーターに CSS transition や
+									アニメーションを載せていないため。棒は位置ではなく高さだけが変わる。
+									transition を足すなら、配列自体は左シフトするのにインデックスキーは
+									そのままなので、隣り合う棒が中身ごと入れ替わり、animate 対象がずれる。
+								-->
+								<span
+									class="w-2 shrink-0 rounded-sm"
+									style:height={`${Math.max(3, Math.min(56, Math.round(level * 224)))}px`}
+									style:background={i >= levelHistory.length - 6
+										? 'var(--primary)'
+										: `color-mix(in oklab, var(--primary) ${Math.round(
+												(i / Math.max(1, levelHistory.length - 1)) * 100
+											)}%, var(--muted-foreground))`}
+								></span>
+							{/each}
 							</div>
 						</div>
 						<p class="text-sm font-medium" data-testid="release-hint">離すと採点します</p>
