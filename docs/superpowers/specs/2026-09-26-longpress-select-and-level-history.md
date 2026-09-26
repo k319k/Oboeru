@@ -313,12 +313,18 @@ npm run test:e2e   # Playwright 全体
 さらに実機相当の検証として、**マウス長押＋ドラッグ**（`mouse.move` → `mouse.down` →
 一定距離の `mouse.move` を数回 → `mouse.up`）で `document.getSelection().rangeCount` を読む。
 
-| 対象 | 期待値 | 判別力 |
-|---|---|---|
-| `record-ready-hint`（アクション zone 内の散文） | **0** | ○ 宣言を消すと 1 になるので検出できる |
-| `record-hold-btn` | **0** | × `<button>` 内側は CSS に関係なく 0 |
-| アクション zone の中心 | **0** | × 中心が hold button なので |
-| `sentence-text`（対照） | **1 以上** | 対照。0 だとジェスチャ自体が空振り |
+| 対象 | 期待値 | 判別力 | 測るか |
+|---|---|---|---|
+| `record-ready-hint`（アクション zone 内の散文） | **0** | ○ 宣言を消すと 1 になるので検出できる | **測る** |
+| `sentence-text`（対照） | **1 以上** | 対照。0 だとジェスチャ自体が空振り | **測る** |
+| `record-hold-btn` | （0 になる） | × `<button>` 内側は CSS に関係なく 0 = 恒真 | **測らない** |
+| アクション zone の中心 | （0 になる） | × 中心が hold button なので = 恒真 | **測らない** |
+
+**`record-hold-btn` とアクション zone の中心はジェスチャで測らない。**
+これらの rc=0 は CSS を消しても保たれる恒真で、テストに残す価値が無い。
+（残すと採点パイプライン 2 回分の実行・reload のレース・TTS autoplay の
+user activation ハックを持ち込むが、回帰検出力は増えない。）
+CSS の回帰は computed `user-select` のテストが担う。
 
 **CDP `Input.dispatchTouchEvent` は使わない。** Chromium のこのビルドでは選択可能テキストに
 対しても 0 のままなので、修正前でも 0 で恒真になる。この spec の「現状の実測」節も訂正済み。
@@ -328,7 +334,7 @@ npm run test:e2e   # Playwright 全体
 **640px 未満には存在しない**（390px で待つと 30s タイムアウトする）。
 よって**判別はデスクトップ幅（既定 1280×720）で行い、390px では computed `user-select`
 の確認だけ**を行う。`record-ready-hint` は `show` フェーズにも存在しないので、
-対照の `sentence-text` は `show` フェーズ、残り 3 要素は `hidden` フェーズで採る。
+対照の `sentence-text` は `show` フェーズ、`record-ready-hint` は `hidden` フェーズで採る。
 
 なお、この自動テストが通ることは「宣言が存在して Chromium では抑止される」ことの証明であって、
 **「実機（Android Chrome）で長押しが直った」ことの証明ではない**。実機での確認は別途必要。

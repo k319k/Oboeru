@@ -464,7 +464,7 @@ Task 1 Step 7 で「録音中はスキップ不可」の直後に追加した文
 
 ```diff
   8. デプロイ後のスモーク（`GET /` 200、`POST /api/judge` が `available: true`）
-+9. 390px でマウス長押＋ドラッグ（抑止の 3 要素 + 対照の `sentence-text`）し、抑止の 3 要素の `document.getSelection().rangeCount` が 0、`sentence-text` は 1 以上になること
++9. マウス長押＋ドラッグで `record-ready-hint` の `document.getSelection().rangeCount` が 0、対照の `sentence-text` は 1 以上になること（`record-hold-btn` とアクション zone の中心は Chromium が button 内側を選択しないため**測らない**。CSS は computed `user-select` で確認する）
 ```
 
 - [ ] **Step 3: 全体を検証する**
@@ -484,15 +484,17 @@ Expected: 全て PASS
 
   `/tmp/` にスクリプトを書いて、**デスクトップ幅（既定 1280×720）**のコンテキストで
   **マウス長押し＋ドラッグ**（`mouse.move` → `mouse.down` → 一定距離の `mouse.move` を数回 →
-  `mouse.up`）を 4 要素に対して行い、`document.getSelection().rangeCount` を読み取る。
-  抑止の 3 要素に加えて対照の `sentence-text` を含める。
+  `mouse.up`）を **2 要素**に対して行い、`document.getSelection().rangeCount` を読み取る。
+  対照の `sentence-text` と、抑止の判定を担う `record-ready-hint` だけである。
 
-  | 試行 | フェーズ | 期待値 |
-  |---|---|---|
-  | `sentence-text`（対照・選択可能なまま） | `show` | **1 以上** |
-  | `record-ready-hint`（アクション zone 内の散文） | `hidden`（録音準備完了） | **0**（`user-select: none` が効いている） |
-  | `record-hold-btn` | `hidden` | **0** |
-  | アクション zone の中心 | `hidden` | **0** |
+  | 試行 | フェーズ | 期待値 | 測る理由 |
+  |---|---|---|---|
+  | `sentence-text`（対照・選択可能なまま） | `show` | **1 以上** | 対照。0 だとジェスチャ自体が空振り |
+  | `record-ready-hint`（アクション zone 内の散文） | `hidden`（録音準備完了） | **0** | 宣言を消すと 1 になるので**検出できる唯一のケース** |
+
+  **`record-hold-btn` とアクション zone の中心は測らない。** Chromium は `<button>` ウィジェット内の
+  テキストを選択しないので、宣言を消しても 0 のままになる（恒真）。
+  CSS の回帰は computed `user-select` のテストが担う。
 
   **幅の注意（重要）**: `record-ready-hint` は `src/routes/practice/+page.svelte:1191` の
   `class="hidden ... sm:block"` なので **640px 未満には存在しない**。
@@ -500,13 +502,13 @@ Expected: 全て PASS
   よって**この判別はデスクトップ幅で行う**。
 
   **390px で行うのは computed `user-select` の確認だけ**にする
-  （`record-hold-btn` / `action-zone` / `sentence-text` の 3 要素）。
+  （`record-hold-btn` / `action-zone` / `sentence-text`）。
   390px の実行可能な確認は「宣言が存在すること」までで、
   挙動の判別（0 になること）は 640px 以上で行う。
 
   **フェーズ注意**: `record-ready-hint` は `show` フェーズに存在しない。
   対照の `sentence-text` は `show` フェーズで採り、
-  残り 3 要素は TTS 終了を待って `hidden` フェーズ（`record-ready` 可視）で採る。
+  `record-ready-hint` は TTS 終了を待って `hidden` フェーズ（`record-ready` 可視）で採る。
 
   **対照ケースを必ず実行する。** `sentence-text` が 1 以上になることを先に確認し、
   初めて 0 が「抑止が効いている」証拠になる。ジェスチャ自体が常に 0 なら何も証明にならない。
@@ -516,8 +518,8 @@ Expected: 全て PASS
   修正前でも 0 で**恒真**（＝空振り検証）になる。マウス経路だけが識別力を持つ。
 
   **なお `record-hold-btn` とアクション zone の中心は宣言を消しても 0 のまま**になる。
-  Chromium は `<button>` ウィジェットの内側では CSS に関係なく選択が始まらないためで、
-  この 2 つの CSS を守るのは上の computed `user-select` のテストである。
+  Chromium は `<button>` ウィジェットの内側では CSS に関係なく選択が始まらないため。
+  この 2 つの CSS を守るのは computed `user-select` のテストであり、
   宣言の欠落を検出する役割は `record-ready-hint` が担う。
 
   スクリーンショットも撮って `record-hold-btn` と `action-zone` の
@@ -575,7 +577,7 @@ Expected: 1 行目は `200`、2 行目は `{"available":true,"noul":0.8 以上,.
 
 `action-zone` の computed `-webkit-touch-callout` は**確認しない。**
 Chromium の CSS パーサが宣言を落とすため常に空文字で、この行は必ず失敗する。
-宣言の存在と非検証성은 `AGENTS.md`「既知の落とし穴」に記録済み。
+宣言の存在と検証不能な点は `AGENTS.md`「既知の落とし穴」に記録済み。
 iOS 専用プロパティとしての実効は本番自動テストでは確認できない。
 
 スクリーンショットを撮って目視確認する（棒が右から左へ流れているか、
