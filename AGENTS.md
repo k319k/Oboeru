@@ -57,6 +57,7 @@ npm install
 - **練習中はグローバルナビが出ない。** `+layout.svelte` の `<header>` (`おぼえる` / `管理`) は `pathname === '/practice'` で条件付き非表示。`skip link` (`#main-content`) は全ルートで残る
 - **録音中はスキップ不可。** `recording` フェーズでは `skip-btn` が `disabled` で、`skip()` 自体も no-op (誤タップで録音した音声を捨てないため)。判定は `isRecording = $derived.by(() => phase === 'recording')` を使う。`feedback-actions` 内の `skip-btn` では `phase` が `'feedback'` へ narrowing されるため、`phase === 'recording'` を直接書くと svelte-check の "no overlap" エラーになる
 - **長押しでテキスト選択が始まらない。** 録音ボタン (`.record-hold-btn`) と下部アクションゾーン (`.action-zone`) は `user-select: none` + `-webkit-touch-callout: none`。録音操作を長押しで妨害しないため。`sentence-text` と `diff-token` は選択可能なまま残す
+- **録音中はスクロール履歴メーターを出す。** `recording` フェーズは `data-testid="level-history"` の縦棒 32 本（1 本 100ms ぶん = 3.2 秒履歴）。`justify-end` + `overflow-hidden` で最新が右・古いほど左で消える。**親 `sentence-recording` の `w-full` は省略不可**（`items-center` の親により fit-content に解決され、`min-content` 365px が親をはみ出すため）。棒の高さは `Math.max(3, Math.min(56, level * 224))` px でコンテンツボックス（72 − p-2×2 = 56px）を超えない
 - **390px ではキーボードヒント非表示。** `kbd-hint` は `hidden sm:inline-block`、散文の指示文 `record-ready-hint` も `hidden sm:block` (640px 未満で消す)。**注意**: `.kbd-hint` の scoped style には `display` を書いていない。書くと unlayered scoped style が Tailwind の `utilities` レイヤーに勝って `hidden` が効かない
 
 ## データモデル規約

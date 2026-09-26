@@ -202,12 +202,19 @@ practice ページ内で完結させる。
   320px でも 430px でも自然に追従する（`32 本 × (8px + 3px) = 352px` なので
   390px 幅でちょうど 1 回分の履歴が収まる）
   - **ただしこれは親 `sentence-recording` に definite な `w-full` が無ければ成立しない。**
-    `sentence-recording` は `items-center` なので cross size が fit-content に解決され、
-    fit-content は min-content（`8×32 + 3×31 + 8×2 = 365px`）を下回れない。
+    親 `<div class="flex flex-col items-center justify-start gap-4 py-4">` の
+    `align-items: center` により `sentence-recording` の cross size が fit-content に
+    解決され、fit-content は min-content（`8×32 + 3×31 + 8×2 = 365px`）を下回れない。
+    （`sentence-recording` **自身の** `align-items` は自身の幅に影響しない。
+    この `items-center` を外しても解決しない。）
     `w-full` が無いと 320px / 360px で 365px のまま中央寄せではみ出し、
     `overflow-hidden` が clip する**前に** 行が viewport の外へ出る
     （320px 実測: 行は -22.5..342.5、最新棒も画面外）。
-    したがって `w-full` と `min-w-0` は**省略不可**。将来 `w-full` を触る者は
+    したがって **`w-full` は省略不可（主因）**。`min-w-0` は現状 load-bearing ではなく
+    将来防御（`w-full` が幅を deterministic に決めるので、4 viewport で実測しても
+    有無で 1px も差が出ないことを確認済み。meter が今後 row 方向の flex item になった
+    場合に min-content が再び勝つため塞いでおく）。
+    将来 `w-full` を触る者は
     `tests/responsive.spec.ts` の「level history stays inside the viewport」4 ケースを
     必ず実行すること（この 4 テストは `w-full` を外すと 320/360px で赤になる）
 - 高さは `Math.max(3, Math.min(56, Math.round(level * 224)))` px。
@@ -436,3 +443,4 @@ CSS の回帰は computed `user-select` のテストが担う。
 6. アクション zone が `rect.bottom <= innerHeight + 1`
 7. コミットして **push とデプロイまで完了**（ユーザー明示依頼）
 8. デプロイ後のスモーク（`GET /` 200、`POST /api/judge` が `available: true`）
+9. 320 / 360 / 390 / 430px で `body.scrollWidth <= body.clientWidth`、かつ最新棒が paint されている

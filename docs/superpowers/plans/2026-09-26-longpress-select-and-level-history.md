@@ -331,13 +331,17 @@ const LEVEL_HISTORY_MAX = 32;
 
 > **注意（Task 2 実装後のレビューで判明）**: この行の `w-full` だけでは不十分で、
 > **親の `sentence-recording`（`data-testid="sentence-recording"`）にも
-> `w-full` を付けること**。`items-center` により `sentence-recording` の cross size は
+> `w-full` を付けること**。**親の**
+> `<div class="flex flex-col items-center justify-start gap-4 py-4">` の
+> `align-items: center` により `sentence-recording` の cross size が
 > fit-content に解決され、fit-content は min-content（`8×32 + 3×31 + 8×2 = 365px`）を
-> 下回れない。`w-full` が無いと 320px / 360px で 365px のまま中央寄せではみ出し、
+> 下回れない。`sentence-recording` 自身の `align-items` は自身の幅に影響しないので、
+> こちらを外しても解決しない。
+> `w-full` が無いと 320px / 360px で 365px のまま中央寄せではみ出し、
 > `overflow-hidden` が clip する前に行が viewport 外へ出る（320px 実測:
 > 行は -22.5..342.5、最新棒も画面外）。
 > `level-meter` にも `min-w-0` を付ける（row 方向の flex item になった場合に
-> min-content が再び勝つための将来防御）。
+> min-content が再び勝つための将来防御。現状は load-bearing ではない）。
 > 検証: `npx playwright test tests/responsive.spec.ts -g "level history stays inside"`
 > — 4 viewport 全て緑。単に `w-full` を外すと 320/360px で赤になる。
 

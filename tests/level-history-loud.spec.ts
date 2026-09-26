@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import playwrightConfig from '../playwright.config';
 import { test, expect, type Page } from './fixtures';
-import { loudWavBytes, mockTtsApi, silentWavBytes } from './tts-mock';
+import { loudWavBytes, silentWavBytes } from './tts-mock';
 
 /**
  * Deterministic loud-source coverage for the level history meter's 56px clamp.

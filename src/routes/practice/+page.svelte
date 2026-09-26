@@ -1053,9 +1053,13 @@
 					{/if}
 				{:else if phase === 'recording'}
 					<!--
-						`w-full` は省略不可。`items-center` により、この要素は
-						(既定の stretch ではなく) fit-content 幅で解決される。子孫の
-						`level-history` は棒 32 本 = 8px×32 + 3px×31 + p-2×2 = 365px の
+						`w-full` は省略不可。**親の**
+						`<div class="flex flex-col items-center justify-start gap-4 py-4">` の
+						`align-items: center` により、この要素の cross size は
+						(既定の stretch ではなく) fit-content 幅で解決される。
+						要素自身の `align-items` は自身の幅に影響しないので、この
+						`items-center` を外しても解決しない。
+						子孫の `level-history` は棒 32 本 = 8px×32 + 3px×31 + p-2×2 = 365px の
 						min-content を持つが、fit-content は min-content を下回れないため、
 						w-full が無いと 320px / 360px 幅で 365px のまま親をはみ出す。
 						はみ出すと meter が中央寄せで 22px ずつ左右にはみ出し、

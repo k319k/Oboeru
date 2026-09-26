@@ -404,11 +404,15 @@ test.describe('Responsive layout (390px)', () => {
 	 * Regression guard for the level history meter's horizontal overflow.
 	 *
 	 * The 32-bar history has an intrinsic min-content width of
-	 * 8px*32 + 3px*31 + p-2*2 = 365px. `sentence-recording` uses `items-center`,
-	 * so it resolves to a *fit-content* cross size, and fit-content can never go
-	 * below min-content. Without a definite `w-full` on that wrapper the meter
-	 * stayed 365px wide at 320/360px, was centred so it spilled ~22px off BOTH
-	 * edges, and `overflow-hidden` on the bar row never got a chance to clip:
+	 * 8px*32 + 3px*31 + p-2*2 = 365px. The *parent*
+	 * `<div class="flex flex-col items-center justify-start gap-4 py-4">` sets
+	 * `align-items: center`, so `sentence-recording` resolves to a *fit-content*
+	 * cross size, and fit-content can never go below min-content.
+	 * (`sentence-recording`'s own `align-items` does not affect its own width —
+	 * removing it fixes nothing.) Without a
+	 * definite `w-full` on that wrapper the meter stayed 365px wide at
+	 * 320/360px, was centred so it spilled ~22px off BOTH edges, and
+	 * `overflow-hidden` on the bar row never got a chance to clip:
 	 * the newest bar itself ended up outside the viewport.
 	 *
 	 * `expectNoHorizontalOverflow` cannot catch this on its own — the meter
@@ -507,11 +511,15 @@ test.describe('Responsive layout (390px)', () => {
 				expect(geo.clippedLeft, `${label}: all 32 bars fit, none may be clipped`).toBe(0);
 			}
 
-			await page.keyboard.up('Space');
+			// Screenshot while still holding Space: releasing first lets the 300ms
+			// timer elapse, which unmounts `level-history` and moves the body to
+			// the feedback phase — the artifact would show no meter at all.
 			await page.screenshot({
 				path: `${SCREENSHOT_DIR}/level-history-${width}px.png`,
 				fullPage: true
 			});
+
+			await page.keyboard.up('Space');
 		});
 	}
 
