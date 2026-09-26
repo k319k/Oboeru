@@ -464,7 +464,7 @@ Task 1 Step 7 で「録音中はスキップ不可」の直後に追加した文
 
 ```diff
   8. デプロイ後のスモーク（`GET /` 200、`POST /api/judge` が `available: true`）
-+9. 390px でマウス長押＋ドラッグ（3 要素）し、`document.getSelection().rangeCount` が 0 になる。対照の `sentence-text` は 1 以上になること
++9. 390px でマウス長押＋ドラッグ（抑止の 3 要素 + 対照の `sentence-text`）し、抑止の 3 要素の `document.getSelection().rangeCount` が 0、`sentence-text` は 1 以上になること
 ```
 
 - [ ] **Step 3: 全体を検証する**
@@ -484,7 +484,8 @@ Expected: 全て PASS
 
   `/tmp/` にスクリプトを書いて、390px のコンテキストで
   **マウス長押し＋ドラッグ**（`mouse.move` → `mouse.down` → 一定距離の `mouse.move` を数回 →
-  `mouse.up`）を 3 要素に対して行い、`document.getSelection().rangeCount` を読み取る。
+  `mouse.up`）を 4 要素に対して行い、`document.getSelection().rangeCount` を読み取る。
+  抑止の 3 要素に加えて対照の `sentence-text` を含める。
 
   | 試行 | 期待値 |
   |---|---|
