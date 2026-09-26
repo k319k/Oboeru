@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { Volume2, Loader2, Mic } from '@lucide/svelte';
+	import { Volume2, Loader2, Mic, X } from '@lucide/svelte';
 	import { toast, Toaster } from 'svelte-sonner';
 	import {
 		loadChapters,
@@ -24,7 +24,6 @@
 	} from '$lib/practice-progress';
 	import type { Sentence, PracticeState, Track } from '$lib/types';
 	import { Button } from '$lib/components/ui/button';
-	import { Badge } from '$lib/components/ui/badge';
 	import { Progress } from '$lib/components/ui/progress';
 	import {
 		AlertDialog,
@@ -976,41 +975,38 @@
 			<h1 class="min-w-0 flex-1 truncate text-sm font-bold sm:text-base" data-testid="chapter-name">
 				{chapterName}
 			</h1>
-			{#if showTrackBadge}
-				<Badge class="max-w-28 shrink-0 truncate" data-testid="track-badge">
-					{currentTrackName}
-				</Badge>
-			{/if}
-			<div class="flex min-w-0 flex-1 flex-col items-center gap-1" data-testid="progress">
-				<Progress
-					value={currentIndex + 1}
-					max={sentences.length}
-					class="h-2 w-full rounded-full"
-					aria-label="進捗"
-					data-testid="progress-bar"
-				/>
-				<span class="text-xs text-muted-foreground tabular-nums">
-					{#if showTrackBadge}{currentTrackName} · {progress}{:else}{progress}{/if}
-				</span>
-			</div>
 			<Button
 				variant="outline"
-				class="h-11 shrink-0 px-4"
-				onclick={() => (endDialogOpen = true)}
+				size="icon"
+				class="size-11 shrink-0"
+				aria-label="終了"
 				data-testid="stop-btn"
+				onclick={() => (endDialogOpen = true)}
 			>
-				終了 <kbd class="kbd-hint">Esc</kbd>
+				<X class="size-5" />
 			</Button>
 		</header>
+
+		<div class="flex flex-none flex-col gap-1" data-testid="progress">
+			<Progress
+				value={currentIndex + 1}
+				max={sentences.length}
+				class="h-2 w-full rounded-full"
+				aria-label="進捗"
+				data-testid="progress-bar"
+			/>
+			<div class="flex items-center justify-between text-xs text-muted-foreground">
+				<span>{showTrackBadge ? currentTrackName : ''}</span>
+				<span class="tabular-nums">{showTrackBadge ? ' · ' : ''}{progress}</span>
+			</div>
+		</div>
 
 		<div
 			class="flex min-h-0 flex-1 flex-col overflow-y-auto"
 			data-testid="practice-body"
 			bind:this={bodyEl}
 		>
-			<div
-				class="flex min-h-40 flex-1 flex-col items-center justify-center gap-4 pb-4"
-			>
+			<div class="flex flex-col items-center justify-start gap-4 py-4">
 				{#if phase === 'show' || phase === 'tts'}
 					{#if currentSentence}
 						<p class="text-xs font-medium text-muted-foreground" data-testid="phase-hint">
@@ -1086,11 +1082,8 @@
 					{:else if score !== null}
 						<div class="flex flex-col items-center gap-4 text-center" data-testid="feedback">
 							<div class="flex flex-col items-center">
-								<p class="text-sm font-medium text-muted-foreground" data-testid="score-label">
-									類似度
-								</p>
 								<p
-									class="score text-5xl font-bold tabular-nums"
+									class="score text-[2.75rem] font-bold tabular-nums"
 									class:pass={score >= threshold}
 									class:fail={score < threshold}
 									class:celebrate={score >= threshold}
@@ -1098,9 +1091,12 @@
 								>
 									{score}%
 								</p>
+								<p class="text-sm font-medium text-muted-foreground" data-testid="score-label">
+									類似度
+								</p>
 							</div>
 							{#if diffTokens}
-								<p class="max-w-full text-lg leading-loose" data-testid="word-diff">
+								<p class="max-w-full text-sm leading-loose" data-testid="word-diff">
 									{#each diffTokens as token, i (i)}
 										<span
 											class="diff-token"
@@ -1125,7 +1121,7 @@
 								</p>
 							{/if}
 							{#if transcribedText}
-								<p class="text-sm text-muted-foreground italic" data-testid="transcribed-text">
+								<p class="text-sm text-muted-foreground" data-testid="transcribed-text">
 									「{transcribedText}」
 								</p>
 							{/if}

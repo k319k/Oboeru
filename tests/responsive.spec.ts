@@ -327,6 +327,15 @@ test.describe('Responsive layout (390px)', () => {
 		await expectNoHorizontalOverflow(page, '/practice show');
 		await expectTapTargets(page, '/practice show');
 
+		const barWidth = await page.evaluate(() => {
+			const el = document.querySelector('[data-testid="progress-bar"]');
+			return el ? el.getBoundingClientRect().width : 0;
+		});
+		expect(
+			barWidth,
+			'/practice show: the progress bar must span the full width at 390px'
+		).toBeGreaterThanOrEqual((await page.evaluate(() => window.innerWidth)) * 0.8);
+
 		// T6 layout: 終了 moved to the header row; スキップ stays as the
 		// full-width bottom action at 390px.
 		const layout = await page.evaluate(() => {

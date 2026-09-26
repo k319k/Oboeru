@@ -533,12 +533,10 @@ test.describe('Practice — Tracks', () => {
 
 		// Two-level sort: track A's sentence first despite the higher in-track order
 		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
-		await expect(page.getByTestId('track-badge')).toHaveText('基本');
 		await expect(page.getByTestId('progress')).toHaveText('基本 · 1 / 2');
 
 		await page.getByTestId('skip-btn').click();
 		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。');
-		await expect(page.getByTestId('track-badge')).toHaveText('応用');
 		await expect(page.getByTestId('progress')).toHaveText('応用 · 2 / 2');
 	});
 });
@@ -1026,11 +1024,13 @@ test.describe('Practice — T13 push-to-talk', () => {
 		await expect(page.getByTestId('sentence-text')).toBeVisible();
 		await expect(page.getByTestId('replay-btn')).toContainText('R');
 
-		// Ready phase: hold button [Space], skip [S], stop [Esc]
+		// Ready phase: hold button [Space], skip [S]. 終了 is an icon-only button,
+		// so the Esc hint no longer renders — the accessible name carries it instead.
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 		await expect(page.getByTestId('record-hold-btn')).toContainText('Space');
 		await expect(page.getByTestId('skip-btn')).toContainText('S');
-		await expect(page.getByTestId('stop-btn')).toContainText('Esc');
+		await expect(page.getByTestId('stop-btn')).toHaveAttribute('aria-label', '終了');
+		await expect(page.getByTestId('stop-btn').locator('kbd')).toHaveCount(0);
 	});
 });
 
