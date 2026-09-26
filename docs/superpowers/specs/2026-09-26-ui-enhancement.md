@@ -84,8 +84,9 @@ Space / Enter は「ボタンを押す」ことと等価の明示操作として
 | `src/routes/practice/+page.svelte:760` | `if (autoAdvance) scheduleDwell(incorrectDwellMs, …)` |
 | `src/routes/practice/+page.svelte:854-857` | `loadPracticePrefs()` 呼び出し |
 
-`cancelDwell()` は `advanceToNext` / `retrySentence` / `retryFromError` / `beginHold` /
-`replaySentence` / `skip` / `stop` の 7 箇所から呼ばれているが、dwell ごと消えるため 7 箇所とも削除する。
+`cancelDwell()` は `advanceToNext` / `retrySentence` / `retryFromError` / `replaySentence` /
+`stop` / `beginHold` / `primaryAction` の 7 箇所から呼ばれているが、dwell ごと消えるため 7 箇所とも削除する。
+`skip()` 自身は `cancelDwell()` を呼ばない（`advanceToNext()` へ委譲する間接経路のみ）。
 
 `oboeru:practice-ui:v1` に古い値が残っていても読み込むコードが無くなるため、移行処理は不要
 （orphan キーとして localStorage に残るだけ）。`oboeru:progress:v1`（セッション復元）は変更しない。
@@ -111,7 +112,9 @@ Space / Enter は「ボタンを押す」ことと等価の明示操作として
       </header>
 +     {/if}
 -     <main id="main-content" tabindex="-1" class="mx-auto w-full max-w-5xl flex-1 px-4 py-6 outline-none">
-+     <main id="main-content" tabindex="-1" class="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col px-4 py-6 outline-none">
++     <main id="main-content" tabindex="-1"
++           class="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col px-4 outline-none"
++           class:py-6={!isPractice}>
           {@render children()}
       </main>
   </div>
@@ -124,28 +127,46 @@ Space / Enter は「ボタンを押す」ことと等価の明示操作として
 
 **練習中はグローバルナビが出ない**ことで縦 56px が回収される。
 
+**`py-6` は無条件ではなく `class:py-6={!isPractice}` にする（最終形）。**
+練習ルートは自前の root で definite height（`h-dvh`）を持つ。`h-dvh` の外側に
+`<main>` の縦 padding が乗ると root の 100dvh がビューポートを超えて document 全体が
+スクロールする状態に戻り、`action-zone` が画面外に出る。このため `/practice` のときだけ
+縦 padding を外し、縦 padding の所有者を練習 root 自身に持たせる。
+`h-dvh` と `class:py-6={!isPractice}` は相互結合の 1 組であり、片方だけの変更は壊れる。
+（横 padding は `<main>` が持つ。`px-4` は残す。）
+
 ### 2.2 練習ルートの構造
 
 `src/routes/practice/+page.svelte:912` の `min-h-dvh` をやめ、次の 3 区画にする。
 
 ```
-div.flex.min-h-0.flex-1.flex-col            ← was: min-h-dvh flex-col gap-6
-├─ p.sr-only[role=status][aria-live=polite]  flex-none
+div.mx-auto.flex.h-dvh.w-full.max-w-2xl.flex-col.py-4   ← was: min-h-dvh flex-col gap-6
+├─ p.sr-only[role=status][aria-live=polite]
 ├─ {#if phase === 'summary'}
-│   └─ div.flex-1.min-h-0.overflow-y-auto   ← サマリー専用スクロール（下記 注意）
+│   └─ div.flex.min-h-0.flex-1.flex-col.overflow-y-auto  ← サマリー専用スクロール（下記 注意）
 ├─ {:else}
-│   ├─ header[data-testid=practice-header]   flex.flex-none.items-center.gap-2
+│   ├─ header[data-testid=practice-header]   flex.flex-none.items-center.gap-2.pb-3
 │   ├─ div.flex.flex-none.flex-col.gap-1      ← 進捗（独立した全幅1行）
-│   ├─ div.flex-1.min-h-0.overflow-y-auto     ← ここだけがスクロール
-│   └─ div[data-testid=action-zone]          flex.flex-none.flex-col.gap-2
+│   ├─ div[data-testid=practice-body]        flex.min-h-0.flex-1.flex-col.overflow-y-auto
+│   │                                        ← ここだけがスクロール
+│   └─ div[data-testid=action-zone]          flex.flex-none.flex-col.gap-2.border-t.p-3
 ├─ AlertDialog ×2
 └─ Toaster
 ```
 
-**サマリー分岐もスクロール領域が必要。** `summary` は
-`{#if phase === 'summary'}` 里有るPAY 折り返し（`summary-failed-list`）があり
-縦に長くなりうる。`min-h-0` 化したルートの中で直接の子にすると
-スクロール領域を持たないため、はみ出した分がoverflowして読めなくなる。
+**root は `h-dvh`（`min-h-*` ではない）にして definite height を持たせる（最終形）。**
+`h-dvh` がないと `min-h-0 flex-1` の連鎖がクランプされず、root がコンテンツ高に伸びて
+document 全体がスクロールする。内側スクロールにならないため `action-zone` が画面外に出る。
+縦 padding は root 自身の `py-4` が所有し、`<main>` は `/practice` で縦 padding を外す
+（§2.1）。このため **`h-dvh` と `class:py-6={!isPractice}` は相互結合**であり、
+どちらか一方だけを変えると「document が 100dvh を超えてスクロールする」壊れた状態に戻る。
+`h-dvh` を `min-h-*` に戻すのも `<main>` に `py-*` を足すのも同じ壊し方。
+最終レイアウト表（区画ごとの class 一覧）は `AGENTS.md` の
+「practice 画面のレイアウト規約」を参照。
+
+**サマリー分岐もスクロール領域が必要。** `summary` には縦に長くなりうる折り返し
+（`summary-failed-list`）がある。`min-h-0` 化した root の中で直接の子にすると
+スクロール領域を持たないため、はみ出した分が overflow して読めなくなる。
 `flex-1 min-h-0 overflow-y-auto` のラッパで包むこと。
 
 `gap-6` は撤去し、各 zone が `p-*` と `border-t` で自分のスペーシングを持つ。
@@ -155,13 +176,13 @@ div.flex.min-h-0.flex-1.flex-col            ← was: min-h-dvh flex-col gap-6
 ### 2.3 ヘッダー（症状 E の解決）
 
 ```svelte
-<header class="flex flex-none items-center gap-2" data-testid="practice-header">
+<header class="flex flex-none items-center gap-2 pb-3" data-testid="practice-header">
   <h1 class="min-w-0 flex-1 truncate text-sm font-bold sm:text-base" data-testid="chapter-name">
     {chapterName}
   </h1>
   <Button variant="outline" size="icon" class="size-11 shrink-0"
           aria-label="終了" data-testid="stop-btn" onclick={() => (endDialogOpen = true)}>
-    <X class="size-5" />
+    <X class="size-5" aria-hidden="true" />
   </Button>
 </header>
 ```
@@ -254,11 +275,15 @@ div.flex.flex-none.flex-col.gap-2.border-t.border-border.bg-background.p-3
 （`feedback` フェーズでは `data-testid="feedback-actions"` を付ける）。
 `skip-btn` は全フェーズ・全状態 で必ず 1 個だけ出る。
 
-**本文側（スクロール領域）に残すもの**（アクションではないpure表示）:
+**本文側（スクロール領域）に残すもの**（アクションではない純表示）:
 `phase-hint` / `sentence-text` / `sentence-hidden`（マイク準備中）/ `error-message`（マイク拒否）/
-`record-ready` ラッパと `short-press-hint` / `recording` のタイマ・`level-meter`・`max-duration-note` /
+`short-press-hint` / `recording` のタイマ・`level-meter`・`max-duration-note` /
 `release-hint` / `sentence-transcribing` / `score-label` / `score` / `word-diff` / `diff-legend` /
 `transcribed-text` / `summary` 全体。
+
+`record-ready` ラッパと `record-ready-hint` は**本文側ではなくアクションゾーン内側**に置く
+（上の「`hidden` / ready では `record-ready-hint` … 主操作ボタンと同じ zone 内の上に置く」参照）。
+`record-hold-btn` はアクションなので、スクロール領域ではなくビューポート下部の固定 zone に置く。
 
 サブ操作は**全幅の縦積み**とする。`tests/responsive.spec.ts:290-297` が
 「390px で、コンテナ内の全ボタンが縦積みであること」を契約化しているため。
@@ -292,8 +317,10 @@ function skip(): void {
 }
 ```
 
-- ボタンは `disabled={phase === 'recording'}`。shadcn の Button は `disabled:opacity-50` のみで
+- ボタンは `disabled={isRecording}`。shadcn の Button は `disabled:opacity-50` のみで
   サイズは変わらないので 44px のタップ対象契約は守れる
+- **録音中は `S` の kbd ヒントを出さない**（`{#if !isRecording}` で出し分け）。
+  押しても効かないキーを ≥640px で表示しないための措置。ラベル「スキップ」自体は残す
 - `skippedCount` はガード通過後にのみ加算されるので不正カウントは起きない
 - キー `S` は `skip()` に集約済みのため同じガードが効く
 - `show` / `tts` / `hidden` / `transcribing` / `feedback` は従来どおりスキップ可能
@@ -314,18 +341,22 @@ CSS 側 media query の前例がゼロのため、既存の慣習に揃える。
 `display: inline-block` を宣言している。Tailwind の `hidden` は `utilities` レイヤーにあり、
 カスケード上は unlayered が常に勝つ。**クラス属性に `hidden sm:inline-block` を足しても効かない。**
 
-対処: `.kbd-hint` から `display: inline-block` を削除し、6 箇所の `<kbd class="kbd-hint">` に
+対処: `.kbd-hint` から `display: inline-block` を削除し、7 箇所の `<kbd class="kbd-hint">` に
 `hidden sm:inline-block` を付与する。unlayered 競合が消え、他の 4 プロパティは scoped style に残る。
+7 箇所 = `replay-btn`(show) / `record-hold-btn` / `replay-btn`(feedback) / `next-btn` /
+`retry-btn` の 5 個 + `skip-btn` の 2 インスタンス（`feedback-actions` 内と、
+それ以外のフェーズ用の 1 つ）。`stop-btn` は §2.3 でアイコン化するため kbd を持たない。
 
 | 箇所 | ボタン | キー |
 |---|---|---|
-| `:1019` | `stop-btn` | — （§2.3 でアイコン化するためkbd自体を削除） |
-| `replay-btn`（show） | もう一度再生 | `R` |
+| `stop-btn` | 終了 | — （§2.3 でアイコン化するため kbd 自体を削除） |
+| `replay-btn`（show） | もう一度聴く | `R` |
 | `record-hold-btn` | 押して録音 | `Space` |
 | `replay-btn`（feedback） | もう一度聴く | `R` |
 | `next-btn` | 次へ | `Space` |
 | `retry-btn` | もう一度試す | `Space` |
-| `skip-btn` | スキップ | `S` |
+| `skip-btn`（`feedback-actions` 内） | スキップ | `S` |
+| `skip-btn`（それ以外のフェーズ用） | スキップ | `S` |
 
 `kbd` を非表示にしてもボタン本体ラベルは自己完結しているため情報損失はない。
 
@@ -464,8 +495,9 @@ E2E で検証する方が費用対効果が高い。
 | `:279` | セレクタを `[data-testid="feedback"]` → `[data-testid="feedback-actions"]` へ |
 | **新規** | `[data-testid="action-zone"]` の `rect.bottom <= window.innerHeight + 1` かつ `rect.top >= 0` を show / recording / feedback の 3 フェーズで検証（＝症状 A の机械化） |
 | **新規** | 390px で `[data-testid="progress-bar"]` の幅が `>= 0.8 * window.innerWidth`（＝症状 E の机械化） |
-| **新規** | 390px で `.kbd-hint` が `toBeHidden()`（＝症状 C の机械化） |
+| **新規** | 390px で可視の `.kbd-hint` が 0 個である（`page.locator('.kbd-hint:visible')` の count = 0）を show / ready / recording / feedback の 4 フェーズで検証（＝症状 C の机械化）。`.first()` の `toBeHidden()` は 7 箇所のうち 1 箇所しかカバーしないため使わない |
 | **新規** | `/practice` に `おぼえる` / `管理` ナビが無く、`/` にはある（＝練習中ナビ非表示の机械化） |
+| **新規** | `record-ready-hint` が `hidden sm:block` で消えることの検証。`record-ready-hint` は `phase === 'hidden' && !micConnecting && !micError` のときだけ DOM に存在するため、**`show` フェーズで `toBeHidden()` を書くと要素 count 0 で恒真になる**。`record-ready` が見えた ready 状態（`startHold` の直前）でアサートする |
 
 `feedback` 内のボタン幾何アサーション（全幅・縦積み）は**_selector 移動のみ**で、
 アサーション内容は変えない。加えて「アクションゾーンがビューポート内」という
@@ -479,10 +511,9 @@ E2E で検証する方が費用対効果が高い。
 - `switchToDarkFresh`（`:215-219`）は `emulateMedia` + reload のみでナビボタンを叩かないため**無変更**
 - §2.1 で `/practice` から `banner` landmark が消える。axe's `region` / `landmark-one-main` /
   `bypass` / `page-has-heading-one` はいずれも **moderate** なので serious/critical 0 の
-  契約は守れる見込み（練習画面の全コンテンツは `<main id="main-content">` の中にあり
-  landmark として有効。skip link も残る）。
-  **これは推論であり、`npm run test:e2e` の実行で実証すること。違反が出た場合は
-  `/practice` に `role="banner"` を持つ lightweight なヘッダーを戻す。**
+  契約は守れる（練習画面の全コンテンツは `<main id="main-content">` の中にあり
+  landmark として有効。skip link も残る）。`npm run test:e2e` の実測で
+  serious/critical 0 を確認済み。
 - 管理画面の新規テーマ RadioGroup は既存の 4 タブ走査で axe にかけられる
   （§1.2 で削除する「練習の操作」と同じ RadioGroup パターンなので contrast / target は同等）
 

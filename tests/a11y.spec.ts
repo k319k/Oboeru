@@ -11,7 +11,7 @@ import { mockTtsApi, silentWavBytes } from './tts-mock';
 // serious/critical violations must hold:
 //   /            — empty + seeded (T5 card UI)
 //   /practice    — show/tts, recording, passing and failing feedback (T6/T8)
-//   /manage      — all four tabs (T7) incl. the T9 練習の操作 form
+//   /manage      — all four tabs (T7) incl. the 設定 tab's 表示テーマ fieldset
 // On top of axe:
 //   - the --correct/--incorrect tokens are measured against --background
 //     (>= 4.5:1 in light AND dark),

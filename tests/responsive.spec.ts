@@ -336,9 +336,11 @@ test.describe('Responsive layout (390px)', () => {
 			'/practice show: the progress bar must span the full width at 390px'
 		).toBeGreaterThanOrEqual((await page.evaluate(() => window.innerWidth)) * 0.8);
 
-		// Keyboard hints are meaningless without a keyboard.
-		await expect(page.locator('.kbd-hint').first()).toBeHidden();
-		await expect(page.getByTestId('record-ready-hint')).toBeHidden();
+		// Keyboard hints are meaningless without a keyboard. Assert on the
+		// *visible* count rather than `.first()`: there are 7 `.kbd-hint`
+		// elements across the phase branches and a `.first()` check would only
+		// ever cover one of them.
+		await expect(page.locator('.kbd-hint:visible')).toHaveCount(0);
 
 		// T6 layout: 終了 moved to the header row; スキップ stays as the
 		// full-width bottom action at 390px.
@@ -377,11 +379,23 @@ test.describe('Responsive layout (390px)', () => {
 		await page.goto('/practice?chapter=child-1');
 
 		// T13 push-to-talk: hold Space to enter (and stay in) the recording phase.
+		// The ready state is asserted first: `record-ready-hint` only exists while
+		// phase === 'hidden' && !micConnecting && !micError, so a toBeHidden()
+		// anywhere else passes vacuously with a zero element count.
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('record-ready-hint')).toBeHidden();
+		await expect(page.locator('.kbd-hint:visible')).toHaveCount(0);
+
 		await startHold(page);
 		await expect(page.getByTestId('stop-btn')).toBeVisible({ timeout: 10000 });
 
 		await expectNoHorizontalOverflow(page, '/practice recording');
 		await expectTapTargets(page, '/practice recording');
+
+		// While recording the skip button is inert: disabled, and no S hint
+		// (an S keycap that does nothing must not be shown).
+		await expect(page.getByTestId('skip-btn')).toBeDisabled();
+		await expect(page.locator('.kbd-hint:visible')).toHaveCount(0);
 
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/practice-recording.png`, fullPage: true });
 	});
@@ -398,6 +412,9 @@ test.describe('Responsive layout (390px)', () => {
 
 		await expectNoHorizontalOverflow(page, '/practice feedback');
 		await expectTapTargets(page, '/practice feedback');
+
+		// No visible keyboard hint in the feedback phase either (症状 C).
+		await expect(page.locator('.kbd-hint:visible')).toHaveCount(0);
 
 		// 操作ボタン縦積み: 次へ / もう一度聴く / スキップ live in the bottom
 		// action zone, stacked vertically, each spanning the zone width.

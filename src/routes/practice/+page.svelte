@@ -992,7 +992,7 @@
 				data-testid="stop-btn"
 				onclick={() => (endDialogOpen = true)}
 			>
-				<X class="size-5" />
+				<X class="size-5" aria-hidden="true" />
 			</Button>
 		</header>
 
@@ -1174,7 +1174,7 @@
 						onclick={skip}
 						data-testid="skip-btn"
 					>
-						スキップ <kbd class="kbd-hint hidden sm:inline-block">S</kbd>
+						スキップ {#if !isRecording}<kbd class="kbd-hint hidden sm:inline-block">S</kbd>{/if}
 					</Button>
 				</div>
 			{:else}
@@ -1217,7 +1217,7 @@
 					onclick={skip}
 					data-testid="skip-btn"
 				>
-					スキップ <kbd class="kbd-hint hidden sm:inline-block">S</kbd>
+					スキップ {#if !isRecording}<kbd class="kbd-hint hidden sm:inline-block">S</kbd>{/if}
 				</Button>
 			{/if}
 		</div>
@@ -1401,7 +1401,7 @@
 	}
 
 	/* Key-cap hint badges (T13): small rounded keycaps trailing button labels
-	   ([Space] / [R] / [S] / [Esc]). */
+	   ([Space] / [R] / [S]). Hidden below the sm breakpoint. */
 	.kbd-hint {
 		padding: 0.05rem 0.45rem;
 		border: 1px solid color-mix(in oklab, var(--foreground) 18%, transparent);

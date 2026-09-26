@@ -2,18 +2,16 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { Home, Settings } from '@lucide/svelte';
-	import { getResolvedTheme, subscribeTheme } from '$lib/theme';
+	// Side-effect import: $lib/theme applies the stored theme to <html> and
+	// subscribes to matchMedia on module load. Nothing here renders the theme,
+	// but the initialisation must run on every route — without this import the
+	// top page never follows the OS colour scheme.
+	import '$lib/theme';
 	import { unlockAudio } from '$lib/tts';
 	import '../app.css';
 	let { children } = $props();
 	let pathname = $derived(page.url.pathname);
 	let isPractice = $derived(pathname === '/practice');
-	let resolvedTheme = $state(getResolvedTheme());
-	$effect(() => {
-		return subscribeTheme(() => {
-			resolvedTheme = getResolvedTheme();
-		});
-	});
 	onMount(() => {
 		const unlock = () => unlockAudio();
 		document.addEventListener('pointerdown', unlock, { once: true });
