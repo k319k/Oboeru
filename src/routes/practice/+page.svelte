@@ -1082,7 +1082,10 @@
 						viewport 左外）になる。w-full で definite な 288/328px に
 						確定させ、overflow-hidden が意図通り左で古い棒を切り落とす。
 					-->
-					<div class="flex w-full flex-col items-center gap-4" data-testid="sentence-recording">
+					<div
+						class="recording-status flex w-full flex-col items-center gap-4"
+						data-testid="sentence-recording"
+					>
 						<p class="flex items-center gap-2 text-base text-muted-foreground">
 							<span
 								class="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-destructive"
@@ -1436,18 +1439,23 @@
 	   system buttons (translate-y + shrinking hard shadow) scaled up for the
 	   primary hold interaction. touch-action/user-select keep a long press
 	   from scrolling or text-selecting on touch devices. */
+	/* 押して録音は practice の主操作。下のスキップ（副操作, 全幅 44px）より
+	   細かったため、主操作の全幅・塗り convention に揃える。高さは拇指で
+	   押しっぱなしにできる 5rem (80px)。表示は `w-full`（scoped style の
+	   unlayered より後段なので inline-flex ではなく block が効く）。 */
 	.record-hold-btn {
-		display: inline-flex;
+		display: flex;
+		width: 100%;
 		align-items: center;
 		justify-content: center;
 		gap: 0.625rem;
-		min-height: 4.5rem;
-		padding: 1rem 2.5rem;
+		min-height: 5rem;
+		padding: 1rem 1.5rem;
 		border: none;
 		border-radius: var(--radius-xl);
 		background: var(--primary);
 		color: var(--primary-foreground);
-		font-size: 1.125rem;
+		font-size: 1.25rem;
 		font-weight: 700;
 		font-family: inherit;
 		box-shadow: 0 5px 0 0 color-mix(in oklab, var(--primary) 75%, black);
@@ -1487,9 +1495,20 @@
 		white-space: nowrap;
 	}
 
+	/* 録音フェーズの表示（録音中・タイマ・メーター・レベル・離すと採点します）は
+	   すべてライブの表示で、コピーする価値が無い。押して録音ボタンを押したまま
+	   指を上に滑らせると 173px 上の「離すと採点します」に着地して「します」が
+	   選択され、Android の選択ハンドル＋検索バブが飛ぶ。録音中はここも
+	   選択不可にする。show / feedback の文と差分トークンは選択可能なまま残す。 */
+	.recording-status,
+	[data-testid='release-hint'] {
+		user-select: none;
+		-webkit-user-select: none;
+	}
+
 	/* 長押しでのテキスト選択とコンテキストメニューを抑止する。録音操作中は
 	   意図しない選択が押下の妨げになる。ボタンとアクション zone にだけ適用し、
-	   文テキストと差异トークンは選択可能なまま残す。 */
+	   文テキストと差分トークンは選択可能なまま残す。 */
 	.action-zone {
 		user-select: none;
 		-webkit-user-select: none;
