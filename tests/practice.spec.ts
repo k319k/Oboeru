@@ -729,21 +729,25 @@ test.describe('Practice — T6 keyboard', () => {
 		await expect(page.getByTestId('stop-btn')).toBeVisible();
 	});
 
-	test('level meter renders a non-zero width while recording', async ({ page }) => {
+	test('level history grows and reacts while recording', async ({ page }) => {
 		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] });
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 
 		await page.keyboard.down('Space');
 		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
 
-		// fake-media produces a tone (non-silent) → the rms-driven fill is > 0%.
+		// fake-media produces a tone, so at least one bar must exceed the 3px floor.
 		await page.waitForFunction(() => {
-			const el = document.querySelector<HTMLElement>('[data-testid="level-meter-fill"]');
-			if (!el) return false;
-			const w = parseFloat(el.style.width);
-			return Number.isFinite(w) && w > 0;
+			const bars = document.querySelectorAll('[data-testid="level-history"] span');
+			return (
+				bars.length >= 3 &&
+				[...bars].some((b) => parseFloat((b as HTMLElement).style.height) > 3)
+			);
 		});
-		await expect(page.getByTestId('level-value')).toHaveText(/レベル \d+%/);
+
+		const count = await page.getByTestId('level-history').locator('span').count();
+		expect(count).toBeGreaterThanOrEqual(3);
+		expect(count).toBeLessThanOrEqual(32);
 
 		await page.keyboard.up('Space');
 	});

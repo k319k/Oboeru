@@ -69,8 +69,13 @@
 		onProgress?: (elapsedMs: number) => void;
 		onLevel?: (rms: number) => void;
 	} | null = null;
+	/** スクロール履歴メーターが保持するサンプル数。recorder の onLevel は 100ms ごと
+	 *  (recorder.ts の SAMPLING_INTERVAL_MS) なので 32 個 = 3.2 秒ぶん。 */
+	const LEVEL_HISTORY_MAX = 32;
 	let recordingElapsedMs: number = $state(0);
 	let recordingLevel: number = $state(0);
+	/** 録音レベルの履歴。古い順に古い→新しい。最大 LEVEL_HISTORY_MAX 個 (32 × 100ms = 3.2 秒)。 */
+	let levelHistory: number[] = $state([]);
 
 	// Push-to-talk (T13). Recording starts ONLY while the user holds Space
 	// or the on-screen hold button; releasing stops + scores.
@@ -388,6 +393,7 @@
 				};
 				r.onLevel = (rms) => {
 					recordingLevel = rms;
+					levelHistory = [...levelHistory.slice(-(LEVEL_HISTORY_MAX - 1)), rms];
 				};
 				// Space was released while the mic was connecting — treat the
 				// instant stop as a short tap.
@@ -644,6 +650,7 @@
 
 		recordingElapsedMs = 0;
 		recordingLevel = 0;
+		levelHistory = [];
 
 		void warmMic();
 
@@ -1057,22 +1064,25 @@
 							</span>
 							<span class="text-xs" data-testid="max-duration-note">最長30秒で自動採点</span>
 						</p>
-						<div
-							class="flex w-56 flex-col gap-1"
-							data-testid="level-meter"
-							role="img"
-							aria-label={`録音レベル ${levelPct}%`}
-						>
-							<div class="h-3 w-full overflow-hidden rounded-full bg-muted">
-								<div
-									class="h-full rounded-full bg-primary"
-									style:width={`${levelPct}%`}
-									data-testid="level-meter-fill"
-								></div>
+						<div class="flex w-full flex-col gap-1" data-testid="level-meter">
+							<div
+								class="flex h-[72px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
+								data-testid="level-history"
+								role="img"
+								aria-label={`録音レベル ${levelPct}%`}
+							>
+								{#each levelHistory as level, i (i)}
+									<span
+										class="w-2 shrink-0 rounded-sm"
+										style:height={`${Math.max(3, Math.round(level * 260))}px`}
+										style:background={i >= levelHistory.length - 6
+											? 'var(--primary)'
+											: `color-mix(in oklab, var(--primary) ${Math.round(
+													(i / Math.max(1, levelHistory.length - 1)) * 100
+												)}%, var(--muted))`}
+									></span>
+								{/each}
 							</div>
-							<span class="text-xs text-muted-foreground tabular-nums" data-testid="level-value">
-								レベル {levelPct}%
-							</span>
 						</div>
 						<p class="text-sm font-medium" data-testid="release-hint">離すと採点します</p>
 					</div>
