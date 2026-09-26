@@ -1188,6 +1188,40 @@ test.describe('Practice — no auto-advance', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Recording phase: skip is blocked (the action zone is always visible, so a
+// mis-tap during recording would otherwise discard the take).
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — skip is disabled while recording', () => {
+	test('skip button is disabled and S does not skip during recording', async ({ page }) => {
+		await setupPractice(page, {
+			transcribe: [{ text: 'おはようございます。' }],
+			sentences: [
+				{ id: 'ja-01', chapterId: 'ch-ja-01', text: 'おはようございます。', language: 'ja', order: 1 },
+				{ id: 'ja-02', chapterId: 'ch-ja-01', text: 'こんにちは。', language: 'ja', order: 2 }
+			]
+		});
+
+		// AGENTS.md の E2E 規約: the FIRST Space keydown must be preceded by a
+		// visible record-ready wait, otherwise the keydown fires before hydration
+		// attaches the document listener and is silently lost.
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await page.keyboard.down('Space');
+		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
+
+		await expect(page.getByTestId('skip-btn')).toBeDisabled();
+
+		const before = await page.getByTestId('progress').textContent();
+		await page.keyboard.press('s');
+		await page.waitForTimeout(500);
+		expect(await page.getByTestId('progress').textContent()).toBe(before);
+		await expect(page.getByTestId('sentence-recording')).toBeVisible();
+
+		await page.keyboard.up('Space');
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Jev semantic judge (低類似度の救済判定)
 //
 // スコアリングペア: 「こんにちは。」 vs 「ぜんぜんちがう」 → 類似度 29

@@ -147,6 +147,13 @@
 	// 0-100% visual level from the recorder's RMS (0.25 rms ≈ full scale).
 	let levelPct = $derived(Math.min(100, Math.round(recordingLevel * 400)));
 
+	// A derived (not an inline `phase === 'recording'`) because Svelte narrows
+	// `phase` to 'feedback' inside the feedback action zone, which makes the
+	// inline comparison a "no overlap" type error there. The closure is also
+	// required: at the top level of the script the flow type of `phase` is still
+	// narrowed to its '$state("show")' initializer.
+	let isRecording = $derived.by(() => phase === 'recording');
+
 	let errorRetryLabel = $derived.by(() => {
 		switch (errorKind) {
 			case 'tts':
@@ -279,7 +286,9 @@
 	}
 
 	function skip(): void {
-		if (phase === 'summary') return;
+		// Never skip mid-take: the action zone is always visible, so a mis-tap
+		// during recording would otherwise discard the captured audio.
+		if (phase === 'summary' || phase === 'recording') return;
 		skippedCount++;
 		cancelSpeech();
 		advanceToNext();
@@ -1158,7 +1167,13 @@
 					>
 						<Volume2 /> もう一度聴く <kbd class="kbd-hint">R</kbd>
 					</Button>
-					<Button variant="outline" class="h-11 w-full" onclick={skip} data-testid="skip-btn">
+					<Button
+						variant="outline"
+						class="h-11 w-full"
+						disabled={isRecording}
+						onclick={skip}
+						data-testid="skip-btn"
+					>
 						スキップ <kbd class="kbd-hint">S</kbd>
 					</Button>
 				</div>
@@ -1195,7 +1210,13 @@
 						{errorRetryLabel}
 					</Button>
 				{/if}
-				<Button variant="outline" class="h-11 w-full" onclick={skip} data-testid="skip-btn">
+				<Button
+					variant="outline"
+					class="h-11 w-full"
+					disabled={isRecording}
+					onclick={skip}
+					data-testid="skip-btn"
+				>
 					スキップ <kbd class="kbd-hint">S</kbd>
 				</Button>
 			{/if}
