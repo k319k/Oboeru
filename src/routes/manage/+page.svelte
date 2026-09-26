@@ -2,11 +2,6 @@
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { loadSettings, saveSettings, type Settings } from '$lib/settings';
-	import {
-		loadPracticePrefs,
-		savePracticePrefs,
-		type PracticePrefs
-	} from '$lib/practice-prefs';
 	import { CURATED_VOICES } from '$lib/tts-voices';
 	import { cn } from '$lib/utils';
 	import {
@@ -850,32 +845,6 @@
 	function handleRetryFromChange(value: 'tts' | 'rerecord'): void {
 		settings = { ...settings, retryFrom: value };
 		saveSettings(settings);
-	}
-
-	// --- Practice operation (T9: oboeru:practice-ui:v1) ---
-
-	let practicePrefs = $state<PracticePrefs>(loadPracticePrefs());
-
-	/** はやい dwell pair; ふつう is the module default (800/2000). */
-	const FAST_DWELL = { correctDwellMs: 400, incorrectDwellMs: 800 } as const;
-
-	let practiceSpeed = $derived<'fast' | 'normal'>(
-		practicePrefs.correctDwellMs === FAST_DWELL.correctDwellMs &&
-			practicePrefs.incorrectDwellMs === FAST_DWELL.incorrectDwellMs
-			? 'fast'
-			: 'normal'
-	);
-
-	function handleAutoAdvanceChange(on: boolean): void {
-		practicePrefs = { ...practicePrefs, autoAdvance: on };
-		savePracticePrefs(practicePrefs);
-	}
-
-	function handlePracticeSpeedChange(speed: 'fast' | 'normal'): void {
-		const dwell =
-			speed === 'fast' ? FAST_DWELL : { correctDwellMs: 800, incorrectDwellMs: 2000 };
-		practicePrefs = { ...practicePrefs, ...dwell };
-		savePracticePrefs(practicePrefs);
 	}
 </script>
 
@@ -1744,52 +1713,6 @@
 						もう一度録音
 					</Label>
 				</RadioGroup.Root>
-			</fieldset>
-
-			<!-- Practice operation (T9) -->
-			<fieldset
-				class="setting-row flex flex-col gap-3 rounded-md border border-border bg-muted/40 p-3"
-				aria-labelledby="practice-operation-heading"
-			>
-				<legend id="practice-operation-heading" class="px-1 text-sm font-semibold">
-					練習の操作
-				</legend>
-
-				<div class="flex flex-col gap-1.5">
-					<span class="text-sm font-medium">自動進行:</span>
-					<RadioGroup.Root
-						value={practicePrefs.autoAdvance ? 'on' : 'off'}
-						onValueChange={(v) => handleAutoAdvanceChange(v === 'on')}
-						class="flex gap-4"
-					>
-						<Label class="flex items-center gap-2 font-normal">
-							<RadioGroup.Item value="on" data-testid="auto-advance-on" class="size-11 sm:size-4" />
-							オン (自動で次へ)
-						</Label>
-						<Label class="flex items-center gap-2 font-normal">
-							<RadioGroup.Item value="off" data-testid="auto-advance-off" class="size-11 sm:size-4" />
-							オフ (手動で次へ)
-						</Label>
-					</RadioGroup.Root>
-				</div>
-
-				<div class="flex flex-col gap-1.5">
-					<span class="text-sm font-medium">進む速さ:</span>
-					<RadioGroup.Root
-						value={practiceSpeed}
-						onValueChange={(v) => handlePracticeSpeedChange(v as 'fast' | 'normal')}
-						class="flex gap-4"
-					>
-						<Label class="flex items-center gap-2 font-normal">
-							<RadioGroup.Item value="fast" data-testid="speed-fast" class="size-11 sm:size-4" />
-							はやい
-						</Label>
-						<Label class="flex items-center gap-2 font-normal">
-							<RadioGroup.Item value="normal" data-testid="speed-normal" class="size-11 sm:size-4" />
-							ふつう
-						</Label>
-					</RadioGroup.Root>
-				</div>
 			</fieldset>
 		</section>
 	</div>

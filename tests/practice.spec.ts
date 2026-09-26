@@ -7,7 +7,6 @@ import { mockTtsApi, silentWavBytes, type TtsMock } from './tts-mock';
 
 const STORAGE_KEY = 'oboeru:v1';
 const SETTINGS_KEY = 'oboeru:settings:v1';
-const PRACTICE_UI_KEY = 'oboeru:practice-ui:v1';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,11 +37,6 @@ interface SeedOptions {
 		voiceURI?: string | null;
 		retryFrom?: 'tts' | 'rerecord';
 	};
-	practicePrefs?: {
-		autoAdvance?: boolean;
-		correctDwellMs?: number;
-		incorrectDwellMs?: number;
-	};
 }
 
 /** Seed localStorage with chapters + sentences + settings before navigating. */
@@ -66,25 +60,20 @@ async function seedPractice(page: Page, opts: SeedOptions = {}) {
 	};
 
 	await page.addInitScript(
-		({ storageKey, settingsKey, practiceUiKey, chapters, tracks, sentences, settings, practicePrefs }) => {
+		({ storageKey, settingsKey, chapters, tracks, sentences, settings }) => {
 			localStorage.setItem(
 				storageKey,
 				JSON.stringify({ chapters, tracks, sentences })
 			);
 			localStorage.setItem(settingsKey, JSON.stringify(settings));
-			if (practicePrefs) {
-				localStorage.setItem(practiceUiKey, JSON.stringify(practicePrefs));
-			}
 		},
 		{
 			storageKey: STORAGE_KEY,
 			settingsKey: SETTINGS_KEY,
-			practiceUiKey: PRACTICE_UI_KEY,
 			chapters,
 			tracks: opts.tracks,
 			sentences,
-			settings,
-			practicePrefs: opts.practicePrefs ?? null
+			settings
 		}
 	);
 }
@@ -275,7 +264,8 @@ test.describe('Practice — Auto loop', () => {
 			'おはようございます。'
 		);
 
-		// After the correct dwell, the single-sentence session ends
+		// The session no longer auto-advances: the user must press 次へ.
+		await page.getByTestId('next-btn').click();
 		await expect(page.getByTestId('summary')).toBeVisible({ timeout: 10000 });
 		await expect(page.getByTestId('summary-sentences')).toHaveText('1');
 		await expect(page.getByTestId('summary-average')).toHaveText('100%');
@@ -292,7 +282,9 @@ test.describe('Practice — Auto loop', () => {
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
 		await expect(page.getByTestId('score')).toHaveClass(/fail/);
 
-		// Retry: feedback disappears → tts → ready → hold again → feedback
+		// Retry: もう一度試す → feedback disappears → tts → ready → hold again → feedback
+		// The failing feedback no longer auto-retries.
+		await page.getByTestId('retry-btn').click();
 		await expect(page.getByTestId('feedback')).toBeHidden({ timeout: 10000 });
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 		await holdAndRelease(page);
@@ -932,95 +924,6 @@ test.describe('Practice — T6 word diff', () => {
 });
 
 // ---------------------------------------------------------------------------
-// T8: Live word display (mock engine via ?e2e=1, DEV only)
-// ---------------------------------------------------------------------------
-
-test.describe('Practice — T8 live words', () => {
-	test('e2e mock fills slots green, shows mismatch chip and ghost, then scores normally', async ({
-		page
-	}) => {
-		await seedPractice(page, {
-			sentences: [
-				{
-					id: 'en-01',
-					chapterId: 'ch-ja-01',
-					text: 'Good morning everyone',
-					language: 'en',
-					order: 1
-				}
-			]
-		});
-		await mockTts(page);
-		await mockTranscribe(page, [{ text: 'Good morning everyone' }]);
-		await page.goto('/practice?chapter=ch-ja-01&e2e=1');
-
-		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
-
-		// Hold: the scripted mock words fill the slots DURING the hold.
-		await page.keyboard.down('Space');
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-
-		// One empty slot per target token — no target text leaks before a match.
-		const slots = page.locator('[data-testid="word-slot"]');
-		await expect(slots).toHaveCount(3);
-		await expect(page.getByTestId('live-word-stream')).not.toContainText('everyone');
-
-		// First scripted word → its slot fills green and shows the TARGET word.
-		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(1, {
-			timeout: 5000
-		});
-		await expect(page.locator('[data-testid="word-slot"].match').first()).toHaveText('Good');
-
-		// Scripted mismatch word → red chip in the stream, no slot filled.
-		await expect(page.getByTestId('word-chip')).toHaveText('バナナ');
-		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(1);
-
-		// Scripted partial → gray ghost in the next slot (speaker-side fragment).
-		await expect(page.getByTestId('word-ghost')).toHaveText('ever', { timeout: 3000 });
-
-		// Remaining words confirm → all slots green, ghost gone.
-		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(3, {
-			timeout: 8000
-		});
-		await expect(page.getByTestId('word-ghost')).toHaveCount(0);
-		await expect(page.locator('[data-testid="word-slot"].match').nth(1)).toHaveText('morning');
-		await expect(page.locator('[data-testid="word-slot"].match').nth(2)).toHaveText('everyone');
-
-		// Release ends the hold → normal Groq (mock) scoring path is untouched.
-		await page.keyboard.up('Space');
-		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
-		await expect(page.getByTestId('score')).toHaveClass(/pass/);
-		await expect(page.getByTestId('transcribed-text')).toContainText('Good morning everyone');
-	});
-
-	test('liveFail=1 falls back: no-live notice shows and practice completes normally', async ({
-		page
-	}) => {
-		await setupPractice(page, { transcribe: [{ text: 'おはようございます。' }] }, 'ch-ja-01&e2e=1&liveFail=1');
-
-		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
-
-		// Hold: live display is off — notice text only, no word stream.
-		await page.keyboard.down('Space');
-		await expect(page.getByTestId('sentence-recording')).toBeVisible({ timeout: 5000 });
-		await expect(page.getByTestId('live-off-notice')).toHaveText('ライブ表示なしで練習します');
-		await expect(page.getByTestId('live-word-stream')).toHaveCount(0);
-
-		// Release ends the hold → the current flow completes untouched.
-		await page.waitForFunction(() => {
-			const m = document
-				.querySelector('[data-testid="recording-timer"]')
-				?.textContent?.match(/(\d+\.\d+)/);
-			return m ? parseFloat(m[1]) >= 0.7 : false;
-		});
-		await page.keyboard.up('Space');
-		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
-		await expect(page.getByTestId('score')).toHaveClass(/pass/);
-		await expect(page.getByTestId('summary')).toBeVisible({ timeout: 10000 });
-	});
-});
-
-// ---------------------------------------------------------------------------
 // T13: Push-to-talk (hold to record)
 // ---------------------------------------------------------------------------
 
@@ -1141,6 +1044,8 @@ test.describe('Practice — T6 summary', () => {
 
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 		await holdAndRelease(page);
+		// No dwell — the single-sentence session ends on 次へ.
+		await page.getByTestId('next-btn').click();
 		await expect(page.getByTestId('summary')).toBeVisible({ timeout: 10000 });
 
 		await expect(page.getByTestId('summary-title')).toHaveText('練習完了!');
@@ -1253,13 +1158,12 @@ test.describe('Practice — T9 restore', () => {
 });
 
 // ---------------------------------------------------------------------------
-// T9: Operation prefs (localStorage oboeru:practice-ui:v1) — autoAdvance
+// No auto-advance: the feedback phase persists until the user acts
 // ---------------------------------------------------------------------------
 
-test.describe('Practice — T9 autoAdvance off', () => {
+test.describe('Practice — no auto-advance', () => {
 	test('passing feedback does not auto-advance; Space advances manually', async ({ page }) => {
 		await seedPractice(page, {
-			practicePrefs: { autoAdvance: false, correctDwellMs: 800, incorrectDwellMs: 2000 },
 			sentences: [
 				{ id: 'ja-01', chapterId: 'ch-ja-01', text: 'おはようございます。', language: 'ja', order: 1 },
 				{ id: 'ja-02', chapterId: 'ch-ja-01', text: 'こんにちは。', language: 'ja', order: 2 }
@@ -1273,8 +1177,7 @@ test.describe('Practice — T9 autoAdvance off', () => {
 		await holdAndRelease(page);
 		await expect(page.getByTestId('score')).toHaveClass(/pass/, { timeout: 10000 });
 
-		// With autoAdvance the 800ms correct dwell would have advanced already —
-		// after 2.5s the feedback must still be on screen.
+		// Time alone never advances: after 2.5s the feedback must still be up.
 		await page.waitForTimeout(2500);
 		await expect(page.getByTestId('feedback')).toBeVisible();
 		await expect(page.getByTestId('sentence-text')).toHaveCount(0);

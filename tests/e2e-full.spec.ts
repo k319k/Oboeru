@@ -154,6 +154,8 @@ test('full flow: seed → top → practice complete → manage round-trip → to
 	await expect(page.getByTestId('score')).toHaveText('100%');
 
 	// --- PRACTICE: sentence 2 fails once, then passes on retry ---
+	// The session never advances on its own — the user presses 次へ.
+	await page.getByTestId('next-btn').click();
 	await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。', {
 		timeout: 10000
 	});
@@ -161,11 +163,13 @@ test('full flow: seed → top → practice complete → manage round-trip → to
 	await holdAndRelease(page);
 	await expect(page.getByTestId('score')).toHaveClass(/fail/, { timeout: 15000 });
 	// Retry: tts → ready → hold → release → pass
+	await page.getByTestId('retry-btn').click();
 	await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 	await holdAndRelease(page);
 	await expect(page.getByTestId('score')).toHaveClass(/pass/, { timeout: 15000 });
 
 	// --- SUMMARY: stats reflect 2 sentences, 1 skip-free, 1 fail + 1 pass retry ---
+	await page.getByTestId('next-btn').click();
 	await expect(page.getByTestId('summary')).toBeVisible({ timeout: 10000 });
 	await expect(page.getByTestId('summary-sentences')).toHaveText('2');
 	await expect(page.getByTestId('summary-skipped')).toHaveText('0');

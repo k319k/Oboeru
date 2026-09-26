@@ -6,19 +6,17 @@ import { mockTtsApi } from './tts-mock';
 // ---------------------------------------------------------------------------
 // Responsive layout (oboeru-ui-ux-v2 T10) — 390×844 mobile viewport
 // ---------------------------------------------------------------------------
-// Verifies that /, /practice (show / recording with the ?e2e=1 mock live
-// stream / feedback) and /manage (all four tabs) render without horizontal
-// overflow at 390px, that the header nav fits, that practice action buttons
-// stack full-width, that top cards are single-column, and that all visible
-// interactive elements have a tap target >= 44px (WCAG 2.5.8). Layout fixes
-// are limited to Tailwind responsive utilities so desktop (1280px) is
-// unaffected.
+// Verifies that /, /practice (show / recording / feedback) and /manage (all
+// four tabs) render without horizontal overflow at 390px, that the header nav
+// fits, that practice action buttons stack full-width, that top cards are
+// single-column, and that all visible interactive elements have a tap target
+// >= 44px (WCAG 2.5.8). Layout fixes are limited to Tailwind responsive
+// utilities so desktop (1280px) is unaffected.
 // ---------------------------------------------------------------------------
 
 const EVIDENCE_DIR = '.omo/evidence/oboeru-ui-ux-v2';
 const EVIDENCE_FILE = `${EVIDENCE_DIR}/task-10-oboeru-ui-ux-v2.txt`;
 const SCREENSHOT_DIR = `${EVIDENCE_DIR}/task-10-screenshots`;
-const PRACTICE_PREFS_KEY = 'oboeru:practice-ui:v1';
 
 const SEED = {
 	chapters: [
@@ -28,18 +26,6 @@ const SEED = {
 	sentences: [
 		{ id: 's-1', chapterId: 'child-1', text: 'こんにちは。', language: 'ja', order: 1 },
 		{ id: 's-2', chapterId: 'child-1', text: 'お元気ですか。', language: 'ja', order: 2 }
-	]
-};
-
-// The mock live script needs multiple tokens to produce slots + a mismatch
-// chip; a single-token JA sentence yields none (budoux keeps こんにちは。 whole).
-const LIVE_SEED = {
-	chapters: [
-		{ id: 'parent-1', name: '親チャプター', parentId: null, order: 1 },
-		{ id: 'child-1', name: '子チャプター', parentId: 'parent-1', order: 1 }
-	],
-	sentences: [
-		{ id: 's-1', chapterId: 'child-1', text: 'Good morning everyone', language: 'en', order: 1 }
 	]
 };
 
@@ -137,16 +123,6 @@ async function mockTranscribe(page: Page, text: string) {
 			body: JSON.stringify({ text })
 		})
 	);
-}
-
-/** Turn auto-advance off so a feedback phase persists until manual action. */
-async function disableAutoAdvance(page: Page) {
-	await page.evaluate((key) => {
-		localStorage.setItem(
-			key,
-			JSON.stringify({ autoAdvance: false, correctDwellMs: 800, incorrectDwellMs: 2000 })
-		);
-	}, PRACTICE_PREFS_KEY);
 }
 
 /**
@@ -257,29 +233,23 @@ test.describe('Responsive layout (390px)', () => {
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/practice.png`, fullPage: true });
 	});
 
-	test('practice recording (+mock live stream) — no overflow, tap targets >= 44px', async ({
-		page
-	}) => {
-		await gotoWithSeed(page, LIVE_SEED);
+	test('practice recording — no overflow, tap targets >= 44px', async ({ page }) => {
+		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
-		await page.goto('/practice?chapter=child-1&e2e=1');
+		await page.goto('/practice?chapter=child-1');
 
 		// T13 push-to-talk: hold Space to enter (and stay in) the recording phase.
 		await startHold(page);
-		// Wait for the scripted stream to settle (all slots filled + chip).
-		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(3, {
-			timeout: 10000
-		});
+		await expect(page.getByTestId('stop-btn')).toBeVisible({ timeout: 10000 });
 
-		await expectNoHorizontalOverflow(page, '/practice recording+live');
-		await expectTapTargets(page, '/practice recording+live');
+		await expectNoHorizontalOverflow(page, '/practice recording');
+		await expectTapTargets(page, '/practice recording');
 
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/practice-recording.png`, fullPage: true });
 	});
 
 	test('practice feedback — no overflow, action buttons stacked full-width', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
-		await disableAutoAdvance(page);
 		await mockTtsApi(page);
 		await mockTranscribe(page, 'こんにちは。');
 		await page.goto('/practice?chapter=child-1');

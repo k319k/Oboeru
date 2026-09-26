@@ -15,18 +15,13 @@
 	import { transcribe } from '$lib/transcribe';
 	import { similarity } from '$lib/similarity';
 	import { tokenizeSentence, ProgressAligner } from '$lib/alignment';
-	import { createLiveStt, terminateLiveStt } from '$lib/livestt/engine';
-	import { setLastLang } from '$lib/last-lang';
-	import type { LiveSttEngine, LiveWord } from '$lib/livestt/types';
-	import type { MockWordStep } from '$lib/livestt/mock-engine';
 	import { loadSettings } from '$lib/settings';
 	import {
-		loadPracticePrefs,
 		loadPracticeProgress,
 		savePracticeProgress,
 		clearPracticeProgress,
 		type PracticeProgress
-	} from '$lib/practice-prefs';
+	} from '$lib/practice-progress';
 	import type { Sentence, PracticeState, Track } from '$lib/types';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -116,40 +111,12 @@
 	// End-of-session confirmation dialog (終了 button / Esc)
 	let endDialogOpen: boolean = $state(false);
 
-	// Operation prefs (T9): dwell speeds + auto-advance, loaded once on mount.
-	let autoAdvance: boolean = $state(true);
-	let correctDwellMs: number = $state(800);
-	let incorrectDwellMs: number = $state(2000);
-
 	// Mid-session restore (T9). The phase machine is held behind the restore
 	// dialog (sessionReady) until the user picks 続ける / 最初から.
 	let currentChapterId: string | null = null;
 	let sessionReady: boolean = $state(false);
 	let pendingRestore: PracticeProgress | null = null;
 	let restoreDialogOpen: boolean = $state(false);
-
-	// Pending dwell timer (auto-advance / auto-retry), cancelled by manual controls.
-	let dwellTimer: ReturnType<typeof setTimeout> | null = null;
-
-	// Live word display (T8) — a visual aid only (aria-hidden stream); the
-	// phase announcements and the final diff stay authoritative.
-	let liveMode: 'pending' | 'on' | 'off' = $state('pending');
-	let liveTokens: string[] = $state([]);
-	let liveMatched: number[] = $state([]);
-	let liveChips: { word: string; at: number }[] = $state([]);
-	let liveGhost: { index: number; text: string } | null = $state(null);
-
-	// Non-reactive live wiring — disposed by the phase effects below.
-	let liveEngine: LiveSttEngine | null = null;
-	let liveAligner: ProgressAligner | null = null;
-	let liveAttemptId = 0;
-	let ghostTimer: ReturnType<typeof setTimeout> | null = null;
-	let pendingGhost: { index: number; text: string } | null = null;
-
-	/** Ghost updates are debounced so fast partial streams don't flicker. */
-	const LIVE_GHOST_DEBOUNCE_MS = 300;
-	/** 16 kHz is the rate the live engine consumes (vosk recognizer + tap). */
-	const LIVE_SAMPLE_RATE = 16000;
 
 	// ---------------------------------------------------------------------------
 	// Derived
@@ -251,7 +218,6 @@
 	}
 
 	function advanceToNext(): void {
-		cancelDwell();
 		if (currentIndex + 1 >= sentences.length) {
 			phase = 'summary';
 		} else {
@@ -262,7 +228,6 @@
 	}
 
 	function retrySentence(): void {
-		cancelDwell();
 		resetAttemptState();
 		phase = retryFrom === 'tts' ? 'tts' : 'hidden';
 	}
@@ -270,7 +235,6 @@
 	/** Retry after an error feedback, resuming at the failing subsystem. */
 	function retryFromError(): void {
 		if (!errorKind) return;
-		cancelDwell();
 		const kind = errorKind;
 		// Read the blob BEFORE resetting — 「もう一度採点」 resends the same audio.
 		const blob = pendingBlob;
@@ -292,31 +256,12 @@
 		void doTranscribe(blob);
 	}
 
-	/** Dwell-time transition, guarded so skip/stop during the wait is respected. */
-	function scheduleDwell(ms: number, onDone: () => void): void {
-		const indexAtSchedule = currentIndex;
-		dwellTimer = setTimeout(() => {
-			dwellTimer = null;
-			if (phase !== 'feedback' || currentIndex !== indexAtSchedule) return;
-			onDone();
-		}, ms);
-	}
-
-	/** Cancel a pending dwell timer (manual 次へ / もう一度試す / スキップ / 終了). */
-	function cancelDwell(): void {
-		if (dwellTimer !== null) {
-			clearTimeout(dwellTimer);
-			dwellTimer = null;
-		}
-	}
-
 	/** もう一度聴く: replay the sentence from show or feedback. */
 	function replaySentence(): void {
 		const s = currentSentence;
 		if (!s) return;
 		if (phase !== 'show' && phase !== 'feedback') return;
 		cancelSpeech();
-		cancelDwell();
 		if (phase === 'show') {
 			// Skip the reading dwell and speak now (the tts effect owns the speak call).
 			phase = 'tts';
@@ -340,7 +285,6 @@
 	function stop(): void {
 		if (phase === 'summary') return;
 		cancelSpeech();
-		cancelDwell();
 		endedEarly = true;
 		phase = 'summary';
 	}
@@ -401,7 +345,6 @@
 		if (!s) return;
 
 		cancelSpeech();
-		cancelDwell();
 		resetAttemptState();
 		micError = false;
 		shortPressHint = false;
@@ -413,9 +356,8 @@
 
 		startRecording({
 			// Hold-to-record: silence never ends the recording (30s force-stop
-			// stays as the safety net). Feeds the live STT when it is ready.
-			autoStop: false,
-			onAudioFrame: (samples) => liveEngine?.feed(samples)
+			// stays as the safety net).
+			autoStop: false
 		})
 			.then((r) => {
 				micConnecting = false;
@@ -435,15 +377,6 @@
 				r.onLevel = (rms) => {
 					recordingLevel = rms;
 				};
-				// Start the warmed live engine now; frames fed before start()
-				// are ring-buffered engine-side, so nothing is lost.
-				const engine = liveEngine;
-				if (engine) {
-					const engineAttempt = liveAttemptId;
-					void engine.start(LIVE_SAMPLE_RATE).catch(() => {
-						if (engineAttempt === liveAttemptId) liveMode = 'off';
-					});
-				}
 				// Space was released while the mic was connecting — treat the
 				// instant stop as a short tap.
 				if (holdPendingRelease) endHold();
@@ -509,97 +442,6 @@
 	}
 
 	// ---------------------------------------------------------------------------
-	// Live word display (T8)
-	// ---------------------------------------------------------------------------
-
-	function clearLiveGhost(): void {
-		if (ghostTimer !== null) {
-			clearTimeout(ghostTimer);
-			ghostTimer = null;
-		}
-		pendingGhost = null;
-		liveGhost = null;
-	}
-
-	function handleLiveWord(word: LiveWord): void {
-		const aligner = liveAligner;
-		if (!aligner) return;
-		const verdict = aligner.feed(word.word);
-		// A confirmed word supersedes any pending ghost.
-		clearLiveGhost();
-		if (!verdict) return;
-		if (verdict.status === 'match') {
-			liveMatched = [...liveMatched, verdict.tokenIndex];
-		} else {
-			// Mismatch chips stay in the spoken stream; the pending slot stays empty.
-			liveChips = [...liveChips, { word: word.word, at: verdict.tokenIndex }];
-		}
-	}
-
-	function handleLivePartial(word: LiveWord): void {
-		const aligner = liveAligner;
-		if (!aligner) return;
-		const state = aligner.feedPartial(word.word);
-		pendingGhost =
-			state && state.ghost ? { index: state.nextTokenIndex, text: state.ghost } : null;
-		if (ghostTimer !== null) clearTimeout(ghostTimer);
-		ghostTimer = setTimeout(() => {
-			ghostTimer = null;
-			liveGhost = pendingGhost;
-		}, LIVE_GHOST_DEBOUNCE_MS);
-	}
-
-	/** Idempotent — safe to call from every cleanup path. */
-	function disposeLiveEngine(): void {
-		clearLiveGhost();
-		liveAligner = null;
-		if (liveEngine) {
-			const engine = liveEngine;
-			liveEngine = null;
-			engine.dispose();
-		}
-	}
-
-	const E2E_MISMATCH_WORD = 'バナナ';
-
-	/** Script the mock engine from the target tokens: green slots + one red chip + one ghost. */
-	function buildE2eScript(tokens: string[]): MockWordStep[] {
-		const steps: MockWordStep[] = [];
-		tokens.forEach((token, i) => {
-			const isLast = i === tokens.length - 1;
-			if (isLast && tokens.length > 1) {
-				steps.push({
-					word: token.slice(0, Math.max(1, Math.ceil(token.length / 2))),
-					delayMs: 350,
-					partial: true
-				});
-				steps.push({ word: token, delayMs: 1500 });
-			} else {
-				steps.push({ word: token, delayMs: i === 0 ? 600 : 400 });
-			}
-			if (i === 0 && tokens.length > 1) {
-				steps.push({ word: E2E_MISMATCH_WORD, delayMs: 400 });
-			}
-		});
-		return steps;
-	}
-
-	/** Live engine acquisition. DEV ?e2e=1 injects the scripted mock (never shipped). */
-	async function acquireLiveEngine(s: Sentence): Promise<LiveSttEngine | null> {
-		if (import.meta.env.DEV && page.url.searchParams.get('e2e') === '1') {
-			if (page.url.searchParams.has('liveFail')) return null;
-			const { createMockEngine } = await import('$lib/livestt/mock-engine');
-			return createMockEngine(buildE2eScript(tokenizeSentence(s.text, s.language)));
-		}
-		return createLiveStt({
-			lang: s.language,
-			onProgress: import.meta.env.DEV
-				? (p) => console.debug('[memlog] model', p)
-				: undefined
-		});
-	}
-
-	// ---------------------------------------------------------------------------
 	// Keyboard shortcuts (disabled while the dialog is open / while typing)
 	// ---------------------------------------------------------------------------
 
@@ -609,7 +451,6 @@
 			case 'tts':
 				// 読み飛ばして録音準備(プッシュ待ち)へ
 				cancelSpeech();
-				cancelDwell();
 				phase = 'hidden';
 				return;
 			case 'feedback':
@@ -783,50 +624,14 @@
 	});
 
 	// hidden: ready-for-push state (T13). No auto recording — the mic is
-	// warmed and the live STT engine is acquired; the actual recording
-	// starts when the user pushes (Space keydown / hold-button pointerdown,
-	// see beginHold).
+	// warmed; the actual recording starts when the user pushes (Space
+	// keydown / hold-button pointerdown, see beginHold).
 	$effect(() => {
 		if (phase !== 'hidden') return;
-		const s = currentSentence;
-		if (!s) return;
-
-		setLastLang(s.language);
+		if (!currentSentence) return;
 
 		recordingElapsedMs = 0;
 		recordingLevel = 0;
-
-		// Live STT (T8): reset the attempt display and acquire the engine in
-		// the background. engine.start() is deferred to the push — frames fed
-		// before start() are ring-buffered engine-side, so nothing is lost.
-		const attemptId = ++liveAttemptId;
-		const tokens = tokenizeSentence(s.text, s.language);
-		liveTokens = tokens;
-		liveMatched = [];
-		liveChips = [];
-		clearLiveGhost();
-		liveMode = tokens.length === 0 ? 'off' : 'pending';
-		liveAligner = tokens.length === 0 ? null : new ProgressAligner(tokens);
-
-		acquireLiveEngine(s)
-			.then((engine) => {
-				if (attemptId !== liveAttemptId) {
-					// The attempt ended while the model was loading.
-					engine?.dispose();
-					return;
-				}
-				if (!engine) {
-					liveMode = 'off';
-					return;
-				}
-				liveEngine = engine;
-				engine.onWord(handleLiveWord);
-				engine.onPartial(handleLivePartial);
-				liveMode = 'on';
-			})
-			.catch(() => {
-				if (attemptId === liveAttemptId) liveMode = 'off';
-			});
 
 		void warmMic();
 
@@ -834,12 +639,10 @@
 	});
 
 	// Release the recorder when leaving the recording phase (終了/スキップ
-	// etc.). The blob is discarded — do NOT transcribe. The live engine dies
-	// with the attempt (covers recording → transcribing, skip and stop).
+	// etc.). The blob is discarded — do NOT transcribe.
 	$effect(() => {
 		if (phase !== 'recording') return;
 		return () => {
-			disposeLiveEngine();
 			if (rec) {
 				const r = rec;
 				rec = null;
@@ -850,22 +653,17 @@
 		};
 	});
 
-	// Reaching the summary also ends a live attempt that never made it to
-	// the recording phase (終了 during hidden) and frees the warm mic.
+	// Reaching the summary frees the warm mic.
 	$effect(() => {
 		if (phase === 'summary') {
-			disposeLiveEngine();
 			releaseWarmMic();
 		}
 	});
 
-	// Practice unmount: free the per-attempt engine, the warm mic and the
-	// shared Model.
+	// Practice unmount: free the warm mic.
 	$effect(() => {
 		return () => {
-			disposeLiveEngine();
 			releaseWarmMic();
-			void terminateLiveStt();
 		};
 	});
 
@@ -920,13 +718,12 @@
 			if (finalScore >= threshold) {
 				if (!passedIds.includes(s.id)) passedIds.push(s.id);
 				failedEntries = failedEntries.filter((entry) => entry.id !== s.id);
-				phase = 'feedback';
-				if (autoAdvance) scheduleDwell(correctDwellMs, () => advanceToNext());
 			} else {
 				if (!failedEntries.some((entry) => entry.id === s.id)) failedEntries.push(s);
-				phase = 'feedback';
-				if (autoAdvance) scheduleDwell(incorrectDwellMs, () => retrySentence());
 			}
+			// No dwell: the user advances with the 次へ / もう一度試す button
+			// (or Space / Enter). Time alone never moves the session forward.
+			phase = 'feedback';
 		} catch (err: unknown) {
 			if (phase !== 'transcribing' || currentIndex !== indexAtStart) return;
 
@@ -953,22 +750,6 @@
 	function startSession(): void {
 		sessionReady = true;
 		phase = 'show';
-		warmLiveModel();
-	}
-
-	/**
-	 * Pre-load the vosk model for the upcoming first sentence while the user is
-	 * still reading / hearing the TTS — the model (and its worker) then stands
-	 * ready when the first push-to-talk starts, so the load never lands inside
-	 * a recording. Fire-and-forget: the engine singleton keeps the model alive;
-	 * a failure just means live captions start lazy as before.
-	 */
-	function warmLiveModel(): void {
-		// E2E injects a mock engine — never trigger a real model download there.
-		if (import.meta.env.DEV && page.url.searchParams.get('e2e') === '1') return;
-		const first = sentences[currentIndex];
-		if (!first) return;
-		void createLiveStt({ lang: first.language });
 	}
 
 	function applyRestore(): void {
@@ -1034,11 +815,6 @@
 		ttsRate = settings.ttsRate;
 		voiceURI = settings.voiceURI;
 		retryFrom = settings.retryFrom;
-
-		const prefs = loadPracticePrefs();
-		autoAdvance = prefs.autoAdvance;
-		correctDwellMs = prefs.correctDwellMs;
-		incorrectDwellMs = prefs.incorrectDwellMs;
 
 		const chapterId = page.url.searchParams.get('chapter');
 		if (!chapterId) {
@@ -1305,33 +1081,6 @@
 						レベル {levelPct}%
 					</span>
 				</div>
-				{#if liveMode !== 'off' && liveTokens.length > 0}
-					<div
-						class="flex max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-2"
-						data-testid="live-word-stream"
-						aria-hidden="true"
-					>
-						{#each liveTokens as token, i (i)}
-							{#each liveChips.filter((chip) => chip.at === i) as chip, ci (ci)}
-								<span class="word-chip" data-testid="word-chip">{chip.word}</span>
-							{/each}
-							{#if liveMatched.includes(i)}
-								<span class="word-slot match" data-testid="word-slot">{token}</span>
-							{:else if liveGhost?.index === i}
-								<span class="word-slot ghost" data-testid="word-ghost">{liveGhost.text}</span>
-							{:else}
-								<span class="word-slot" data-testid="word-slot"></span>
-							{/if}
-						{/each}
-						{#each liveChips.filter((chip) => chip.at >= liveTokens.length) as chip, ci (ci)}
-							<span class="word-chip" data-testid="word-chip">{chip.word}</span>
-						{/each}
-					</div>
-				{:else if liveMode === 'off'}
-					<p class="text-xs text-muted-foreground" data-testid="live-off-notice">
-						ライブ表示なしで練習します
-					</p>
-				{/if}
 				<p class="text-sm font-medium" data-testid="release-hint">離すと採点します</p>
 				</div>
 			{:else if phase === 'transcribing'}
@@ -1630,48 +1379,5 @@
 		font-weight: 700;
 		line-height: 1.5;
 		white-space: nowrap;
-	}
-
-	/* Live word stream (T8). Empty slots are opaque blocks with a dashed
-	   underline — the target text only appears in confirmed (green) slots.
-	   Fill + underline-shape change accompany the color so the state never
-	   relies on color alone. */
-	.word-slot {
-		display: inline-block;
-		min-width: 2.75rem;
-		padding: 0 0.4rem 0.1rem;
-		border-bottom: 2px dashed color-mix(in oklab, var(--muted-foreground) 55%, transparent);
-		border-radius: 3px 3px 0 0;
-		background: var(--muted);
-		font-weight: 600;
-		line-height: 1.6;
-		text-align: center;
-	}
-
-	.word-slot.match {
-		color: var(--correct);
-		/* 7% tint over the page background keeps the green text >= 4.5:1 in
-		   both themes (tints toward --muted push light mode under 4.5). */
-		background: color-mix(in oklab, var(--correct) 7%, var(--background));
-		border-bottom: 2px solid var(--correct);
-		animation: word-reveal 200ms var(--ease-out-standard) both;
-	}
-
-	.word-slot.ghost {
-		color: var(--muted-foreground);
-		background: var(--muted);
-		border-bottom-style: solid;
-		animation: word-reveal 200ms var(--ease-out-standard) both;
-	}
-
-	.word-chip {
-		display: inline-block;
-		padding: 0 0.5rem;
-		border: 1px solid color-mix(in oklab, var(--incorrect) 45%, transparent);
-		border-radius: 9999px;
-		color: var(--incorrect);
-		font-size: 0.875rem;
-		font-weight: 600;
-		animation: word-reveal 200ms var(--ease-out-standard) both;
 	}
 </style>

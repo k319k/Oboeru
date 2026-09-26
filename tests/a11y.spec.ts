@@ -10,24 +10,20 @@ import { mockTtsApi, silentWavBytes } from './tts-mock';
 // Every page and its main states is scanned with axe in BOTH themes; zero
 // serious/critical violations must hold:
 //   /            — empty + seeded (T5 card UI)
-//   /practice    — show/tts, recording with the ?e2e=1 mock live stream,
-//                  passing and failing feedback (T6/T8)
+//   /practice    — show/tts, recording, passing and failing feedback (T6/T8)
 //   /manage      — all four tabs (T7) incl. the T9 練習の操作 form
 // On top of axe:
 //   - the --correct/--incorrect tokens are measured against --background
 //     (>= 4.5:1 in light AND dark),
 //   - key interactions are asserted: tab roles + arrow keys, card ▶ /
-//     stop-recording >= 44px, live word stream aria-hidden, a single polite
-//     合格 announcement,
-//   - prefers-reduced-motion removes word-reveal / celebration-pop / the
-//     recording pulse.
+//     stop-recording >= 44px, a single polite 合格 announcement,
+//   - prefers-reduced-motion removes the recording pulse / celebration-pop.
 // ---------------------------------------------------------------------------
 
 const EVIDENCE_DIR = '.omo/evidence/oboeru-ui-ux-v2';
 const EVIDENCE_FILE = `${EVIDENCE_DIR}/task-10-oboeru-ui-ux-v2.txt`;
 const EVIDENCE_DIR_13 = `${EVIDENCE_DIR}/task-13-consistency`;
 const EVIDENCE_FILE_13 = `${EVIDENCE_DIR_13}/contrast-log.txt`;
-const PRACTICE_PREFS_KEY = 'oboeru:practice-ui:v1';
 
 const SEED = {
 	chapters: [
@@ -37,19 +33,6 @@ const SEED = {
 	sentences: [
 		{ id: 's-1', chapterId: 'child-1', text: 'こんにちは。', language: 'ja', order: 1 },
 		{ id: 's-2', chapterId: 'child-1', text: 'お元気ですか。', language: 'ja', order: 2 }
-	]
-};
-
-// Live-stream states need a multi-token script (green slots + mismatch chip +
-// ghost). A single-token JA sentence like こんにちは。 produces a one-slot
-// script with no chip, so the live tests use this EN seed instead.
-const LIVE_SEED = {
-	chapters: [
-		{ id: 'parent-1', name: '親チャプター', parentId: null, order: 1 },
-		{ id: 'child-1', name: '子チャプター', parentId: 'parent-1', order: 1 }
-	],
-	sentences: [
-		{ id: 's-1', chapterId: 'child-1', text: 'Good morning everyone', language: 'en', order: 1 }
 	]
 };
 
@@ -277,16 +260,6 @@ async function mockSlowTts(page: Page, delayMs: number) {
 	});
 }
 
-/** Turn auto-advance off so a feedback phase persists until manual action. */
-async function disableAutoAdvance(page: Page) {
-	await page.evaluate((key) => {
-		localStorage.setItem(
-			key,
-			JSON.stringify({ autoAdvance: false, correctDwellMs: 800, incorrectDwellMs: 2000 })
-		);
-	}, PRACTICE_PREFS_KEY);
-}
-
 test.describe('Accessibility (WCAG AA)', () => {
 	test.beforeAll(() => {
 		ensureEvidenceDir();
@@ -382,52 +355,33 @@ test.describe('Accessibility (WCAG AA)', () => {
 		await expectTapTargets(page, '/practice show/tts dark');
 	});
 
-	test('practice recording + mock live stream (?e2e=1) — light & dark', async ({ page }) => {
-		await gotoWithSeed(page, LIVE_SEED);
+	test('practice recording — light & dark', async ({ page }) => {
+		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
-		await page.goto('/practice?chapter=child-1&e2e=1');
+		await page.goto('/practice?chapter=child-1');
 		// T13 push-to-talk: recording runs only while Space is held.
 		await startHold(page);
+		// The recording phase is static (only the timer/level meter ticks)
+		// once the stop button appears — safe to scan.
+		await expect(page.getByTestId('stop-btn')).toBeVisible({ timeout: 10000 });
 
-		// The scripted mock fills all three slots; afterwards the DOM is
-		// static (only the timer ticks) for the scan.
-		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(3, {
-			timeout: 10000
-		});
-		await expect(page.getByTestId('word-chip')).toBeVisible();
-
-		// The live stream is a visual aid — hidden from the accessibility tree.
-		await expect(page.getByTestId('live-word-stream')).toHaveAttribute('aria-hidden', 'true');
-		logEvidence('recording: [data-testid=live-word-stream] aria-hidden="true" ✓');
-
-		// Sanity: word-reveal actually runs when motion is allowed.
-		const anim = await page
-			.locator('[data-testid="word-slot"].match')
-			.first()
-			.evaluate((el) => getComputedStyle(el).animationName);
-		logEvidence(`recording (no reduce): .word-slot.match animation-name=${anim}`);
-		expect(anim).toBe('word-reveal');
-
-		await logTapTarget(page, '[data-testid="stop-btn"]', 'practice 終了 light');
-		await expectNoSeriousCritical(page, '/practice recording+live light');
-		await expectTapTargets(page, '/practice recording+live light');
+		await logTapTarget(page, '[data-testid="stop-btn"]', 'practice recording light');
+		await expectNoSeriousCritical(page, '/practice recording light');
+		await expectTapTargets(page, '/practice recording light');
 
 		// Release before the reload so the next keydown is not flagged as
 		// auto-repeat (Playwright keeps the key pressed across navigation).
 		await page.keyboard.up('Space');
 		await switchToDarkFresh(page);
 		await startHold(page);
-		await expect(page.locator('[data-testid="word-slot"].match')).toHaveCount(3, {
-			timeout: 10000
-		});
-		await logTapTarget(page, '[data-testid="stop-btn"]', 'practice 終了 dark');
-		await expectNoSeriousCritical(page, '/practice recording+live dark');
-		await expectTapTargets(page, '/practice recording+live dark');
+		await expect(page.getByTestId('stop-btn')).toBeVisible({ timeout: 10000 });
+		await logTapTarget(page, '[data-testid="stop-btn"]', 'practice recording dark');
+		await expectNoSeriousCritical(page, '/practice recording dark');
+		await expectTapTargets(page, '/practice recording dark');
 	});
 
 	test('practice feedback (pass) — light & dark + single 合格 announcement', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
-		await disableAutoAdvance(page);
 		await mockTtsApi(page);
 		await mockTranscribe(page, 'こんにちは。');
 		await page.goto('/practice?chapter=child-1');
@@ -461,7 +415,6 @@ test.describe('Accessibility (WCAG AA)', () => {
 
 	test('practice feedback (fail) — light & dark', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
-		await disableAutoAdvance(page);
 		await mockTtsApi(page);
 		await mockTranscribe(page, 'ぜんぜんちがう');
 		await page.goto('/practice?chapter=child-1');
@@ -569,16 +522,12 @@ test.describe('Accessibility (WCAG AA)', () => {
 		await expectBadgeContrast(page, 'dark');
 	});
 
-	test('prefers-reduced-motion removes word-reveal / celebration-pop / pulse', async ({ page }) => {
+	test('prefers-reduced-motion removes recording pulse / celebration-pop', async ({ page }) => {
 		await page.emulateMedia({ reducedMotion: 'reduce' });
-		await gotoWithSeed(page, LIVE_SEED);
-		await disableAutoAdvance(page);
+		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
-		await mockTranscribe(page, 'Good morning everyone');
-		await page.goto('/practice?chapter=child-1&e2e=1');
-		// T13: word-reveal/pulse belong to the recording phase (hold Space);
-		// celebration-pop belongs to feedback (after the release).
-		await startHold(page);
+		await mockTranscribe(page, 'こんにちは。');
+		await page.goto('/practice?chapter=child-1');
 
 		const animName = (sel: string) =>
 			page.evaluate((s) => {
@@ -586,14 +535,11 @@ test.describe('Accessibility (WCAG AA)', () => {
 				return el ? getComputedStyle(el).animationName : null;
 			}, sel);
 
-		await expect(page.locator('[data-testid="word-slot"].match').first()).toBeVisible({
-			timeout: 10000
-		});
-		await expect(page.getByTestId('word-chip')).toBeVisible({ timeout: 10000 });
-		expect(await animName('[data-testid="word-slot"].match')).toBe('none');
-		expect(await animName('[data-testid="word-chip"]')).toBe('none');
+		// T13: the recording pulse belongs to the recording phase (hold Space).
+		await startHold(page);
+		await expect(page.getByTestId('recording-timer')).toBeVisible({ timeout: 10000 });
 		expect(await animName('.animate-pulse')).toBe('none');
-		logEvidence('reduced-motion: word-reveal (match slot / chip) + recording pulse → none ✓');
+		logEvidence('reduced-motion: recording pulse → none ✓');
 
 		// Release past the 0.5s short-tap guard → pass feedback; the score
 		// celebration animation must be disabled under reduced motion.

@@ -1,17 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-	loadPracticePrefs,
-	savePracticePrefs,
 	savePracticeProgress,
 	loadPracticeProgress,
 	clearPracticeProgress,
-	type PracticePrefs,
 	type PracticeProgress
-} from './practice-prefs';
-import { CORRECT_DWELL_MS, INCORRECT_DWELL_MS } from './constants';
+} from './practice-progress';
 
 // ---------------------------------------------------------------------------
-// Minimal localStorage / sessionStorage mocks (no jsdom dependency needed)
+// Minimal sessionStorage mock (no jsdom dependency needed)
 // ---------------------------------------------------------------------------
 
 function createStorageMock(): Storage {
@@ -38,149 +34,15 @@ function createStorageMock(): Storage {
   };
 }
 
-let ls: ReturnType<typeof createStorageMock>;
 let ss: ReturnType<typeof createStorageMock>;
 
 beforeEach(() => {
-  ls = createStorageMock();
   ss = createStorageMock();
   // Vitest runs in Node which has no Web Storage — wire our mocks in.
-  Object.defineProperty(globalThis, 'localStorage', {
-    value: ls,
-    writable: true,
-    configurable: true,
-  });
   Object.defineProperty(globalThis, 'sessionStorage', {
     value: ss,
     writable: true,
     configurable: true,
-  });
-});
-
-// ---------------------------------------------------------------------------
-// PracticePrefs — defaults
-// ---------------------------------------------------------------------------
-
-describe('loadPracticePrefs — defaults', () => {
-  it('returns defaults when localStorage is empty', () => {
-    expect(loadPracticePrefs()).toEqual({
-      autoAdvance: true,
-      correctDwellMs: 800,
-      incorrectDwellMs: 2000,
-    });
-  });
-
-  it('returns defaults on corrupt JSON', () => {
-    ls.setItem('oboeru:practice-ui:v1', '{bad json!!!');
-    expect(loadPracticePrefs()).toEqual({
-      autoAdvance: true,
-      correctDwellMs: 800,
-      incorrectDwellMs: 2000,
-    });
-  });
-
-  it('returns defaults when stored value is not an object', () => {
-    ls.setItem('oboeru:practice-ui:v1', JSON.stringify('just a string'));
-    expect(loadPracticePrefs().autoAdvance).toBe(true);
-
-    ls.setItem('oboeru:practice-ui:v1', JSON.stringify(42));
-    expect(loadPracticePrefs().autoAdvance).toBe(true);
-
-    ls.setItem('oboeru:practice-ui:v1', JSON.stringify(null));
-    expect(loadPracticePrefs().autoAdvance).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// PracticePrefs — save + load round-trip
-// ---------------------------------------------------------------------------
-
-describe('savePracticePrefs + loadPracticePrefs round-trip', () => {
-  it('persists and retrieves custom prefs', () => {
-    const custom: PracticePrefs = {
-      autoAdvance: false,
-      correctDwellMs: 400,
-      incorrectDwellMs: 800,
-    };
-    savePracticePrefs(custom);
-    expect(loadPracticePrefs()).toEqual(custom);
-  });
-
-  it('writes under the dedicated oboeru:practice-ui:v1 key', () => {
-    savePracticePrefs({ autoAdvance: true, correctDwellMs: 800, incorrectDwellMs: 2000 });
-    expect(ls.getItem('oboeru:practice-ui:v1')).not.toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// PracticePrefs — validation / clamp
-// ---------------------------------------------------------------------------
-
-describe('loadPracticePrefs — clamp', () => {
-  it('clamps non-boolean autoAdvance to true', () => {
-    ls.setItem(
-      'oboeru:practice-ui:v1',
-      JSON.stringify({ autoAdvance: 'yes', correctDwellMs: 800, incorrectDwellMs: 2000 }),
-    );
-    expect(loadPracticePrefs().autoAdvance).toBe(true);
-  });
-
-  it('accepts autoAdvance = false', () => {
-    ls.setItem(
-      'oboeru:practice-ui:v1',
-      JSON.stringify({ autoAdvance: false, correctDwellMs: 800, incorrectDwellMs: 2000 }),
-    );
-    expect(loadPracticePrefs().autoAdvance).toBe(false);
-  });
-
-  it('clamps non-number dwell to default', () => {
-    ls.setItem(
-      'oboeru:practice-ui:v1',
-      JSON.stringify({ autoAdvance: true, correctDwellMs: 'fast', incorrectDwellMs: null }),
-    );
-    const prefs = loadPracticePrefs();
-    expect(prefs.correctDwellMs).toBe(800);
-    expect(prefs.incorrectDwellMs).toBe(2000);
-  });
-
-  it('clamps NaN dwell to default', () => {
-    ls.setItem(
-      'oboeru:practice-ui:v1',
-      JSON.stringify({ autoAdvance: true, correctDwellMs: NaN, incorrectDwellMs: NaN }),
-    );
-    const prefs = loadPracticePrefs();
-    expect(prefs.correctDwellMs).toBe(800);
-    expect(prefs.incorrectDwellMs).toBe(2000);
-  });
-
-  it('clamps out-of-range dwell to default', () => {
-    ls.setItem(
-      'oboeru:practice-ui:v1',
-      JSON.stringify({ autoAdvance: true, correctDwellMs: 99_999, incorrectDwellMs: -5 }),
-    );
-    const prefs = loadPracticePrefs();
-    expect(prefs.correctDwellMs).toBe(800);
-    expect(prefs.incorrectDwellMs).toBe(2000);
-  });
-
-  it('accepts dwell values within the legacy fallback envelope (constants.ts)', () => {
-    ls.setItem(
-      'oboeru:practice-ui:v1',
-      JSON.stringify({ autoAdvance: true, correctDwellMs: 400, incorrectDwellMs: 800 }),
-    );
-    const prefs = loadPracticePrefs();
-    expect(prefs.correctDwellMs).toBe(400);
-    expect(prefs.incorrectDwellMs).toBe(800);
-
-    // The legacy constants act as the ceiling of the valid range.
-    expect(CORRECT_DWELL_MS).toBe(1200);
-    expect(INCORRECT_DWELL_MS).toBe(2500);
-    ls.setItem(
-      'oboeru:practice-ui:v1',
-      JSON.stringify({ autoAdvance: true, correctDwellMs: CORRECT_DWELL_MS, incorrectDwellMs: INCORRECT_DWELL_MS }),
-    );
-    expect(loadPracticePrefs().correctDwellMs).toBe(CORRECT_DWELL_MS);
-    expect(loadPracticePrefs().incorrectDwellMs).toBe(INCORRECT_DWELL_MS);
   });
 });
 

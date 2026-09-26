@@ -6,7 +6,6 @@ import { test, expect } from './fixtures';
 
 const STORAGE_KEY = 'oboeru:v1';
 const SETTINGS_KEY = 'oboeru:settings:v1';
-const PRACTICE_UI_KEY = 'oboeru:practice-ui:v1';
 
 /** Seed localStorage with chapters and sentences before navigating. */
 async function seedData(page: import('@playwright/test').Page) {
@@ -497,45 +496,5 @@ test.describe('Settings — Voice Select', () => {
 		// The option list contains デフォルト (言語に応じて自動) as the first option
 		await select.click();
 		await expect(page.getByRole('option', { name: 'デフォルト (言語に応じて自動)' })).toBeVisible();
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Settings — 練習の操作 (T9: auto-advance + dwell speed, oboeru:practice-ui:v1)
-// ---------------------------------------------------------------------------
-
-test.describe('Settings — Practice Operation', () => {
-	test('練習の操作 defaults to auto-advance ON and ふつう speed', async ({ page }) => {
-		await seedData(page);
-		await page.getByRole('tab', { name: '設定' }).click();
-
-		await expect(page.getByRole('group', { name: '練習の操作' })).toBeVisible();
-		await expect(page.getByTestId('auto-advance-on')).toBeChecked();
-		await expect(page.getByTestId('speed-normal')).toBeChecked();
-	});
-
-	test('changing auto-advance and speed persists across reload', async ({ page }) => {
-		await seedData(page);
-		await page.getByRole('tab', { name: '設定' }).click();
-
-		await page.getByTestId('auto-advance-off').click();
-		await expect(page.getByTestId('auto-advance-off')).toBeChecked();
-		await expect(page.getByTestId('auto-advance-on')).not.toBeChecked();
-
-		await page.getByTestId('speed-fast').click();
-		await expect(page.getByTestId('speed-fast')).toBeChecked();
-
-		// Reload resets the tab to the default (チャプター), so re-select 設定.
-		await page.reload();
-		await page.getByRole('tab', { name: '設定' }).click();
-		await expect(page.getByTestId('auto-advance-off')).toBeChecked();
-		await expect(page.getByTestId('speed-fast')).toBeChecked();
-
-		const stored = await page.evaluate((key) => {
-			return JSON.parse(localStorage.getItem(key)!);
-		}, PRACTICE_UI_KEY);
-		expect(stored.autoAdvance).toBe(false);
-		expect(stored.correctDwellMs).toBe(400);
-		expect(stored.incorrectDwellMs).toBe(800);
 	});
 });
