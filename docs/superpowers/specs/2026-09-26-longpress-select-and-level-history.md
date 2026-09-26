@@ -285,9 +285,10 @@ test.describe('Practice — text selection is suppressed on the record controls'
 		// select, otherwise the 0s below prove nothing.
 		//   sentence-text        → >= 1
 		//   record-ready-hint    → 0   (plain prose; guards the .action-zone rule)
-		//   action-zone (centre) → 0   (cannot discriminate: it is the hold button)
-		//   record-hold-btn      → 0   (cannot discriminate: <button> widgets
-		//                                  never select in Chromium)
+		// 2 cases only: `record-hold-btn` and the action-zone centre are NOT
+		// probed here — Chromium never starts a selection inside a <button>
+		// regardless of CSS, so their rc=0 is vacuously true. The CSS
+		// declarations are covered by the computed user-select test above.
 	});
 });
 ```
@@ -410,7 +411,7 @@ CSS の回帰は computed `user-select` のテストが担う。
 2. `npm test` 緑
 3. `npm run test:e2e` 緑
 4. 390px 実測で棒が右→左に流れることを確認（スクリーンショット目視）
-5. マウス長押＋ドラッグで `getSelection().rangeCount` が 0（`record-ready-hint` / `record-hold-btn` / アクション zone）、かつ対照の `sentence-text` は 1 以上。CDP タッチ経路は恒真なので使わない
+5. マウス長押＋ドラッグで `getSelection().rangeCount` が 0（`record-ready-hint` の 2 要素構成。`record-hold-btn` とアクション zone の中心は Chromium が `<button>` 内側を選択しないため**測らない**）、かつ対照の `sentence-text` は 1 以上。CDP タッチ経路は恒真なので使わない
 6. アクション zone が `rect.bottom <= innerHeight + 1`
 7. コミットして **push とデプロイまで完了**（ユーザー明示依頼）
 8. デプロイ後のスモーク（`GET /` 200、`POST /api/judge` が `available: true`）
