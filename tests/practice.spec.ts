@@ -785,7 +785,11 @@ test.describe('Practice — T6 keyboard', () => {
 			{ timeout: 10000 }
 		);
 
-		const geometry = await page.evaluate(() => {
+		// One evaluate for both snapshots. `onLevel` fires every 100ms, so two
+		// separate round-trips could observe different bar generations and make
+		// `declaredHeights.length === geometry.barCount` a race rather than an
+		// invariant.
+		const observed = await page.evaluate(() => {
 			const row = document.querySelector<HTMLElement>('[data-testid="level-history"]');
 			if (!row) throw new Error('level-history is missing');
 			const rr = row.getBoundingClientRect();
@@ -796,27 +800,21 @@ test.describe('Practice — T6 keyboard', () => {
 			return {
 				contentBoxHeight: contentBottom - contentTop,
 				tallestBarHeight: Math.max(...bars.map((b) => b.getBoundingClientRect().height)),
-				barCount: bars.length
+				barCount: bars.length,
+				// The declared (template-computed) height, which already went
+				// through `Math.min(56, …)` in practice/+page.svelte.
+				declaredHeights: bars.map((b) => parseFloat((b as HTMLElement).style.height))
 			};
 		});
 
 		// The layout invariant: no bar escapes the meter's padding box.
-		expect(geometry.tallestBarHeight).toBeLessThanOrEqual(geometry.contentBoxHeight + 0.5);
+		expect(observed.tallestBarHeight).toBeLessThanOrEqual(observed.contentBoxHeight + 0.5);
 
-		// The deterministic half of the pair. `style.height` is the value the
-		// template computed, so it already went through `Math.min(56, …)` in
-		// practice/+page.svelte — this holds for *every* sample, loud or quiet,
-		// and fails outright if the clamp is ever dropped while a loud sample is
-		// present. That is what lets the flaky loud-sample wait above go away
-		// without losing the regression signal.
-		const declaredHeights = await page.evaluate(() =>
-			[...document.querySelectorAll('[data-testid="level-history"] span')].map((b) =>
-				parseFloat((b as HTMLElement).style.height)
-			)
-		);
-
-		expect(declaredHeights.length).toBe(geometry.barCount);
-		for (const h of declaredHeights) {
+		// The deterministic half of the pair. Holds for *every* sample, loud or
+		// quiet, and fails outright if the clamp is ever dropped while a loud
+		// sample is present.
+		expect(observed.declaredHeights.length).toBe(observed.barCount);
+		for (const h of observed.declaredHeights) {
 			expect(h).toBeLessThanOrEqual(56);
 		}
 

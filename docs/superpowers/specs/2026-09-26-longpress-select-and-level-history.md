@@ -16,7 +16,7 @@
 
 1. 録音待ち・録音中のボタン領域で長押ししてもテキスト選択・コンテキストメニューが出ない
 2. `feedback` の差异テキストと `show` フェーズの文テキストは**選択可能なまま**（意図的に対象外）
-3. 録音中に「右端に新しい音 arrived し、左へ流れる」スクロール履歴メーターが表示される
+3. 録音中に「右端に新しい音が届いて、左へ流れる」スクロール履歴メーターが表示される
 4. 既存 44px タップ契約・390px 横 overflow 0・axe serious/critical 0・`npm run check` 0 エラーを維持
 
 ## 現状の実測（2026-09-26 / dev サーバー / 390×844）
@@ -168,7 +168,7 @@ Tailwind のユーティリティに優先して効く。`.action-zone` は scop
 `32 × 100ms = 3.2 秒`。
 
 **`src/lib/recorder.ts` は変更しない。** サンプリング周期 100ms のまま、
-practice 页面内で完結させる。
+practice ページ内で完結させる。
 
 ### 2.2 描画
 
@@ -201,6 +201,15 @@ practice 页面内で完結させる。
   古い棒は左へ押し出されて消える。これにより**画面幅の計測が不要**になり、
   320px でも 430px でも自然に追従する（`32 本 × (8px + 3px) = 352px` なので
   390px 幅でちょうど 1 回分の履歴が収まる）
+  - **ただしこれは親 `sentence-recording` に definite な `w-full` が無ければ成立しない。**
+    `sentence-recording` は `items-center` なので cross size が fit-content に解決され、
+    fit-content は min-content（`8×32 + 3×31 + 8×2 = 365px`）を下回れない。
+    `w-full` が無いと 320px / 360px で 365px のまま中央寄せではみ出し、
+    `overflow-hidden` が clip する**前に** 行が viewport の外へ出る
+    （320px 実測: 行は -22.5..342.5、最新棒も画面外）。
+    したがって `w-full` と `min-w-0` は**省略不可**。将来 `w-full` を触る者は
+    `tests/responsive.spec.ts` の「level history stays inside the viewport」4 ケースを
+    必ず実行すること（この 4 テストは `w-full` を外すと 320/360px で赤になる）
 - 高さは `Math.max(3, Math.min(56, Math.round(level * 224)))` px。
   - `3px` は「無音でも棒が見える」下限
   - `56` はコンテナのコンテンツボックス（`h-[72px]` − `p-2`×2 = 56px）。
@@ -317,7 +326,7 @@ npm run test:e2e   # Playwright 全体
 
 録音フェーズでスクリーンショットを撮り、次を確認する:
 
-- 棒が右端に新しい音 arrived し、左へ流れる
+- 棒が右端に新しい音が届いて、左へ流れる
 - 棒が 8px 幅で 32 本見える（390px 幅）
 - 無音時は 3px の平坦な線になる
 - 縦横 overflow 0

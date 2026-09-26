@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 録音待ち・録音中のボタン領域で長押ししてもテキスト選択が始まらないようにし、録音フェーズに「右端に新しい音 arrived して左へ流れる」スクロール履歴音量メーターを入れる。
+**Goal:** 録音待ち・録音中のボタン領域で長押ししてもテキスト選択が始まらないようにし、録音フェーズに「右端に新しい音が届いて、左へ流れる」スクロール履歴音量メーターを入れる。
 
-**Architecture:** 文字選択の抑止は practice ページの scoped style に 2 要素（`.record-hold-btn` と新規の `.action-zone`）だけを追加する。音量メーターは recorder が 100ms ごとに発火する既存の `onLevel(rms)` を practice 页面内の `levelHistory: number[]` に最大 32 個まで溜め、`justify-end` + `overflow-hidden` の行描画で「最新が右・古いほど左へ消える」を幅の計測なしに実現する。`src/lib/recorder.ts` は変更しない。
+**Architecture:** 文字選択の抑止は practice ページの scoped style に 2 要素（`.record-hold-btn` と新規の `.action-zone`）だけを追加する。音量メーターは recorder が 100ms ごとに発火する既存の `onLevel(rms)` を practice ページ内の `levelHistory: number[]` に最大 32 個まで溜め、`justify-end` + `overflow-hidden` の行描画で「最新が右・古いほど左へ消える」を幅の計測なしに実現する。`src/lib/recorder.ts` は変更しない。
 
 **Tech Stack:** SvelteKit 2 (Svelte 5 runes) / Tailwind CSS v4 / lucide-svelte / vitest / Playwright (chromium) / Cloudflare Workers (wrangler)
 
@@ -307,7 +307,7 @@ const LEVEL_HISTORY_MAX = 32;
 				};
 ```
 
-新的 `rms` を足してから `.slice(-LEVEL_HISTORY_MAX)` で末尾だけを残す。
+新しい `rms` を足してから `.slice(-LEVEL_HISTORY_MAX)` で末尾だけを残す。
 先に `slice(-(LEVEL_HISTORY_MAX - 1))` すると `LEVEL_HISTORY_MAX` が 1 のとき
 `slice(-0)` = `slice(0)` となり既存全件が返って上限が消失し、無限成長する。
 
@@ -328,6 +328,18 @@ const LEVEL_HISTORY_MAX = 32;
 `data-testid="level-meter"` を持つ `<div>` ブロック（`role="img"` と `aria-label` を含む、
 `level-meter-fill` と `level-value` を内包する要素）を丸ごと削除し、
 次の要素に置き換える:
+
+> **注意（Task 2 実装後のレビューで判明）**: この行の `w-full` だけでは不十分で、
+> **親の `sentence-recording`（`data-testid="sentence-recording"`）にも
+> `w-full` を付けること**。`items-center` により `sentence-recording` の cross size は
+> fit-content に解決され、fit-content は min-content（`8×32 + 3×31 + 8×2 = 365px`）を
+> 下回れない。`w-full` が無いと 320px / 360px で 365px のまま中央寄せではみ出し、
+> `overflow-hidden` が clip する前に行が viewport 外へ出る（320px 実測:
+> 行は -22.5..342.5、最新棒も画面外）。
+> `level-meter` にも `min-w-0` を付ける（row 方向の flex item になった場合に
+> min-content が再び勝つための将来防御）。
+> 検証: `npx playwright test tests/responsive.spec.ts -g "level history stays inside"`
+> — 4 viewport 全て緑。単に `w-full` を外すと 320/360px で赤になる。
 
 ```svelte
 						<div

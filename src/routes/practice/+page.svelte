@@ -1052,7 +1052,18 @@
 						</p>
 					{/if}
 				{:else if phase === 'recording'}
-					<div class="flex flex-col items-center gap-4" data-testid="sentence-recording">
+					<!--
+						`w-full` は省略不可。`items-center` により、この要素は
+						(既定の stretch ではなく) fit-content 幅で解決される。子孫の
+						`level-history` は棒 32 本 = 8px×32 + 3px×31 + p-2×2 = 365px の
+						min-content を持つが、fit-content は min-content を下回れないため、
+						w-full が無いと 320px / 360px 幅で 365px のまま親をはみ出す。
+						はみ出すと meter が中央寄せで 22px ずつ左右にはみ出し、
+						**最新棒すら画面外**（320px 実測: newestVisible=false, 4 本が
+						viewport 左外）になる。w-full で definite な 288/328px に
+						確定させ、overflow-hidden が意図通り左で古い棒を切り落とす。
+					-->
+					<div class="flex w-full flex-col items-center gap-4" data-testid="sentence-recording">
 						<p class="flex items-center gap-2 text-base text-muted-foreground">
 							<span
 								class="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-destructive"
@@ -1066,7 +1077,15 @@
 							</span>
 							<span class="text-xs" data-testid="max-duration-note">最長30秒で自動採点</span>
 						</p>
-						<div class="flex w-full flex-col gap-1" data-testid="level-meter">
+						<!--
+							`min-w-0` は将来防御。`w-full` が deterministic に幅を決めるので
+							現状はこれを付けなくても挙動は同じ（320px/360px/390px/430px で
+							実測して min-w-0 有無で 1px も差が出ないことを確認済み）。
+							ただし meter が今後 row 方向の flex item になった場合は
+							min-content（365px）が再び勝つため、min-w-0 で塞いでおく。
+							実際に幅を潰している主導は親 `sentence-recording` の `w-full`。
+						-->
+						<div class="flex w-full min-w-0 flex-col gap-1" data-testid="level-meter">
 							<div
 								class="flex h-[72px] w-full items-center justify-end gap-[3px] overflow-hidden rounded-lg bg-muted/40 p-2"
 								data-testid="level-history"

@@ -400,6 +400,121 @@ test.describe('Responsive layout (390px)', () => {
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/practice-recording.png`, fullPage: true });
 	});
 
+	/**
+	 * Regression guard for the level history meter's horizontal overflow.
+	 *
+	 * The 32-bar history has an intrinsic min-content width of
+	 * 8px*32 + 3px*31 + p-2*2 = 365px. `sentence-recording` uses `items-center`,
+	 * so it resolves to a *fit-content* cross size, and fit-content can never go
+	 * below min-content. Without a definite `w-full` on that wrapper the meter
+	 * stayed 365px wide at 320/360px, was centred so it spilled ~22px off BOTH
+	 * edges, and `overflow-hidden` on the bar row never got a chance to clip:
+	 * the newest bar itself ended up outside the viewport.
+	 *
+	 * `expectNoHorizontalOverflow` cannot catch this on its own — the meter
+	 * overflows *inside* an ancestor that clips, and the spilled area is on the
+	 * left, which `documentElement.scrollWidth` does not report in LTR. So this
+	 * test measures the bar row's own box against the viewport.
+	 *
+	 * Note on the oldest bar: with 32 bars at 320px only ~25 fit, so the oldest
+	 * bars are *supposed* to be clipped on the left by `overflow-hidden`. The
+	 * invariant asserted here is therefore "the row's box is inside the viewport
+	 * and the newest bar is visible", not "all 32 bars are visible".
+	 */
+	for (const width of [320, 360, 390, 430]) {
+		test(`practice recording — level history stays inside the viewport at ${width}px`, async ({
+			page
+		}) => {
+			await page.setViewportSize({ width, height: 844 });
+			await gotoWithSeed(page, SEED);
+			await mockTtsApi(page);
+			await page.goto('/practice?chapter=child-1');
+
+			await startHold(page);
+			// Bars are appended on every level callback (100ms), loud or quiet, so
+			// this does not depend on the bursty fake-audio beep.
+			await page.waitForFunction(
+				() => document.querySelectorAll('[data-testid="level-history"] span').length >= 32,
+				null,
+				{ timeout: 20000 }
+			);
+
+			const geo = await page.evaluate(() => {
+				const row = document.querySelector<HTMLElement>('[data-testid="level-history"]');
+				if (!row) throw new Error('level-history is missing');
+				const rr = row.getBoundingClientRect();
+				const bars = [...row.querySelectorAll('span')];
+				const newest = bars[bars.length - 1].getBoundingClientRect();
+				return {
+					viewportW: window.innerWidth,
+					rowLeft: rr.left,
+					rowRight: rr.right,
+					rowWidth: rr.width,
+					barCount: bars.length,
+					newestLeft: newest.left,
+					newestRight: newest.right,
+					// Bars the row's own overflow-hidden cuts on the left.
+					clippedLeft: bars.filter((b) => b.getBoundingClientRect().left < rr.left - 0.5)
+						.length,
+					bodyScrollW: document.body.scrollWidth,
+					bodyClientW: document.body.clientWidth,
+					docScrollW: document.documentElement.scrollWidth,
+					docClientW: document.documentElement.clientWidth
+				};
+			});
+
+			const label = `/practice recording @${width}px`;
+
+			expect(geo.barCount, `${label}: the history must be full`).toBe(32);
+
+			// The row's own box must sit inside the viewport, not spill off both
+			// edges. This is the assertion that fails without `w-full` on
+			// `sentence-recording` (measured: rowLeft=-22.5, rowRight=342.5 at 320px).
+			expect(geo.rowLeft, `${label}: the meter must not spill off the left edge`).toBeGreaterThanOrEqual(
+				-0.5
+			);
+			expect(
+				geo.rowRight,
+				`${label}: the meter must not spill off the right edge`
+			).toBeLessThanOrEqual(geo.viewportW + 0.5);
+
+			// The newest bar is the one the user is actually looking at; if the
+			// row is pushed out, this is the first thing to disappear.
+			expect(geo.newestRight, `${label}: the newest bar must be fully visible`).toBeLessThanOrEqual(
+				geo.rowRight + 0.5
+			);
+			expect(geo.newestLeft, `${label}: the newest bar must be fully visible`).toBeGreaterThanOrEqual(
+				geo.rowLeft - 0.5
+			);
+
+			// Neither the body nor the document may scroll horizontally.
+			expect(geo.bodyScrollW, `${label}: body must not overflow`).toBeLessThanOrEqual(
+				geo.bodyClientW
+			);
+			expect(geo.docScrollW, `${label}: document must not overflow`).toBeLessThanOrEqual(
+				geo.docClientW
+			);
+
+			// Below 390px the 365px min-content cannot fit, so clipping is the
+			// designed behaviour and we assert it actually happened. At >= 390px
+			// all 32 bars fit and nothing may be clipped.
+			if (width < 390) {
+				expect(
+					geo.clippedLeft,
+					`${label}: narrow viewports must clip the oldest bars, not overflow`
+				).toBeGreaterThan(0);
+			} else {
+				expect(geo.clippedLeft, `${label}: all 32 bars fit, none may be clipped`).toBe(0);
+			}
+
+			await page.keyboard.up('Space');
+			await page.screenshot({
+				path: `${SCREENSHOT_DIR}/level-history-${width}px.png`,
+				fullPage: true
+			});
+		});
+	}
+
 	test('practice feedback — no overflow, action buttons stacked full-width', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
