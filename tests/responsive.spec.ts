@@ -152,6 +152,23 @@ async function holdAndRelease(page: Page): Promise<void> {
 test.describe('Responsive layout (390px)', () => {
 	test.use({ viewport: { width: 390, height: 844 } });
 
+	test.describe('App shell — practice hides the global nav', () => {
+		test('/practice has no global nav; / still does', async ({ page }) => {
+			await gotoWithSeed(page, SEED);
+			await page.goto('/practice?chapter=child-1');
+			await expect(page.getByTestId('sentence-text')).toBeVisible();
+
+			await expect(page.getByRole('link', { name: 'おぼえる', exact: true })).toHaveCount(0);
+			await expect(page.getByRole('link', { name: '管理', exact: true })).toHaveCount(0);
+			// The practice header keeps its own 終了 affordance.
+			await expect(page.getByTestId('stop-btn')).toBeVisible();
+
+			await page.goto('/');
+			await expect(page.getByRole('link', { name: 'おぼえる', exact: true })).toBeVisible();
+			await expect(page.getByRole('link', { name: '管理', exact: true })).toBeVisible();
+		});
+	});
+
 	test.beforeAll(() => {
 		ensureDirs();
 		logEvidence(`\n########## task-10-oboeru-ui-ux-v2 (responsive) — ${new Date().toISOString()}`);

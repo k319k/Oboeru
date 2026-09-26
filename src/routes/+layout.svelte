@@ -33,46 +33,52 @@
 		メインコンテンツへ
 	</a>
 
-	<header class="border-b border-border bg-background">
-		<nav
-			class="mx-auto flex h-14 w-full max-w-5xl items-center gap-1 px-4"
-			aria-label="メインナビゲーション"
-		>
-			<a
-				href="/"
-				class:active={pathname === '/'}
-				class="flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+	{#if pathname !== '/practice'}
+		<header class="border-b border-border bg-background">
+			<nav
+				class="mx-auto flex h-14 w-full max-w-5xl items-center gap-1 px-4"
+				aria-label="メインナビゲーション"
 			>
-				<Home class="size-4" />
-				おぼえる
-			</a>
-			<a
-				href="/manage"
-				class:active={pathname === '/manage'}
-				class="flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-			>
-				<Settings class="size-4" />
-				管理
-			</a>
-			<div class="ml-auto">
-				<Button
-					variant="ghost"
-					size="icon"
-					aria-label="テーマ切替"
-					class="size-11 text-muted-foreground"
-					onclick={toggleTheme}
+				<a
+					href="/"
+					class:active={pathname === '/'}
+					class="flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
 				>
-					{#if resolvedTheme === 'dark'}
-						<Moon />
-					{:else}
-						<Sun />
-					{/if}
-				</Button>
-			</div>
-		</nav>
-	</header>
+					<Home class="size-4" />
+					おぼえる
+				</a>
+				<a
+					href="/manage"
+					class:active={pathname === '/manage'}
+					class="flex min-h-11 items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+				>
+					<Settings class="size-4" />
+					管理
+				</a>
+				<div class="ml-auto">
+					<Button
+						variant="ghost"
+						size="icon"
+						aria-label="テーマ切替"
+						class="size-11 text-muted-foreground"
+						onclick={toggleTheme}
+					>
+						{#if resolvedTheme === 'dark'}
+							<Moon />
+						{:else}
+							<Sun />
+						{/if}
+					</Button>
+				</div>
+			</nav>
+		</header>
+	{/if}
 
-	<main id="main-content" tabindex="-1" class="mx-auto w-full max-w-5xl flex-1 px-4 py-6 outline-none">
+	<main
+		id="main-content"
+		tabindex="-1"
+		class="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col px-4 py-6 outline-none"
+	>
 		{@render children()}
 	</main>
 </div>
