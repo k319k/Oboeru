@@ -307,7 +307,22 @@ describe('getChapterSentences', () => {
 	});
 
 	it('returns empty array when no sentences match', () => {
-		expect(getChapterSentences('missing', [])).toEqual([]);
+		// The chapter must exist, and there must be at least one sentence that does
+		// NOT belong to it — otherwise this passes through the "unknown node → []"
+		// path and the chapter filter is never exercised.
+		saveChapters([{ id: 'c1', name: 'C', parentId: null, order: 1 }]);
+		expect(
+			getChapterSentences('c1', [
+				{
+					id: 's-other',
+					chapterId: 'other',
+					trackId: 't-other',
+					text: '他章の文',
+					language: 'ja',
+					order: 1
+				}
+			])
+		).toEqual([]);
 	});
 
 	it('orders sentences by track order first, then sentence order', () => {
@@ -771,7 +786,19 @@ describe('getNodeSentences', () => {
 		// Chapter node: the whole chapter is in scope, so a sentence pointing at a
 		// track that no longer exists is still reachable and must sort last.
 		// (A track node cannot express this — out-of-scope is unreachable there.)
-		const orphan = [sentence({ id: 's-orphan', trackId: 'gone' })];
-		expect(getNodeSentences('ch-1', chapters, tracks, orphan).map((s) => s.id)).toEqual(['s-orphan']);
+		// A known-track sentence is mixed in so "last" is a real comparison instead
+		// of a vacuous single-element list.
+		const mixed = [sentence({ id: 's-t1a' }), sentence({ id: 's-orphan', trackId: 'gone' })];
+		expect(getNodeSentences('ch-1', chapters, tracks, mixed).map((s) => s.id)).toEqual([
+			's-t1a',
+			's-orphan'
+		]);
+	});
+
+	it('does not collect a sentence whose chapterId does not match the track chapter', () => {
+		const stray = sentence({ id: 's-stray', trackId: 't1', chapterId: 'ch-2' });
+		expect(getNodeSentences('t1', chapters, tracks, [...sentences, stray]).map((s) => s.id)).not.toContain(
+			's-stray'
+		);
 	});
 });
