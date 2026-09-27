@@ -23,7 +23,8 @@
 		deleteSentence,
 		flattenChapterTree,
 		getChapterSentences,
-		getChapterTracks
+		getChapterTracks,
+		migrateToV3
 	} from '$lib/sentences';
 	import type { Chapter, Sentence, Track } from '$lib/types';
 	import { Button, buttonVariants } from '$lib/components/ui/button';
@@ -663,7 +664,7 @@
 
 	function handleExport(): void {
 		const data = {
-			version: 2,
+			version: 3,
 			exportedAt: new Date().toISOString(),
 			chapters,
 			tracks: loadTracks(),
@@ -700,7 +701,7 @@
 			return { valid: false, error: '不正なJSONファイルです' };
 		}
 		const obj = data as Record<string, unknown>;
-		if (obj.version !== 2) {
+		if (obj.version !== 2 && obj.version !== 3) {
 			return { valid: false, error: '対応していないバージョンです' };
 		}
 		if (!Array.isArray(obj.chapters)) {
@@ -725,6 +726,7 @@
 		}
 
 		// Validate required fields for tracks
+		const trackIdsByChapter = new Map<string, Set<string>>();
 		for (const t of obj.tracks) {
 			if (typeof t !== 'object' || t === null) {
 				return { valid: false, error: '不正なトラックデータです' };
@@ -737,6 +739,23 @@
 			) {
 				return { valid: false, error: 'トラックに必須フィールドがありません' };
 			}
+			const trackId = track.id;
+			const trackChapterId = track.chapterId;
+			// Two tracks sharing an id inside one chapter make the hierarchy walk
+			// ambiguous — a track resolves its parent by id, so the duplicate can
+			// become its own ancestor and send `flattenTrackTree` into a cycle.
+			// Cross-chapter duplicates stay allowed: nothing resolves a track's
+			// ancestors within a chapter, and ids are matched globally there
+			// (e.g. by `getNodeDescendantTrackIds`).
+			let seenInChapter = trackIdsByChapter.get(trackChapterId);
+			if (seenInChapter === undefined) {
+				seenInChapter = new Set<string>();
+				trackIdsByChapter.set(trackChapterId, seenInChapter);
+			}
+			if (seenInChapter.has(trackId)) {
+				return { valid: false, error: 'トラック id が重複しています' };
+			}
+			seenInChapter.add(trackId);
 		}
 
 		// Validate required fields for sentences
@@ -774,9 +793,17 @@
 					return;
 				}
 
-				const importedChapters = data.chapters as Chapter[];
-				const importedTracks = data.tracks as Track[];
-				const importedSentences = data.sentences as Sentence[];
+				// v2 payloads are normalised to the track-hierarchy schema before the
+				// ID merge so sub-chapters arrive as tracks. The shim is idempotent,
+				// so v3 payloads pass through unchanged.
+				const migratedImport = migrateToV3({
+					chapters: data.chapters as Chapter[],
+					tracks: data.tracks as Track[],
+					sentences: data.sentences as Sentence[]
+				});
+				const importedChapters = migratedImport.chapters;
+				const importedTracks = migratedImport.tracks;
+				const importedSentences = migratedImport.sentences;
 
 				// Merge by ID: existing → overwrite, new → add
 				const existingChapters = loadChapters();

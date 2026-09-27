@@ -90,7 +90,7 @@ test.describe('JSON Export', () => {
 		});
 		const data = JSON.parse(content);
 
-		expect(data.version).toBe(2);
+		expect(data.version).toBe(3);
 		expect(data.exportedAt).toBeTruthy();
 		expect(Array.isArray(data.chapters)).toBe(true);
 		expect(Array.isArray(data.tracks)).toBe(true);
@@ -374,6 +374,187 @@ test.describe('JSON Import — Version Mismatch', () => {
 
 		const message = page.getByTestId('import-message');
 		await expect(message).toContainText('対応していないバージョンです');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Import — v2 auto-migration
+// ---------------------------------------------------------------------------
+
+test.describe('JSON Import — v2 auto-migration', () => {
+	test('importing a v2 payload with sub-chapters stores them as tracks', async ({ page }) => {
+		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
+
+		const importData = {
+			version: 2,
+			exportedAt: new Date().toISOString(),
+			chapters: [
+				{ id: 'c1', name: '親', parentId: null, order: 1 },
+				{ id: 'c1-sub', name: '子', parentId: 'c1', order: 1 }
+			],
+			tracks: [{ id: 'ct1', chapterId: 'c1', name: '既存', order: 1 }],
+			sentences: [
+				{ id: 'cs1', chapterId: 'c1', trackId: 'ct1', text: '直下', language: 'ja', order: 1 },
+				{ id: 'cs2', chapterId: 'c1-sub', trackId: 'ct1', text: '子の文', language: 'ja', order: 1 }
+			]
+		};
+
+		const fileChooserPromise = page.waitForEvent('filechooser');
+		await page.getByTestId('import-input').click({ force: true });
+		const fileChooser = await fileChooserPromise;
+		await fileChooser.setFiles({
+			name: 'v2.json',
+			mimeType: 'application/json',
+			buffer: Buffer.from(JSON.stringify(importData))
+		});
+
+		// The summary counts what was actually merged: the sub-chapter became a
+		// track (so 1 chapter, 2 tracks) and both sentences were written.
+		const message = page.getByTestId('import-message');
+		await expect(message).toHaveClass(/success/);
+		await expect(message).toHaveText(
+			'1件のチャプター、2件のトラック、2件の文章をインポートしました'
+		);
+
+		const stored = await page.evaluate(
+			(key) => JSON.parse(localStorage.getItem(key)!),
+			STORAGE_KEY
+		);
+		// The sub-chapter is gone as a chapter, but the seeded chapters survive
+		// (import merges by id, it does not replace).
+		expect(stored.chapters.map((c: { id: string }) => c.id)).not.toContain('c1-sub');
+		const migrated = stored.tracks.find((t: { name: string }) => t.name === '子');
+		expect(migrated).toBeTruthy();
+		expect(migrated.chapterId).toBe('c1');
+		expect(migrated.parentId).toBeNull();
+		const moved = stored.sentences.find((s: { id: string }) => s.id === 'cs2');
+		expect(moved.chapterId).toBe('c1');
+		expect(moved.trackId).toBe(migrated.id);
+	});
+
+	test('importing a v3 payload keeps nested tracks as they are', async ({ page }) => {
+		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
+
+		const importData = {
+			version: 3,
+			exportedAt: new Date().toISOString(),
+			chapters: [{ id: 'c3', name: 'ルート', parentId: null, order: 1 }],
+			tracks: [
+				{ id: 'ct3-a', chapterId: 'c3', name: '親トラック', order: 1, parentId: null },
+				{ id: 'ct3-b', chapterId: 'c3', name: '子トラック', order: 1, parentId: 'ct3-a' }
+			],
+			sentences: [
+				{ id: 'cs3', chapterId: 'c3', trackId: 'ct3-b', text: '入れ子の文', language: 'ja', order: 1 }
+			]
+		};
+
+		const fileChooserPromise = page.waitForEvent('filechooser');
+		await page.getByTestId('import-input').click({ force: true });
+		const fileChooser = await fileChooserPromise;
+		await fileChooser.setFiles({
+			name: 'v3.json',
+			mimeType: 'application/json',
+			buffer: Buffer.from(JSON.stringify(importData))
+		});
+
+		const message = page.getByTestId('import-message');
+		await expect(message).toHaveClass(/success/);
+		await expect(message).toHaveText(
+			'1件のチャプター、2件のトラック、1件の文章をインポートしました'
+		);
+
+		const stored = await page.evaluate(
+			(key) => JSON.parse(localStorage.getItem(key)!),
+			STORAGE_KEY
+		);
+		const child = stored.tracks.find((t: { id: string }) => t.id === 'ct3-b');
+		expect(child).toBeTruthy();
+		expect(child.parentId).toBe('ct3-a');
+		const sentence = stored.sentences.find((s: { id: string }) => s.id === 'cs3');
+		expect(sentence.trackId).toBe('ct3-b');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Import — duplicate track ids
+// ---------------------------------------------------------------------------
+
+test.describe('JSON Import — Duplicate track ids', () => {
+	test('duplicate track ids within one chapter are rejected', async ({ page }) => {
+		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
+
+		// version 2 so that this test fails only on the missing duplicate check,
+		// not on the version gate.
+		const importData = {
+			version: 2,
+			exportedAt: new Date().toISOString(),
+			chapters: [{ id: 'c-dup', name: '重複', parentId: null, order: 1 }],
+			tracks: [
+				{ id: 'tdup', chapterId: 'c-dup', name: 'A', order: 1, parentId: null },
+				{ id: 'tdup', chapterId: 'c-dup', name: 'B', order: 2, parentId: null }
+			],
+			sentences: []
+		};
+
+		const fileChooserPromise = page.waitForEvent('filechooser');
+		await page.getByTestId('import-input').click({ force: true });
+		const fileChooser = await fileChooserPromise;
+		await fileChooser.setFiles({
+			name: 'dup.json',
+			mimeType: 'application/json',
+			buffer: Buffer.from(JSON.stringify(importData))
+		});
+
+		const message = page.getByTestId('import-message');
+		await expect(message).toHaveClass(/error/);
+		await expect(message).toContainText('トラック id が重複しています');
+
+		// Nothing was written: the seeded chapters are still the only ones.
+		const stored = await page.evaluate(
+			(key) => JSON.parse(localStorage.getItem(key)!),
+			STORAGE_KEY
+		);
+		expect(stored.chapters.map((c: { id: string }) => c.id)).not.toContain('c-dup');
+		expect(stored.tracks.map((t: { id: string }) => t.id)).not.toContain('tdup');
+	});
+
+	test('the same track id in two different chapters is accepted', async ({ page }) => {
+		await seedData(page);
+		await page.getByRole('tab', { name: 'データ' }).click();
+
+		const importData = {
+			version: 2,
+			exportedAt: new Date().toISOString(),
+			chapters: [
+				{ id: 'c-a', name: 'A章', parentId: null, order: 1 },
+				{ id: 'c-b', name: 'B章', parentId: null, order: 2 }
+			],
+			tracks: [
+				{ id: 'tshared', chapterId: 'c-a', name: 'Aのトラック', order: 1, parentId: null },
+				{ id: 'tshared', chapterId: 'c-b', name: 'Bのトラック', order: 1, parentId: null }
+			],
+			sentences: []
+		};
+
+		const fileChooserPromise = page.waitForEvent('filechooser');
+		await page.getByTestId('import-input').click({ force: true });
+		const fileChooser = await fileChooserPromise;
+		await fileChooser.setFiles({
+			name: 'cross.json',
+			mimeType: 'application/json',
+			buffer: Buffer.from(JSON.stringify(importData))
+		});
+
+		// Cross-chapter duplicates are out of scope for the rejection rule
+		// (`getNodeDescendantTrackIds` is not chapter-scoped), so the import goes
+		// through. Only the absence of the duplicate error is asserted — the id
+		// merge itself is pre-existing behaviour and is not what this test covers.
+		const message = page.getByTestId('import-message');
+		await expect(message).toHaveClass(/success/);
+		await expect(message).not.toContainText('重複しています');
 	});
 });
 
