@@ -3,9 +3,6 @@ import { defaultChapters, defaultSentences, defaultTracks } from './default-sent
 
 const STORAGE_KEY = 'oboeru:v1';
 
-// 不明な trackId の文は末尾へ（破棄しない）
-const UNKNOWN_TRACK_ORDER = 999;
-
 // ---------------------------------------------------------------------------
 // ID generation
 // ---------------------------------------------------------------------------
@@ -390,17 +387,54 @@ export function flattenChapterTree(chapters: Chapter[]): Chapter[] {
 }
 
 /**
- * Get sentences for a specific chapter, ordered by track order first,
- * then by `order` within each track.
- * Sentences whose trackId has no matching track sort last.
+ * Sort by pre-order track position first, then by `order` within each track.
+ * A trackId missing from `position` (no such track) sorts last instead of
+ * being dropped.
+ */
+function byTrackPosition(sentences: Sentence[], position: Map<string, number>): Sentence[] {
+	return [...sentences].sort(
+		(a, b) =>
+			(position.get(a.trackId) ?? Number.MAX_SAFE_INTEGER) -
+				(position.get(b.trackId) ?? Number.MAX_SAFE_INTEGER) || a.order - b.order
+	);
+}
+
+/**
+ * Sentences reachable from a node, in pre-order: a chapter's own tracks each
+ * contributing their sentences then their subtree's; a track contributing its
+ * own sentences then each child subtree's. Sentences whose trackId has no
+ * matching track sort last (never dropped) — that only applies to a chapter
+ * node, where the whole chapter is in scope. A track node scopes to its own
+ * subtree, so a sentence outside it is unreachable by definition.
+ */
+export function getNodeSentences(
+	nodeId: string,
+	chapters: Chapter[],
+	tracks: Track[],
+	sentences: Sentence[]
+): Sentence[] {
+	const chapter = chapters.find((c) => c.id === nodeId);
+	if (chapter) {
+		const position = new Map(flattenTrackTree(chapter.id, tracks).map((t, i) => [t.id, i]));
+		return byTrackPosition(
+			sentences.filter((s) => s.chapterId === chapter.id),
+			position
+		);
+	}
+	const found = tracks.find((t) => t.id === nodeId);
+	if (!found) return [];
+	const position = new Map(flattenTrackTree(found.chapterId, tracks).map((t, i) => [t.id, i]));
+	const scope = getNodeDescendantTrackIds(found.id, tracks);
+	return byTrackPosition(
+		sentences.filter((s) => s.chapterId === found.chapterId && scope.has(s.trackId)),
+		position
+	);
+}
+
+/**
+ * Kept for existing callers: the chapter's sentences in pre-order. Now a thin
+ * wrapper over `getNodeSentences`.
  */
 export function getChapterSentences(chapterId: string, sentences: Sentence[]): Sentence[] {
-	const trackOrder = new Map(loadTracks().map((t) => [t.id, t.order]));
-	return sentences
-		.filter((s) => s.chapterId === chapterId)
-		.sort(
-			(a, b) =>
-				(trackOrder.get(a.trackId) ?? UNKNOWN_TRACK_ORDER) - (trackOrder.get(b.trackId) ?? UNKNOWN_TRACK_ORDER) ||
-				a.order - b.order
-		);
+	return getNodeSentences(chapterId, loadChapters(), loadTracks(), sentences);
 }

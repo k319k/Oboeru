@@ -20,7 +20,8 @@ import {
 	deleteTrack,
 	getChapterTracks,
 	flattenTrackTree,
-	getNodeDescendantTrackIds
+	getNodeDescendantTrackIds,
+	getNodeSentences
 } from './sentences';
 import { defaultChapters, defaultSentences, defaultTracks } from './default-sentences';
 
@@ -292,6 +293,9 @@ describe('flattenChapterTree', () => {
 
 describe('getChapterSentences', () => {
 	it('returns sentences for a chapter ordered by order', () => {
+		// The chapter must exist: getChapterSentences resolves the node, and an
+		// unknown node collects nothing.
+		saveChapters([{ id: 'c1', name: 'C1', parentId: null, order: 1 }]);
 		const sentences: Sentence[] = [
 			{ id: 's1', chapterId: 'c1', trackId: 'tr-c1', text: 'first', language: 'ja', order: 2 },
 			{ id: 's2', chapterId: 'c1', trackId: 'tr-c1', text: 'second', language: 'ja', order: 0 },
@@ -697,5 +701,77 @@ describe('getChapterTracks (pre-order wrapper)', () => {
 			mkTrack({ id: 't2', order: 1 })
 		];
 		expect(getChapterTracks('ch-1', tracks).map((t) => t.id)).toEqual(['t2', 't1', 't1-1']);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getNodeSentences
+// ---------------------------------------------------------------------------
+
+function chapter(id: string, name = id): Chapter {
+	return { id, name, parentId: null, order: 1 };
+}
+
+function sentence(over: Partial<Sentence> & { id: string }): Sentence {
+	return { chapterId: 'ch-1', trackId: 't1', text: over.id, language: 'ja', order: 1, ...over };
+}
+
+describe('getNodeSentences', () => {
+	const chapters = [chapter('ch-1'), chapter('ch-2')];
+	// t1 has 2 own sentences; t1-1 / t1-2 are its children; t2 is a sibling
+	const tracks = [
+		mkTrack({ id: 't1' }),
+		mkTrack({ id: 't1-1', parentId: 't1', order: 1 }),
+		mkTrack({ id: 't1-2', parentId: 't1', order: 2 }),
+		mkTrack({ id: 't2', order: 2 })
+	];
+	const sentences = [
+		sentence({ id: 's-t2', trackId: 't2', order: 1 }),
+		sentence({ id: 's-t1-2b', trackId: 't1-2', order: 2 }),
+		sentence({ id: 's-t1-2a', trackId: 't1-2', order: 1 }),
+		sentence({ id: 's-t1b', trackId: 't1', order: 2 }),
+		sentence({ id: 's-t1a', trackId: 't1', order: 1 }),
+		sentence({ id: 's-t1-1', trackId: 't1-1', order: 1 }),
+		sentence({ id: 's-other-chapter', trackId: 't1', chapterId: 'ch-2', order: 1 })
+	];
+
+	it('collects a whole chapter in pre-order: own sentences, then each subtree', () => {
+		expect(getNodeSentences('ch-1', chapters, tracks, sentences).map((s) => s.id)).toEqual([
+			's-t1a',
+			's-t1b',
+			's-t1-1',
+			's-t1-2a',
+			's-t1-2b',
+			's-t2'
+		]);
+	});
+
+	it('collects a track subtree: own sentences first, then child subtrees', () => {
+		expect(getNodeSentences('t1', chapters, tracks, sentences).map((s) => s.id)).toEqual([
+			's-t1a',
+			's-t1b',
+			's-t1-1',
+			's-t1-2a',
+			's-t1-2b'
+		]);
+	});
+
+	it('collects a leaf track without leaking sibling or parent sentences', () => {
+		expect(getNodeSentences('t1-2', chapters, tracks, sentences).map((s) => s.id)).toEqual([
+			's-t1-2a',
+			's-t1-2b'
+		]);
+	});
+
+	it('returns an empty array for an unknown node', () => {
+		expect(getNodeSentences('nope', chapters, tracks, sentences)).toEqual([]);
+	});
+
+	it('keeps sentences with an unknown trackId instead of dropping them', () => {
+		// Chapter node: the whole chapter is in scope, so a sentence pointing at a
+		// track that no longer exists is still reachable and must sort last.
+		// (A track node cannot express this — out-of-scope is unreachable there.)
+		const orphan = [sentence({ id: 's-orphan', trackId: 'gone' })];
+		expect(getNodeSentences('ch-1', chapters, tracks, orphan).map((s) => s.id)).toEqual(['s-orphan']);
 	});
 });
