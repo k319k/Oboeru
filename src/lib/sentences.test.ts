@@ -21,7 +21,8 @@ import {
 	getChapterTracks,
 	flattenTrackTree,
 	getNodeDescendantTrackIds,
-	getNodeSentences
+	getNodeSentences,
+	getNodeTrail
 } from './sentences';
 import { defaultChapters, defaultSentences, defaultTracks } from './default-sentences';
 
@@ -800,5 +801,54 @@ describe('getNodeSentences', () => {
 		expect(getNodeSentences('t1', chapters, tracks, [...sentences, stray]).map((s) => s.id)).not.toContain(
 			's-stray'
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// getNodeTrail
+// ---------------------------------------------------------------------------
+
+describe('getNodeTrail', () => {
+	const chapters = [chapter('ch-1', '1章')];
+	const tracks = [
+		mkTrack({ id: 't1', name: 'トラック1' }),
+		mkTrack({ id: 't1-1', name: 'トラック1-1', parentId: 't1' }),
+		mkTrack({ id: 't1-1-1', name: 'トラック1-1-1', parentId: 't1-1' })
+	];
+
+	it('returns a single chapter ref for a chapter node', () => {
+		expect(getNodeTrail('ch-1', chapters, tracks)).toEqual([
+			{ type: 'chapter', id: 'ch-1', name: '1章' }
+		]);
+	});
+
+	it('returns chapter → ancestors → self for a track node', () => {
+		expect(getNodeTrail('t1-1-1', chapters, tracks)).toEqual([
+			{ type: 'chapter', id: 'ch-1', name: '1章' },
+			{ type: 'track', id: 't1', name: 'トラック1' },
+			{ type: 'track', id: 't1-1', name: 'トラック1-1' },
+			{ type: 'track', id: 't1-1-1', name: 'トラック1-1-1' }
+		]);
+	});
+
+	it('returns an empty array for an unknown id', () => {
+		expect(getNodeTrail('nope', chapters, tracks)).toEqual([]);
+	});
+
+	it('omits the chapter when the track has no matching chapter', () => {
+		expect(getNodeTrail('t1', [], tracks)).toEqual([{ type: 'track', id: 't1', name: 'トラック1' }]);
+	});
+
+	it('terminates on a cyclic parentId chain instead of hanging', () => {
+		const cyclic = [mkTrack({ id: 'a', name: 'A', parentId: 'b' }), mkTrack({ id: 'b', name: 'B', parentId: 'a' })];
+		// The walk stops as soon as it revisits a node, so `a` is emitted once and
+		// the chain does not loop forever. Root-of-cycle order is arbitrary
+		// (unshift), so this pins the shape, not the self-last guarantee that the
+		// acyclic tests above cover.
+		expect(getNodeTrail('a', chapters, cyclic)).toEqual([
+			{ type: 'chapter', id: 'ch-1', name: '1章' },
+			{ type: 'track', id: 'b', name: 'B' },
+			{ type: 'track', id: 'a', name: 'A' }
+		]);
 	});
 });

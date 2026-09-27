@@ -431,6 +431,36 @@ export function getNodeSentences(
 	);
 }
 
+export interface NodeRef {
+	type: 'chapter' | 'track';
+	id: string;
+	name: string;
+}
+
+/**
+ * Ancestor chain from the chapter down to `nodeId` (inclusive). Cycle-safe:
+ * an already-visited track id stops the walk.
+ */
+export function getNodeTrail(nodeId: string, chapters: Chapter[], tracks: Track[]): NodeRef[] {
+	const owner = chapters.find((c) => c.id === nodeId);
+	if (owner) return [{ type: 'chapter', id: owner.id, name: owner.name }];
+
+	const chain: Track[] = [];
+	const seen = new Set<string>();
+	let current: Track | undefined = tracks.find((t) => t.id === nodeId);
+	while (current && !seen.has(current.id)) {
+		seen.add(current.id);
+		chain.unshift(current);
+		const parentId: string | null = current.parentId;
+		current = parentId ? tracks.find((t) => t.id === parentId) : undefined;
+	}
+	if (chain.length === 0) return [];
+
+	const head = chapters.find((c) => c.id === chain[0].chapterId);
+	const trail: NodeRef[] = head ? [{ type: 'chapter', id: head.id, name: head.name }] : [];
+	return [...trail, ...chain.map((t) => ({ type: 'track' as const, id: t.id, name: t.name }))];
+}
+
 /**
  * Kept for existing callers: the chapter's sentences in pre-order. Now a thin
  * wrapper over `getNodeSentences`.
