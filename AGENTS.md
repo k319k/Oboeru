@@ -28,16 +28,17 @@ npm install
 
 ## ディレクトリ地図
 
-- `src/lib/sentences.ts` — **ストレージ単一モジュール** (キー `oboeru:v1`、`{chapters, tracks, sentences}`)。CRUD、旧データ読み込みシム、`getChapterSentences` 二段ソート、削除カスケード
+- `src/lib/sentences.ts` — **ストレージ単一モジュール** (キー `oboeru:v1`、`{chapters, tracks, sentences}`)。CRUD、`migrateToV3` 読み込みシム (lazy write-back)、削除カスケード。階層純関数 (`flattenTrackTree` / `getNodeDescendantTrackIds` / `getNodeSentences` / `getNodeTrail` / `getChapterTracks` / `flattenChapterTree`) もここ
 - `src/lib/types.ts` — `Chapter` / `Track` / `Sentence` / `Settings`
-- `src/lib/default-sentences.ts` — 既定データ (ja-01..10, en-01..10 + 既定トラック)
+- `src/lib/default-sentences.ts` — 既定データ (ja-01..10, en-01..10 + 既定トラック `tr-ch-ja-01` / `tr-ch-en-01`、どちらも `parentId: null`)
 - `src/lib/normalize.ts` — `normalizeJapaneseText` (正規化の正src: NFKC → 記号/空白除去 → カタカナ→ひらがな)
 - `src/lib/similarity.ts` — 上記正規化を内蔵した Levenshtein 類似度 (0-100)
 - `src/lib/jev.ts` — `buildJudgeRequest` / `parseJudgeResponse` 純関数
 - `src/lib/alignment.ts` — 差分トークン (feedback の色分け)
-- `src/lib/practice-progress.ts` — セッション途中再開の永続化 (sessionStorage `oboeru:progress:v1`、30分 TTL)
-- `src/routes/practice/+page.svelte` — 練習画面 (7フェーズstate machine、T13プッシュトゥトーク、doTranscribe 採点+Jev統合)
-- `src/routes/manage/+page.svelte` — 管理画面 (章ツリー、トラックCRUD、文CRUD、インポートv2/エクスポート)
+- `src/lib/practice-progress.ts` — セッション途中再開の永続化 (sessionStorage `oboeru:progress:v1`、30分 TTL)。**`chapterId` フィールドには章ではなくセッションのノード id (章 or トラック) が入る** (トラックの概念導入以前の名残。復元の一致判定はその id で行う)
+- `src/routes/+page.svelte` — トップページ (章を根とする1本の木。章行はサブツリー合計、トラック行は直属のみ、`/practice?node=` へのリンク)
+- `src/routes/practice/+page.svelte` — 練習画面 (`?node=<章id|トラックid>` が唯一の入口。ヘッダはパンくず固定、7フェーズstate machine、T13プッシュトゥトーク、doTranscribe 採点+Jev統合)
+- `src/routes/manage/+page.svelte` — 管理画面 (chapters タブ = 章 + トラックの1本の木 + トラックのインライン本文編集 (IME ガード付き) / sentences タブ = 文の一覧と階層 select (トラックの CRUD は無い) / 設定 / データ。インポート v3 + v2 自動変換)
 - `src/routes/api/{transcribe,tts,judge}/+server.ts` — サーバーproxy (キーは `$env/dynamic/private`、クライアント不露出)
 - `tests/` — Playwright E2E (シードは localStorage 直書き)
 
@@ -48,7 +49,7 @@ npm install
 | 区画 | class | 役割 |
 |---|---|---|
 | practice root | `mx-auto flex h-dvh w-full max-w-2xl flex-col py-4` | definite height の器。縦 padding はここが所有者 |
-| header | `flex flex-none items-center gap-2 pb-3` (`data-testid="practice-header"`) | 章名 + 終了アイコン (アイコンのみ) |
+| header | `flex flex-none items-center gap-2 pb-3` (`data-testid="practice-header"`) | パンくず (`章 › … › 自身`、開始ノードで固定) + 終了アイコン (アイコンのみ) |
 | progress | `flex flex-none flex-col gap-1` (`data-testid="progress"`) | 全幅 1 行。`progress-bar` + `<span>` 2 個 |
 | 本文 | `flex min-h-0 flex-1 flex-col overflow-y-auto` (`data-testid="practice-body"`) | **ここだけが内部スクロール** |
 | action-zone | `action-zone flex flex-none flex-col gap-2 border-t border-border bg-background p-3` (`data-testid="action-zone"`) | 主操作 1 + サブ 0〜2 + `skip-btn`。常にビューポート内に見える |
@@ -65,10 +66,12 @@ npm install
 
 ## データモデル規約
 
-- **章 → トラック → 文** の3層。`Sentence.trackId` 必須。練習順 = `track.order` → `sentence.order` の二段ソート
-- **インポート/エクスポートは version 2 のみ**: `{version: 2, chapters, tracks, sentences}`。`validateImportJson` は v1 を「対応していないバージョンです」で拒否。choice/noul のJev判定で使うため sentence の `trackId` 欠落は絶対に許さない
-- 旧形式 (tracks 無し) のローカルデータは読み込みシムが章ごとに既定トラック (id `tr-<chapterId>`、名前 `トラック1`) へ自動収容 → 既存シード/E2Eは無影響
-- 削除カスケード: 章削除 → 子孫章+その章のトラック+文。トラック削除 → 所属文
+- **章 (ルート専用) → トラック (ネスト可) → 文** の3層。`Chapter.parentId` は型に残るが常に `null` (UI から設定する経路が無い)。階層は `Track.parentId` が担う。`Track.chapterId` / `Sentence.chapterId` は最上位章を指す冗長フィールド、`Sentence.trackId` は直接の親トラック
+- 練習順 = **pre-order** (自文 → 子トラック1配下 → 子トラック2配下)、各トラック内は `sentence.order` 昇順。走査は `flattenTrackTree` が正。章の文の並びも `getNodeSentences` が pre-order で返す (`track.order` だけのソートは入れ子で破綻する)
+- `Track.parentId` を更新する API は存在しない (`updateTrack` の引数型から除外)。トラックの親は追加時に確定し、サイクルは構造的に発生しない。`addChapter(name, parentId)` はシグネチャに残っているが UI から `null` しか渡らない
+- インポート/エクスポートは **version 3** (`{version: 3, chapters, tracks, sentences}`)。`validateImportJson` は v2 も受理して `migrateToV3` で変換、v1 は「対応していないバージョンです」で拒否。choice/noul の Jev 判定で使うため sentence の `trackId` 欠落は絶対に許さない
+- 読み込みシム `migrateToV3` (冪等・`loadData` から呼び、差分があれば `saveData` で書き戻し): `tracks` 欠落の旧データ → 章ごとに既定トラック生成 / **子チャプター → 最上位章直下のトラック** (`tr-from-ch-<章id>`、祖先が近い順に投入。その章の既存トラックは祖先章へ追従、順序は後続) / 全トラックに `parentId` を補う。祖先が解決できない子チャプターはルート章のまま残す (**落とすと配下が到達不能になる**)、`parentId` が存在しないトラックを指す場合は `null` に修復
+- 削除カスケード: 章削除 → 配下の全トラック + 全文 / トラック削除 → 子孫トラック + 配下の全文
 - `updateSentence` は chapter/track の整合を自動修復する (他章の trackId が来たら章の先頭トラックに再割当)
 
 ## 採点パイプライン規約
@@ -83,6 +86,7 @@ npm install
 
 - エンドポイント: `POST https://openrouter.ai/api/v1/systemone`、モデルは **`typesafe/jev-1.13` にピン留め** (jev-latest 不使用)
 - `choice` 型の質問には **`criteria` マップ必須** (無いと zod 400 — 実測)。`state` はオブジェクト最小構成 (context rot 防止)
+- **`state` には必ず正規化済みテキストを渡す** (`buildJudgeRequest` が `similarity.ts` の `normalize` を通す)。句読点・空白・全角半角・英字大小・カタカナ/ひらがな差を読み上げ差として Jev に見せると誤判定になる (「これらの人びとは, 天までとどく塔を…」と「これらの人々は天まで届く塔を…」が別文と判定された実例)。Jev は渡された `state` の文字列しか見ないので、**除去はクライアント側でしかできない** — instructions に「無視して」と書いただけでは効かない。`difference_kind` は現状 UI 未使用で、`answers` に存在することが `parseJudgeResponse` の available 条件であるため必須
 - `noul` に confidence は無い。`P(noul)` と否定形の和は 1 にならない → **否定形マジョリティ投票は禁止**
 - CJK は「英語同等ではない」(公式docs) → 実コンテンツでテストし confidence を見てルーティング
 - キー `OPENROUTER_API_KEY` は wrangler secret + .env のみ。コミット禁止・クライアントコードから直接呼ばない
@@ -93,12 +97,15 @@ npm install
 2. reload の前には必ず `keyboard.up('Space')` — 押しっぱなしで遷移すると次の down が `event.repeat=true` になり repeat ガードに握りつぶされる
 3. `mockTranscribe` は `mockJudgeFallback` (`**/api/judge` → `{available:false}`) をデフォルト適用済み — **キーが .env にあっても実 OpenRouter を叩かない**。Jev をテストするときだけ後から route 登録でオーバーライド (後登録が優先)
 4. transcribe モックは `delayMs` で transcribing フェーズを確保してからアサート
-5. シードは `{chapters, tracks?, sentences}` 直書き — `tracks` 欠落はシムが救うが、トラックをテストするなら明示する
+5. シードは `{chapters, tracks?, sentences}` 直書き — `tracks` 欠落はシムが救うが、トラックをテストするなら明示する。`Track.parentId` を書かなかったトラックはルート扱い (省略 ≠ 不正)
 6. 短押しガード: 保持 < 500ms は採点されない。ホールドはタイマー ≥ 0.7s で解放 (holdAndRelease ヘルパー)
-7. `data-testid="progress"` は 11 箇所で `toHaveText` 完全一致 assert されている。外側ラッパの中に `progress-bar` と `<span>` 2 個が入る。2 span の結合結果が `基本 · 1 / 2` / `1 / 1` と一致すること。practice 画面の progress DOM を触るときは文字列と `showTrackBadge` の分岐条件を維持する
+7. `data-testid="progress"` は 16 箇所で `toHaveText` 完全一致 assert されている。外側ラッパの中に `progress-bar` と `<span>` 2 個が入る。2 span の結合結果が `基本 · 1 / 2` / `1 / 1` と一致すること。practice 画面の progress DOM を触るときは文字列と `showTrackBadge` の分岐条件を維持する
 8. `action-zone` は 390px で `rect.bottom <= innerHeight + 1` を満たすこと
 9. 録音中は `skip-btn` が `disabled`、かつ `S` キーでスキップされない
 10. `oboeru:practice-ui:v1` の Preferences を seed する手順は不要 (同キーは削除済み。シードの書き換えは localStorage 直書きだけで足りる)
+11. 練習の入口は `/practice?node=<章id|トラックid>` のみ (パラメータ無しは「ID が指定されていません」で summary へ)。進捗行は**章開始時だけ**トラック名付き (`基本 · 1 / 12` — さらにその章がトラック 2 個以上のときのみ `showTrackBadge`)。トラック開始時はトラック名がパンくずにあるので進捗行は素の `1 / 12`
+12. 管理タブの track 行は `tree-track-*` 系 (`tree-track-row` / `tree-track-name` / `tree-track-up` / `tree-track-down` / `tree-track-edit` / `tree-track-delete` / `tree-edit-track-name` / `add-child-track` / `delete-track-preview`)。トラックの CRUD は **chapters タブにのみ**存在し、sentences タブに残るのは読み取り専用の `track-group` / `track-name` と、階層 select の `sentence-form-track` だけ
+13. インライン本文編集 (`inline-sentence-text`) の Enter は IME ガード (`e.isComposing || e.keyCode === 229`) を通す。ガードを外すと日本語入力で「変換確定のたびに半確定テキストを保存」になる。blur ハンドラは event を渡さないので、確定だけは blur 経由で保存される設計
 
 ## 既知の落とし穴
 
@@ -115,3 +122,5 @@ npm install
 - UI文言は日本語。レスポンシブ 390px 維持、axe serious/critical 0 維持
 - 練習中はグローバルナビを隠す。テーマは既定で端末同期・上書きは管理 › 設定の「表示テーマ」fieldset の 3 択 (`端末に合わせる` / `ライト` / `ダーク`) のみ。ナビに切替ボタンを置かない。`src/lib/theme.ts` の `toggleTheme()` は削除済み (押すと `system` を脱して端末変更を追従しなくなるのが原因)。`/practice` からテーマを一切変えられない (端末設定に従う)
 - 実機チェック残務 (ユーザー承認ゲート): Firefox デスクトップ / Android Chrome でのマイク許可
+- 2026-09-27: ロードマップ ③ トラック階層統合を実装 (子チャプターを廃止し `Track.parentId` の木に統一。練習は `/practice?node=` で章/トラックどちらからでも開始、トップページと管理 › チャプターは同じ木を表示)。spec は `docs/superpowers/specs/2026-09-27-track-hierarchy-integration-design.md`、計画は `docs/superpowers/plans/2026-09-27-track-hierarchy-integration.md`。自動検証 (`npm run check` / `npm test` / `npx playwright test --workers=1`) は全緑、**実機ゲートは未実施** — 子チャプターを含む既存データの移行結果、3 段ネストの並び順、管理タブのインライン編集の実 IME をユーザー確認するまで「実機ゲート込み」で完了とみなさない
+- ロードマップ順 (2026-09-27 見直し) は ①フリーズ → ②UI強化 (済) → ③トラック階層統合 (済) → ④AI TTS (Gemini `gemini-3.8-flash-tts`) → ⑤PWA (Android) → ⑥クラウド同期。理由は付録 `docs/superpowers/specs/2026-09-22-tts-freeze-fix.md` 参照
