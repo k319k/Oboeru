@@ -312,20 +312,29 @@ export function addTrack(chapterId: string, name: string, parentTrackId: string 
 	return track;
 }
 
-export function updateTrack(id: string, updates: Partial<Omit<Track, 'id'>>): void {
+function withoutParentId(updates: Partial<Track>): Partial<Omit<Track, 'id' | 'parentId'>> {
+	const copy: Record<string, unknown> = { ...updates };
+	delete copy.parentId;
+	return copy as Partial<Omit<Track, 'id' | 'parentId'>>;
+}
+
+/** `parentId` is excluded on purpose: a track's parent is fixed at creation. */
+export function updateTrack(id: string, updates: Partial<Omit<Track, 'id' | 'parentId'>>): void {
 	const tracks = loadTracks();
 	const idx = tracks.findIndex((t) => t.id === id);
 	if (idx === -1) throw new Error(`Track not found: ${id}`);
-	tracks[idx] = { ...tracks[idx], ...updates };
+	tracks[idx] = { ...tracks[idx], ...withoutParentId(updates) };
 	saveTracks(tracks);
 }
 
+/** Delete a track together with its whole subtree (descendant tracks + sentences). */
 export function deleteTrack(id: string): void {
 	const tracks = loadTracks();
 	const sentences = loadSentences();
+	const doomed = getNodeDescendantTrackIds(id, tracks);
 
-	const remainingTracks = tracks.filter((t) => t.id !== id);
-	const remainingSentences = sentences.filter((s) => s.trackId !== id);
+	const remainingTracks = tracks.filter((t) => !doomed.has(t.id));
+	const remainingSentences = sentences.filter((s) => !doomed.has(s.trackId));
 
 	saveTracks(remainingTracks);
 	saveSentences(remainingSentences);

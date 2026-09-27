@@ -1230,3 +1230,88 @@ describe('loadData migration (through the load* accessors)', () => {
 		expect(localStorage.getItem(STORAGE_KEY)).toBe(before);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Track hierarchy CRUD
+// ---------------------------------------------------------------------------
+
+describe('deleteTrack (hierarchy)', () => {
+	beforeEach(() => {
+		saveChapters([{ id: 'ch-1', name: '1章', parentId: null, order: 1 }]);
+		saveTracks([
+			{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null },
+			{ id: 't1-1', chapterId: 'ch-1', name: 'A-1', order: 1, parentId: 't1' },
+			{ id: 't1-1-1', chapterId: 'ch-1', name: 'A-1-1', order: 1, parentId: 't1-1' },
+			{ id: 't2', chapterId: 'ch-1', name: 'B', order: 2, parentId: null }
+		]);
+		saveSentences([
+			{ id: 's1', chapterId: 'ch-1', trackId: 't1', text: 'a', language: 'ja', order: 1 },
+			{ id: 's2', chapterId: 'ch-1', trackId: 't1-1', text: 'b', language: 'ja', order: 1 },
+			{ id: 's3', chapterId: 'ch-1', trackId: 't1-1-1', text: 'c', language: 'ja', order: 1 },
+			{ id: 's4', chapterId: 'ch-1', trackId: 't2', text: 'd', language: 'ja', order: 1 }
+		]);
+	});
+
+	it('removes descendant tracks and every sentence in the subtree', () => {
+		deleteTrack('t1');
+		expect(loadTracks().map((t) => t.id)).toEqual(['t2']);
+		expect(loadSentences().map((s) => s.id)).toEqual(['s4']);
+	});
+
+	it('keeps the parent and its own sentences when a leaf is deleted', () => {
+		deleteTrack('t1-1-1');
+		expect(loadTracks().map((t) => t.id)).toEqual(['t1', 't1-1', 't2']);
+		expect(loadSentences().map((s) => s.id)).toEqual(['s1', 's2', 's4']);
+	});
+});
+
+describe('addTrack with a parent track', () => {
+	beforeEach(() => {
+		saveChapters([{ id: 'ch-1', name: '1章', parentId: null, order: 1 }]);
+		saveTracks([{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null }]);
+	});
+
+	// t1's children are numbered among themselves: A-2 goes first (order 1) and
+	// the later A-1 lands after it (order 2).
+	it('appends after the last sibling of the same parent', () => {
+		addTrack('ch-1', 'A-2', 't1');
+		addTrack('ch-1', 'A-1', 't1');
+		const tracks = loadTracks();
+		expect(tracks.find((t) => t.name === 'A-2')?.order).toBe(1);
+		expect(tracks.find((t) => t.name === 'A-1')?.order).toBe(2);
+	});
+
+	it('counts only siblings of the same parent, not the whole chapter', () => {
+		addTrack('ch-1', 'B', null);
+		addTrack('ch-1', 'A-1', 't1');
+		const tracks = loadTracks();
+		expect(tracks.find((t) => t.name === 'A-1')?.order).toBe(1);
+		expect(tracks.find((t) => t.name === 'B')?.order).toBe(2);
+	});
+});
+
+describe('updateTrack (hierarchy)', () => {
+	beforeEach(() => {
+		saveChapters([{ id: 'ch-1', name: '1章', parentId: null, order: 1 }]);
+		saveTracks([
+			{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null },
+			{ id: 't1-1', chapterId: 'ch-1', name: 'A-1', order: 1, parentId: 't1' }
+		]);
+	});
+
+	it('renames and reorders without touching parentId', () => {
+		updateTrack('t1-1', { name: 'Renamed', order: 5 });
+		expect(loadTracks().find((x) => x.id === 't1-1')).toEqual({
+			id: 't1-1',
+			chapterId: 'ch-1',
+			name: 'Renamed',
+			order: 5,
+			parentId: 't1'
+		});
+	});
+
+	it('ignores a parentId key passed by an untyped caller', () => {
+		updateTrack('t1-1', { name: 'X', parentId: 't1' } as Partial<Omit<Track, 'id'>>);
+		expect(loadTracks().find((x) => x.id === 't1-1')?.parentId).toBe('t1');
+	});
+});
