@@ -1,6 +1,31 @@
-import { test, expect } from './fixtures';
+import { test, expect, type Page } from './fixtures';
 import { gotoWithSeed } from './helpers';
 import { defaultChapters, defaultSentences } from '../src/lib/default-sentences';
+
+/**
+ * Card of the track whose name is exactly `name`. A plain
+ * `filter({ hasText: name })` is not usable here: "トラック1" is a substring of
+ * "トラック1-1", so the filter would match both rows and every assertion on the
+ * result would run in strict mode against two elements.
+ */
+function trackCard(page: Page, name: string) {
+	const exactName = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+	return page.getByTestId('track-card').filter({
+		has: page.getByTestId('track-card-name').filter({ hasText: exactName })
+	});
+}
+
+const NESTED_TRACK_SEED = {
+	chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+	tracks: [
+		{ id: 't1', chapterId: 'ch-1', name: 'トラック1', order: 1, parentId: null },
+		{ id: 't1-1', chapterId: 'ch-1', name: 'トラック1-1', order: 1, parentId: 't1' }
+	],
+	sentences: [
+		{ id: 's1', chapterId: 'ch-1', trackId: 't1', text: 'あ', language: 'ja', order: 1 },
+		{ id: 's2', chapterId: 'ch-1', trackId: 't1-1', text: 'い', language: 'ja', order: 1 }
+	]
+};
 
 test.describe('Top page', () => {
 	test('loads and displays heading おぼえる', async ({ page }) => {
@@ -54,84 +79,37 @@ test.describe('Top page', () => {
 		await expect(card.getByTestId('card-start')).toHaveCount(0);
 	});
 
-	test('parent card badge aggregates descendant sentence counts', async ({ page }) => {
-		await gotoWithSeed(page, {
-			chapters: [
-				{ id: 'parent-1', name: '親A', parentId: null, order: 1 },
-				{ id: 'child-1', name: '子A', parentId: 'parent-1', order: 1 },
-				{ id: 'grandchild-1', name: '孫A', parentId: 'child-1', order: 1 },
-				{ id: 'grandchild-2', name: '孫B', parentId: 'child-1', order: 2 },
-				{ id: 'parent-2', name: '親B', parentId: null, order: 2 },
-				{ id: 'child-2', name: '子B', parentId: 'parent-2', order: 1 }
-			],
-			sentences: [
-				{ id: 's-1', chapterId: 'grandchild-1', text: 'こんばんは。', language: 'ja', order: 1 },
-				{ id: 's-2', chapterId: 'grandchild-1', text: 'さようなら。', language: 'ja', order: 2 },
-				{ id: 's-3', chapterId: 'grandchild-1', text: 'また明日。', language: 'ja', order: 3 },
-				{ id: 's-4', chapterId: 'grandchild-2', text: '四つ目。', language: 'ja', order: 1 },
-				{ id: 's-5', chapterId: 'grandchild-2', text: '五つ目。', language: 'ja', order: 2 },
-				{ id: 's-6', chapterId: 'parent-2', text: '直接の文。', language: 'ja', order: 1 },
-				{ id: 's-7', chapterId: 'child-2', text: '六つ目。', language: 'ja', order: 1 },
-				{ id: 's-8', chapterId: 'child-2', text: '七つ目。', language: 'ja', order: 2 },
-				{ id: 's-9', chapterId: 'child-2', text: '八つ目。', language: 'ja', order: 3 },
-				{ id: 's-10', chapterId: 'child-2', text: '九つ目。', language: 'ja', order: 4 }
-			]
-		});
-
-		// 親A: 0 direct + 子A(0 direct) + 孫A(3) + 孫B(2) = 5 → no direct → no start button
-		const parentA = page.getByTestId('chapter-card').filter({ hasText: '親A' });
-		await expect(parentA).toContainText('5文');
-		await expect(parentA.getByTestId('card-start')).toHaveCount(0);
-
-		// 子A: 0 direct + 孫A 3 + 孫B 2 = 5 → no direct → no start button
-		const childA = page.getByTestId('chapter-card').filter({ hasText: '子A' });
-		await expect(childA).toContainText('5文');
-		await expect(childA.getByTestId('card-start')).toHaveCount(0);
-
-		// 孫A: 3 direct → start button present
-		const grandchildA = page.getByTestId('chapter-card').filter({ hasText: '孫A' });
-		await expect(grandchildA).toContainText('3文');
-		await expect(grandchildA.getByTestId('card-start')).toHaveCount(1);
-
-		// 親B: 1 direct + 子B 4 = 5 → direct sentences exist → start button present
-		const parentB = page.getByTestId('chapter-card').filter({ hasText: '親B' });
-		await expect(parentB).toContainText('5文');
-		await expect(parentB.getByTestId('card-start')).toHaveCount(1);
-	});
-
-	test('clicking card start navigates to /practice?chapter= via SPA (no full reload)', async ({
+	test('clicking card start navigates to /practice?node= via SPA (no full reload)', async ({
 		page
 	}) => {
 		await page.goto('/');
 
 		const jaCard = page.getByTestId('chapter-card').filter({ hasText: 'はじめの一歩（日本語）' });
 		await Promise.all([
-			page.waitForURL(/\/practice\?chapter=ch-ja-01/),
+			page.waitForURL(/\/practice\?node=ch-ja-01/),
 			jaCard.getByTestId('card-start').click()
 		]);
 
-		expect(page.url()).toContain('/practice?chapter=ch-ja-01');
+		expect(page.url()).toContain('/practice?node=ch-ja-01');
 		// SPA navigation: the document is not replaced → exactly one navigation entry.
 		const navCount = await page.evaluate(() => performance.getEntriesByType('navigation').length);
 		expect(navCount).toBe(1);
 	});
 
-	test('clicking a child card start navigates to /practice with the child id', async ({ page }) => {
+	test('clicking a track start navigates to /practice?node=<trackId> without a full reload', async ({
+		page
+	}) => {
 		await gotoWithSeed(page, {
-			chapters: [
-				{ id: 'parent-1', name: '親チャプター', parentId: null, order: 1 },
-				{ id: 'child-1', name: '子チャプター', parentId: 'parent-1', order: 1 }
-			],
-			sentences: [
-				{ id: 's-1', chapterId: 'child-1', text: 'こんにちは。', language: 'ja', order: 1 }
-			]
+			chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+			tracks: [{ id: 't1', chapterId: 'ch-1', name: 'トラック1', order: 1, parentId: null }],
+			sentences: [{ id: 's1', chapterId: 'ch-1', trackId: 't1', text: 'あ', language: 'ja', order: 1 }]
 		});
 
-		const childCard = page.getByTestId('chapter-card').filter({ hasText: '子チャプター' });
-		await Promise.all([
-			page.waitForURL(/\/practice\?chapter=child-1/),
-			childCard.getByTestId('card-start').click()
-		]);
+		const reloads: string[] = [];
+		page.on('load', () => reloads.push(page.url()));
+		await trackCard(page, 'トラック1').getByTestId('card-start').click();
+		await page.waitForURL('**/practice?node=t1');
+		expect(reloads).toHaveLength(0);
 	});
 
 	test('navigation links are present', async ({ page }) => {
@@ -141,70 +119,140 @@ test.describe('Top page', () => {
 	});
 
 	// ---------------------------------------------------------------------------
-	// Nested tree (T4)
+	// Nested tree — chapters and tracks share one tree
 	// ---------------------------------------------------------------------------
 
-	test('nested chapters are displayed as a tree with children indented', async ({ page }) => {
+	test('tracks are displayed as a tree under their chapter with increasing indentation', async ({
+		page
+	}) => {
+		await gotoWithSeed(page, NESTED_TRACK_SEED);
+
+		await expect(trackCard(page, 'トラック1')).toBeVisible();
+		await expect(trackCard(page, 'トラック1-1')).toBeVisible();
+
+		// Depth-first: chapter → track → child track, each level indented deeper.
+		const chapterNode = page
+			.getByTestId('chapter-card')
+			.locator('xpath=ancestor::div[contains(@class,"tree-node")][1]');
+		const trackNode = trackCard(page, 'トラック1-1').locator(
+			'xpath=ancestor::div[contains(@class,"tree-node")][1]'
+		);
+		const chapterMargin = parseFloat(
+			await chapterNode.evaluate((el) => getComputedStyle(el).marginLeft)
+		);
+		const trackMargin = parseFloat(
+			await trackNode.evaluate((el) => getComputedStyle(el).marginLeft)
+		);
+		expect(trackMargin).toBeGreaterThan(chapterMargin);
+	});
+
+	test('chapter count aggregates descendant tracks while a track row shows its own count', async ({
+		page
+	}) => {
+		await gotoWithSeed(page, NESTED_TRACK_SEED);
+
+		// Chapter 1章: 1 (トラック1) + 1 (トラック1-1) = 2. Descendants are NOT
+		// double counted on the track row itself.
+		await expect(
+			page.getByTestId('chapter-card').filter({ hasText: '1章' }).getByTestId('chapter-card-count')
+		).toHaveText('2文');
+		await expect(trackCard(page, 'トラック1-1').getByTestId('track-card-count')).toHaveText('1文');
+		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toHaveText('1文');
+	});
+
+	test('expand/collapse toggle shows and hides child tracks', async ({ page }) => {
+		await gotoWithSeed(page, NESTED_TRACK_SEED);
+
+		const chapterCard = page.getByTestId('chapter-card').filter({ hasText: '1章' });
+
+		// Default: expanded → both tracks visible
+		await expect(trackCard(page, 'トラック1')).toBeVisible();
+		await expect(trackCard(page, 'トラック1-1')).toBeVisible();
+
+		// Collapse the chapter → its tracks are hidden
+		await chapterCard.getByRole('button', { name: '折りたたむ' }).click();
+		await expect(trackCard(page, 'トラック1')).toBeHidden();
+		await expect(trackCard(page, 'トラック1-1')).toBeHidden();
+
+		// Expand again → tracks visible
+		await chapterCard.getByRole('button', { name: '展開する' }).click();
+		await expect(trackCard(page, 'トラック1')).toBeVisible();
+		await expect(trackCard(page, 'トラック1-1')).toBeVisible();
+
+		// A track row collapses its own subtree, independently of the chapter.
+		await trackCard(page, 'トラック1').getByRole('button', { name: '折りたたむ' }).click();
+		await expect(trackCard(page, 'トラック1')).toBeVisible();
+		await expect(trackCard(page, 'トラック1-1')).toBeHidden();
+
+		await trackCard(page, 'トラック1').getByRole('button', { name: '展開する' }).click();
+		await expect(trackCard(page, 'トラック1-1')).toBeVisible();
+	});
+
+	test('a track is startable when only a descendant track holds sentences', async ({ page }) => {
 		await gotoWithSeed(page, {
-			chapters: [
-				{ id: 'parent-1', name: '親チャプター', parentId: null, order: 1 },
-				{ id: 'child-1', name: '子チャプター', parentId: 'parent-1', order: 1 },
-				{ id: 'grandchild-1', name: '孫チャプター', parentId: 'child-1', order: 1 }
+			chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+			tracks: [
+				{ id: 't1', chapterId: 'ch-1', name: '文のないトラック', order: 1, parentId: null },
+				{ id: 't1-1', chapterId: 'ch-1', name: '孫のトラック', order: 1, parentId: 't1' }
+			],
+			sentences: [
+				{ id: 's2', chapterId: 'ch-1', trackId: 't1-1', text: 'い', language: 'ja', order: 1 }
+			]
+		});
+
+		// Subtree-based, not own-sentence-based: every ancestor of the sentence
+		// (the leaf, the empty intermediate track, the chapter) is startable.
+		await expect(page.getByTestId('chapter-card').getByTestId('card-start')).toHaveCount(1);
+		await expect(trackCard(page, '文のないトラック').getByTestId('card-start')).toHaveCount(1);
+		await expect(trackCard(page, '孫のトラック').getByTestId('card-start')).toHaveCount(1);
+	});
+
+	test('a node whose subtree holds no sentence has no practice start button', async ({ page }) => {
+		await gotoWithSeed(page, {
+			chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+			tracks: [
+				{ id: 't1', chapterId: 'ch-1', name: '空のトラック', order: 1, parentId: null },
+				{ id: 't1-1', chapterId: 'ch-1', name: '空の孫', order: 1, parentId: 't1' }
 			],
 			sentences: []
 		});
 
-		await expect(page.getByText('親チャプター')).toBeVisible();
-		await expect(page.getByText('子チャプター')).toBeVisible();
-		await expect(page.getByText('孫チャプター')).toBeVisible();
-
-		// Children are indented deeper than their parent (tree structure)
-		const parentBox = await page.getByText('親チャプター').boundingBox();
-		const childBox = await page.getByText('子チャプター').boundingBox();
-		const grandchildBox = await page.getByText('孫チャプター').boundingBox();
-		expect(childBox!.x).toBeGreaterThan(parentBox!.x);
-		expect(grandchildBox!.x).toBeGreaterThan(childBox!.x);
+		await expect(page.getByTestId('chapter-card').getByTestId('card-start')).toHaveCount(0);
+		await expect(page.getByTestId('track-card').getByTestId('card-start')).toHaveCount(0);
 	});
 
-	test('expand/collapse toggle shows and hides child chapters', async ({ page }) => {
+	test('chapters and tracks are sorted by order ascending within each level', async ({ page }) => {
 		await gotoWithSeed(page, {
-			chapters: [
-				{ id: 'parent-1', name: '親チャプター', parentId: null, order: 1 },
-				{ id: 'child-1', name: '子チャプター', parentId: 'parent-1', order: 1 }
-			],
-			sentences: []
-		});
-
-		// Default: expanded → child visible
-		await expect(page.getByText('子チャプター')).toBeVisible();
-
-		// Collapse → child hidden
-		await page.getByRole('button', { name: '折りたたむ' }).click();
-		await expect(page.getByText('子チャプター')).toBeHidden();
-
-		// Expand again → child visible
-		await page.getByRole('button', { name: '展開する' }).click();
-		await expect(page.getByText('子チャプター')).toBeVisible();
-	});
-
-	test('chapters are sorted by order ascending within each level', async ({ page }) => {
-		await gotoWithSeed(page, {
+			// Flat roots only: sub-chapters are migrated into tracks on load, so a
+			// nested chapter seed can no longer assert chapter-level nesting.
 			chapters: [
 				{ id: 'parent-1', name: '親A', parentId: null, order: 2 },
-				{ id: 'parent-2', name: '親B', parentId: null, order: 1 },
-				{ id: 'child-1', name: '子B', parentId: 'parent-2', order: 2 },
-				{ id: 'child-2', name: '子A', parentId: 'parent-2', order: 1 }
+				{ id: 'parent-2', name: '親B', parentId: null, order: 1 }
+			],
+			// Seeded in reverse `order` on purpose: rendering must sort, not echo.
+			tracks: [
+				{ id: 'tr-b', chapterId: 'parent-2', name: 'トラックB', order: 1, parentId: null },
+				{ id: 'tr-b-1', chapterId: 'parent-2', name: 'トラックB-1', order: 1, parentId: 'tr-b' },
+				{ id: 'tr-a', chapterId: 'parent-2', name: 'トラックA', order: 2, parentId: null },
+				{ id: 'tr-a1', chapterId: 'parent-1', name: '親Aのトラック', order: 1, parentId: null }
 			],
 			sentences: []
 		});
 
-		// Depth-first order: 親B(order 1) → 子A(order 1) → 子B(order 2) → 親A(order 2)
-		const items = page.locator('.chapter-item');
-		await expect(items).toHaveCount(4);
-		const texts = await items.allTextContents();
-		expect(texts[0]).toContain('親B');
-		expect(texts[1]).toContain('子A');
-		expect(texts[2]).toContain('子B');
-		expect(texts[3]).toContain('親A');
+		// Depth-first order: 親B(order 1) → 親A(order 2)
+		const chapters = page.locator('.chapter-item');
+		await expect(chapters).toHaveCount(2);
+		const chapterTexts = await chapters.allTextContents();
+		expect(chapterTexts[0]).toContain('親B');
+		expect(chapterTexts[1]).toContain('親A');
+
+		// Depth-first order: トラックB(order 1) → トラックB-1 (its child) → トラックA(order 2)
+		// → 親Aのトラック (the next chapter's own track).
+		const tracks = page.getByTestId('track-card');
+		await expect(tracks).toHaveCount(4);
+		await expect(tracks.nth(0)).toContainText('トラックB');
+		await expect(tracks.nth(1)).toContainText('トラックB-1');
+		await expect(tracks.nth(2)).toContainText('トラックA');
+		await expect(tracks.nth(3)).toContainText('親Aのトラック');
 	});
 });

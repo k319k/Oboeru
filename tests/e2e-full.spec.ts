@@ -143,7 +143,10 @@ test('full flow: seed → top → practice complete → manage round-trip → to
 
 	const jaCard = page.getByTestId('chapter-card').filter({ hasText: 'はじめの一歩（日本語）' });
 	await jaCard.getByTestId('card-start').click();
-	await page.waitForURL('**/practice?chapter=ch-ja-01');
+	// The top page links to a node, not to a chapter (Task 8); the practice entry
+	// point itself switches to `?node=` in Task 9, so the flow below is blocked
+	// until then.
+	await page.waitForURL('**/practice?node=ch-ja-01');
 
 	// --- PRACTICE: sentence 1 passes (hold → release → transcribe) ---
 	await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');

@@ -6,7 +6,7 @@ import type { Page } from '@playwright/test';
  */
 export async function gotoWithSeed(
 	page: Page,
-	seed?: { chapters?: unknown[]; sentences?: unknown[] }
+	seed?: { chapters?: unknown[]; tracks?: unknown[]; sentences?: unknown[] }
 ): Promise<void> {
 	await page.goto('/');
 	if (seed) {
