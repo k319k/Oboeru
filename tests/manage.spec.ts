@@ -49,6 +49,23 @@ const hierarchySeed = {
 	]
 };
 
+	/**
+ * hierarchySeed with the sentences stored in a different order than the tree:
+ * 応用's sentence comes before 基本-1 / 基本-2's. The stored sentence array is
+ * arbitrary (imports merge by id, and tracks are created at different times),
+ * so a group list that follows it instead of the tree pre-order is wrong even
+ * though hierarchySeed's own sentence order happens to coincide with the tree.
+ */
+const scrambledSentenceOrderSeed = {
+	...hierarchySeed,
+	sentences: [
+		hierarchySeed.sentences[0],
+		hierarchySeed.sentences[3],
+		hierarchySeed.sentences[1],
+		hierarchySeed.sentences[2]
+	]
+};
+
 /** Seed localStorage then navigate to /manage. Waits for chapter rows to render — the $effect loads localStorage during hydration, and clicks before that are lost (handler not yet attached). */
 async function gotoManage(
 	page: Page,
@@ -724,7 +741,8 @@ test.describe('Filters', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Track groups (トラック別グループ化 + トラックCRUD)
+// Track groups (articles tab: トラック別グループ化のみ。トラックの追加・
+// 改名・並び替え・削除は chapters タブが担当する)
 // ---------------------------------------------------------------------------
 
 const tracksSeed = {
@@ -794,49 +812,25 @@ test.describe('Track groups', () => {
 		await expect(page.locator('.track-header')).toContainText('(1文)');
 	});
 
-	test('adds a track and renames it', async ({ page }) => {
+	/**
+	 * A track created in the chapters tab has to reach the 文章 tab as its own
+	 * group, empty ones included. (Renaming is covered by `Track CRUD in the
+	 * tree` — the articles tab no longer mutates tracks.)
+	 */
+	test('a track added in the chapters tab shows up as an empty group', async ({ page }) => {
 		await gotoManage(page, seed);
+
+		const jaRow = page.locator('.chapter-row', { hasText: 'はじめの一歩（日本語）' });
+		await jaRow.getByTestId('add-child-track').click();
+		await page.getByTestId('new-child-track-name').fill('応用編');
+		await page.getByTestId('confirm-add-track').click();
+
 		await page.getByRole('tab', { name: '文章' }).click();
 		await pickOption(page, 'chapter-filter', 'はじめの一歩（日本語）');
-
-		await page.getByTestId('add-track').click();
-		await page.getByTestId('new-track-name').fill('応用編');
-		await page.getByTestId('confirm-add-track').click();
 
 		// New (empty) group appears alongside the shimmed トラック1
 		await expect(page.getByTestId('track-group')).toHaveCount(2);
 		await expect(page.getByTestId('track-name').filter({ hasText: '応用編' })).toBeVisible();
-
-		// Rename via the group header
-		const group = trackGroup(page, '応用編');
-		await group.getByTestId('edit-track').click();
-		await page.getByTestId('edit-track-name').fill('上級編');
-		await page.getByTestId('confirm-edit-track').click();
-
-		await expect(page.getByTestId('track-name').filter({ hasText: '上級編' })).toBeVisible();
-		await expect(page.getByTestId('track-name').filter({ hasText: '応用編' })).toHaveCount(0);
-	});
-
-	test('deleting a track removes its sentences', async ({ page }) => {
-		await gotoManage(page, tracksSeed);
-		await page.getByRole('tab', { name: '文章' }).click();
-		await pickOption(page, 'chapter-filter', 'チャプター1');
-
-		await expect(page.getByTestId('sentence-text')).toHaveCount(2);
-
-		const t1Group = trackGroup(page, '前半');
-		await t1Group.getByTestId('delete-track').click();
-		await page.getByTestId('confirm-delete-track').click();
-
-		await expect(page.getByTestId('track-name').filter({ hasText: '前半' })).toHaveCount(0);
-		await expect(
-			page.getByTestId('sentence-text').filter({ hasText: '前半の文章' })
-		).toHaveCount(0);
-		await expect(page.getByTestId('sentence-text')).toHaveCount(1);
-
-		// Other chapter's content is untouched — switch back to すべて
-		await pickOption(page, 'chapter-filter', 'すべて');
-		await expect(page.getByTestId('sentence-text')).toHaveCount(1);
 	});
 
 	test('sentence form track selector assigns new sentences to the chosen track', async ({
@@ -891,44 +885,31 @@ test.describe('Track groups', () => {
 		await expect(trackGroup(page, '前半').getByTestId('sentence-text')).toHaveCount(0);
 	});
 
-	test('reorders tracks within a chapter, boundary buttons disabled', async ({ page }) => {
-		await gotoManage(page, tracksSeed);
+	test('groups are listed in the tree pre-order', async ({ page }) => {
+		await gotoManage(page, scrambledSentenceOrderSeed);
 		await page.getByRole('tab', { name: '文章' }).click();
-		await pickOption(page, 'chapter-filter', 'チャプター1');
-
-		const t1Group = trackGroup(page, '前半');
-		const t2Group = trackGroup(page, '後半');
-
-		await expect(t1Group.getByTestId('track-order-up')).toBeDisabled();
-		await expect(t1Group.getByTestId('track-order-down')).toBeEnabled();
-		await expect(t2Group.getByTestId('track-order-up')).toBeEnabled();
-		await expect(t2Group.getByTestId('track-order-down')).toBeDisabled();
-
-		// Move 後半 up → order swaps
-		await t2Group.getByTestId('track-order-up').click();
-		const names = page.getByTestId('track-name');
-		await expect(names.nth(0)).toHaveText('後半');
-		await expect(names.nth(1)).toHaveText('前半');
+		await pickOption(page, 'chapter-filter', 'はじめの一歩（日本語）');
+		await expect(page.getByTestId('track-name')).toHaveText(['基本', '基本-1', '基本-2', '応用']);
 	});
 
-	test('add-track form renders exactly once in the all-tracks view', async ({ page }) => {
-		await gotoManage(page, tracksSeed);
+	test('the track selector can pick a nested track and assigns the sentence to it', async ({
+		page
+	}) => {
+		await gotoManage(page, hierarchySeed);
 		await page.getByRole('tab', { name: '文章' }).click();
+		await pickOption(page, 'chapter-filter', 'はじめの一歩（日本語）');
 
-		// すべて view: チャプター1 has two track groups, each offering +
-		await expect(page.getByTestId('add-track')).toHaveCount(2);
-		await page.getByTestId('add-track').first().click();
+		await page.getByTestId('add-sentence').click();
+		await expect(page.getByTestId('sentence-form-track')).toContainText('基本');
+		await page.getByTestId('new-sentence-text').fill('子トラックに入れる。');
+		await pickOption(page, 'sentence-form-track', '基本-1');
+		await page.getByTestId('confirm-add-sentence').click();
 
-		// Inline form is anchored to the clicked group only — single input on screen
-		await expect(page.getByTestId('new-track-name')).toHaveCount(1);
-		await page.getByTestId('new-track-name').fill('第3のトラック');
-		await page.getByTestId('confirm-add-track').click();
-		await expect(page.getByTestId('new-track-name')).toHaveCount(0);
-
-		// Added (empty) track shows up in the chapter-filtered view
-		await pickOption(page, 'chapter-filter', 'チャプター1');
-		await expect(page.getByTestId('track-group')).toHaveCount(3);
-		await expect(page.getByTestId('track-name').filter({ hasText: '第3のトラック' })).toBeVisible();
+		await expect(
+			trackGroup(page, '基本-1')
+				.getByTestId('sentence-text')
+				.filter({ hasText: '子トラックに入れる。' })
+		).toBeVisible();
 	});
 
 	test('moving a sentence to a trackless chapter lands in the auto-created track', async ({

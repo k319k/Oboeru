@@ -131,16 +131,13 @@
 	let newSentenceTrackId = $state('');
 	let sentenceValidationError = $state('');
 
-	// Track form state. The chapters tab owns the tree CRUD (child track add /
-	// rename); the 文章 tab keeps its own group-level add-track form for now.
+	// Track form state. The chapters tab owns every track mutation (add / rename /
+	// reorder / delete); the 文章 tab only reads the tree to list sentences.
 	let editingTrackId = $state<string | null>(null);
 	let editingTrackName = $state('');
 	// Which node the chapters-tab inline "add child track" form is anchored to
 	let addingChildTrackToId = $state<string | null>(null);
 	let addingChildTrackIsChapter = $state(false);
-	// Group-anchor for the 文章 tab's inline add-track form; null = top-level form
-	let addingTrackToChapterId = $state<string | null>(null);
-	let addingTrackToTrackId = $state<string | null>(null);
 	let newTrackName = $state('');
 	let trackValidationError = $state('');
 
@@ -186,10 +183,11 @@
 		return result;
 	});
 
-	/** Sentences grouped by track (getChapterTracks order). Sentences whose
-	   trackId has no track go under one untitled group, last. In the
-	   chapter-filtered view every track of the chapter is shown (empty ones
-	   included) so freshly added tracks are visible immediately. */
+	/** Sentences grouped by track, listed in the chapters tab's tree pre-order.
+	   Sentences whose trackId has no track go under one untitled group, last.
+	   In the chapter-filtered view every track of the chapter is shown (empty
+	   ones included) so tracks created in the chapters tab are visible
+	   immediately. */
 	interface TrackGroup {
 		key: string;
 		track: Track | null;
@@ -223,10 +221,20 @@
 			group.sentences.sort((a, b) => a.order - b.order);
 		}
 		const chapterPos = new Map(flatChapters.map((c, i) => [c.id, i]));
+		// `track.order` alone is only meaningful among siblings, so a child track
+		// can sort after its parent's later siblings. Position every track in the
+		// flattened (pre-order) walk instead: a nested group then always follows
+		// its parent, whatever the stored sentence order is.
+		const trackPos = new Map<string, number>();
+		for (const ch of flatChapters) {
+			for (const t of flattenTrackTree(ch.id, tracks)) {
+				trackPos.set(t.id, trackPos.size);
+			}
+		}
 		const groupKey = (g: TrackGroup): [number, number] => {
 			if (!g.track) return [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
 			const pos = chapterPos.get(g.track.chapterId) ?? Number.MAX_SAFE_INTEGER - 1;
-			return [pos, g.track.order];
+			return [pos, trackPos.get(g.track.id) ?? Number.MAX_SAFE_INTEGER];
 		};
 		return [...groups.values()].sort((a, b) => {
 			const [posA, orderA] = groupKey(a);
@@ -521,6 +529,24 @@
 		return tracks.find((t) => t.id === trackId)?.name ?? '';
 	}
 
+	/**
+	 * Depth of a track inside its chapter: 0 = direct child of the chapter. Used
+	 * to indent the track selectors, which have no tree to hang the nesting on.
+	 * The guard keeps cyclic data (a parentId chain that loops) from spinning.
+	 */
+	function trackDepth(trackId: string): number {
+		let depth = 0;
+		let current = tracks.find((t) => t.id === trackId);
+		const guard = new Set<string>();
+		while (current?.parentId && !guard.has(current.id)) {
+			guard.add(current.id);
+			depth++;
+			const parentId: string | null = current.parentId;
+			current = tracks.find((t) => t.id === parentId);
+		}
+		return depth;
+	}
+
 	function toggleTrackCollapse(key: string) {
 		const newSet = new Set(collapsedTracks);
 		if (newSet.has(key)) {
@@ -529,35 +555,6 @@
 			newSet.add(key);
 		}
 		collapsedTracks = newSet;
-	}
-
-	function startAddTrack(chapterId: string, trackId: string | null = null) {
-		cancelAllEdits();
-		addingTrackToChapterId = chapterId;
-		addingTrackToTrackId = trackId;
-		newTrackName = '';
-		trackValidationError = '';
-	}
-
-	function confirmAddTrack() {
-		if (!addingTrackToChapterId) return;
-		if (!newTrackName.trim()) {
-			trackValidationError = 'トラック名は必須です';
-			return;
-		}
-		addTrack(addingTrackToChapterId, newTrackName);
-		addingTrackToChapterId = null;
-		addingTrackToTrackId = null;
-		newTrackName = '';
-		trackValidationError = '';
-		refreshData();
-	}
-
-	function cancelAddTrack() {
-		addingTrackToChapterId = null;
-		addingTrackToTrackId = null;
-		newTrackName = '';
-		trackValidationError = '';
 	}
 
 	function startEditTrack(track: Track) {
@@ -712,8 +709,6 @@
 		editingSentenceId = null;
 		addingChildTrackToId = null;
 		addingChildTrackIsChapter = false;
-		addingTrackToChapterId = null;
-		addingTrackToTrackId = null;
 		newTrackName = '';
 		editingTrackId = null;
 		editingTrackName = '';
@@ -745,7 +740,6 @@
 		if (addingSentence) newSentenceTextRef?.focus();
 		if (editingSentenceId) editSentenceTextRef?.focus();
 		if (addingChildTrackToId) newTrackNameRef?.focus();
-		if (addingTrackToChapterId) newTrackNameRef?.focus();
 		if (editingTrackId) editTrackNameRef?.focus();
 	});
 
@@ -995,32 +989,6 @@
 		>
 			{label}
 		</span>
-	{/snippet}
-
-	{#snippet addTrackForm()}
-		<div class="mb-2 flex flex-col gap-2 rounded-md border border-border bg-background p-2">
-			<Input
-				type="text"
-				bind:value={newTrackName}
-				bind:ref={newTrackNameRef}
-				placeholder="トラック名"
-				onkeydown={(e) => handleChapterKeydown(e, confirmAddTrack, cancelAddTrack)}
-				data-testid="new-track-name"
-			/>
-			{#if trackValidationError}
-				<div
-					class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
-					role="alert"
-					data-testid="track-validation-error"
-				>
-					{trackValidationError}
-				</div>
-			{/if}
-			<div class="flex gap-2">
-				<Button size="sm" class="h-11" onclick={confirmAddTrack} data-testid="confirm-add-track">追加</Button>
-				<Button size="sm" variant="outline" class="h-11" onclick={cancelAddTrack}>キャンセル</Button>
-			</div>
-		</div>
 	{/snippet}
 
 	<h1 class="mb-1 text-2xl font-bold">管理</h1>
@@ -1472,7 +1440,6 @@
 						type="single"
 						value={filterChapterId}
 						onValueChange={(v: string) => {
-							cancelAddTrack();
 							filterChapterId = v;
 						}}
 					>
@@ -1493,22 +1460,7 @@
 				<Button onclick={startAddSentence} disabled={addingSentence} class="h-11" data-testid="add-sentence">
 					新しい文章
 				</Button>
-				{#if filterChapterId !== 'all'}
-					<Button
-						variant="outline"
-						onclick={() => startAddTrack(filterChapterId)}
-						disabled={addingTrackToChapterId === filterChapterId}
-						class="h-11"
-						data-testid="add-track"
-					>
-						+ トラックを追加
-					</Button>
-				{/if}
 			</div>
-
-			{#if filterChapterId !== 'all' && addingTrackToChapterId === filterChapterId && addingTrackToTrackId === null}
-				{@render addTrackForm()}
-			{/if}
 
 			{#if addingSentence}
 				<div class="sentence-form mb-4 mt-2 flex flex-col gap-2 rounded-md border border-border bg-background p-2">
@@ -1578,8 +1530,10 @@
 									<span data-slot="select-value">{getTrackName(newSentenceTrackId) || 'トラック1'}</span>
 								</Select.Trigger>
 								<Select.Content>
-									{#each getChapterTracks(newSentenceChapterId, tracks) as track (track.id)}
-										<Select.Item value={track.id}>{track.name}</Select.Item>
+									{#each flattenTrackTree(newSentenceChapterId, tracks) as track (track.id)}
+										<Select.Item value={track.id}>
+											{'　'.repeat(trackDepth(track.id))}{track.name}
+										</Select.Item>
 									{:else}
 										<!-- Storage auto-creates トラック1 when the chapter has none -->
 										<Select.Item value="">トラック1</Select.Item>
@@ -1622,114 +1576,20 @@
 						aria-label={group.label}
 					>
 						<div class="track-header flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/50 p-2 transition-colors hover:bg-muted">
-							{#if group.track && editingTrackId === group.track.id}
-								<div class="flex flex-1 flex-col gap-2 rounded-md border border-border bg-background p-2">
-									<Input
-										type="text"
-										bind:value={editingTrackName}
-										bind:ref={editTrackNameRef}
-										onkeydown={(e) =>
-											handleChapterKeydown(e, confirmEditTrack, cancelEditTrack)}
-										data-testid="edit-track-name"
-									/>
-									{#if trackValidationError}
-										<div
-											class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
-											role="alert"
-											data-testid="track-validation-error"
-										>
-											{trackValidationError}
-										</div>
-									{/if}
-									<div class="flex gap-2">
-										<Button size="sm" class="h-11" onclick={confirmEditTrack} data-testid="confirm-edit-track">保存</Button>
-										<Button size="sm" variant="outline" class="h-11" onclick={cancelEditTrack}>キャンセル</Button>
-									</div>
-								</div>
-							{:else}
-								<button
-									type="button"
-									class="flex min-h-11 min-w-0 flex-1 select-none items-center gap-2 rounded-md text-left text-sm font-semibold outline-none transition-colors duration-[var(--motion-press)] focus-visible:ring-3 focus-visible:ring-ring/50"
+							<button
+								type="button"
+								class="flex min-h-11 min-w-0 flex-1 select-none items-center gap-2 rounded-md text-left text-sm font-semibold outline-none transition-colors duration-[var(--motion-press)] focus-visible:ring-3 focus-visible:ring-ring/50"
 								onclick={() => toggleTrackCollapse(group.key)}
 								aria-expanded={!collapsedTracks.has(group.key)}
 								aria-label={`${group.label} を${collapsedTracks.has(group.key) ? '展開' : '折りたたむ'}`}
 							>
-									<span class="text-xs text-muted-foreground" aria-hidden="true">
-										{collapsedTracks.has(group.key) ? '▶' : '▼'}
-									</span>
-									<span class="track-name min-w-0 truncate" data-testid="track-name">{group.label}</span>
-									<span class="text-xs whitespace-nowrap text-muted-foreground">({group.sentences.length}文)</span>
-								</button>
-								{#if group.track}
-									{@const t = group.track}
-									<div class="track-actions flex shrink-0 flex-wrap items-center gap-2">
-										<div class="flex gap-1" role="group" aria-label="トラック並び替え">
-											<Button
-												size="sm"
-												variant="outline"
-												onclick={() => moveTrack(t, -1)}
-												aria-label="上へ移動"
-												data-testid="track-order-up"
-												disabled={!canMoveTrack(t, -1)}
-												class="h-11 min-w-11 sm:h-8 sm:min-w-8"
-											>
-												↑
-											</Button>
-											<Button
-												size="sm"
-												variant="outline"
-												onclick={() => moveTrack(t, 1)}
-												aria-label="下へ移動"
-												data-testid="track-order-down"
-												disabled={!canMoveTrack(t, 1)}
-												class="h-11 min-w-11 sm:h-8 sm:min-w-8"
-											>
-												↓
-											</Button>
-										</div>
-										<Button
-											size="sm"
-											variant="outline"
-											onclick={() => startEditTrack(t)}
-											aria-label="トラック名を編集"
-											data-testid="edit-track"
-											class="h-11 min-w-16 sm:h-8 sm:min-w-14"
-										>
-											編集
-										</Button>
-										{#if filterChapterId === 'all'}
-											<Button
-												size="sm"
-												variant="outline"
-												onclick={() => startAddTrack(t.chapterId, t.id)}
-												aria-label="トラックを追加"
-												data-testid="add-track"
-												class="h-11 min-w-11 sm:h-8 sm:min-w-8"
-											>
-												+
-											</Button>
-										{/if}
-										<Button
-											size="sm"
-											variant="destructive"
-											onclick={() => {
-												deleteTrackTarget = t;
-												deleteTrackDialogOpen = true;
-											}}
-											aria-label="トラックを削除"
-											data-testid="delete-track"
-											class="h-11 min-w-16 sm:h-8 sm:min-w-14"
-										>
-											削除
-										</Button>
-									</div>
-								{/if}
-							{/if}
+								<span class="text-xs text-muted-foreground" aria-hidden="true">
+									{collapsedTracks.has(group.key) ? '▶' : '▼'}
+								</span>
+								<span class="track-name min-w-0 truncate" data-testid="track-name">{group.label}</span>
+								<span class="text-xs whitespace-nowrap text-muted-foreground">({group.sentences.length}文)</span>
+							</button>
 						</div>
-
-					{#if filterChapterId === 'all' && group.track && addingTrackToTrackId === group.track.id}
-						{@render addTrackForm()}
-					{/if}
 
 						{#if !collapsedTracks.has(group.key)}
 							{#each group.sentences as sentence (sentence.id)}
@@ -1801,8 +1661,10 @@
 															<span data-slot="select-value">{getTrackName(editingSentenceTrackId) || 'トラック1'}</span>
 														</Select.Trigger>
 														<Select.Content>
-															{#each getChapterTracks(editingSentenceChapterId, tracks) as track (track.id)}
-																<Select.Item value={track.id}>{track.name}</Select.Item>
+															{#each flattenTrackTree(editingSentenceChapterId, tracks) as track (track.id)}
+																<Select.Item value={track.id}>
+																	{'　'.repeat(trackDepth(track.id))}{track.name}
+																</Select.Item>
 															{:else}
 																<!-- Storage auto-creates トラック1 when the chapter has none -->
 																<Select.Item value="">トラック1</Select.Item>
