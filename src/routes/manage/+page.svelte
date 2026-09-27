@@ -22,8 +22,10 @@
 		updateSentence,
 		deleteSentence,
 		flattenChapterTree,
+		flattenTrackTree,
 		getChapterSentences,
 		getChapterTracks,
+		getNodeDescendantTrackIds,
 		migrateToV3
 	} from '$lib/sentences';
 	import type { Chapter, Sentence, Track } from '$lib/types';
@@ -100,14 +102,13 @@
 	let tracks = $state<Track[]>([]);
 	let importMessage = $state<{ type: 'success' | 'error'; text: string } | null>(null);
 
-	// Chapter tree expanded state
-	let expandedChapters = $state<Set<string>>(new Set());
+	// Tree collapse state (node id keyed, chapter or track). Same convention as
+	// the top page: everything is expanded until the user collapses it.
+	let collapsedNodes = $state<Set<string>>(new Set());
 
 	// Chapter form state
 	let editingChapterId = $state<string | null>(null);
 	let editingChapterName = $state('');
-	let addingChildToId = $state<string | null>(null);
-	let newChildName = $state('');
 	let addingRootChapter = $state(false);
 	let newRootName = $state('');
 	let chapterValidationError = $state('');
@@ -125,11 +126,15 @@
 	let newSentenceTrackId = $state('');
 	let sentenceValidationError = $state('');
 
-	// Track form state
+	// Track form state. The chapters tab owns the tree CRUD (child track add /
+	// rename); the 文章 tab keeps its own group-level add-track form for now.
 	let editingTrackId = $state<string | null>(null);
 	let editingTrackName = $state('');
+	// Which node the chapters-tab inline "add child track" form is anchored to
+	let addingChildTrackToId = $state<string | null>(null);
+	let addingChildTrackIsChapter = $state(false);
+	// Group-anchor for the 文章 tab's inline add-track form; null = top-level form
 	let addingTrackToChapterId = $state<string | null>(null);
-	// Group-anchor for the inline add-track form (すべて view); null = top-level form
 	let addingTrackToTrackId = $state<string | null>(null);
 	let newTrackName = $state('');
 	let trackValidationError = $state('');
@@ -151,7 +156,6 @@
 
 	// Form field refs (for auto-focus when a form opens)
 	let newRootNameRef = $state<HTMLInputElement | null>(null);
-	let newChildNameRef = $state<HTMLInputElement | null>(null);
 	let editChapterNameRef = $state<HTMLInputElement | null>(null);
 	let newSentenceTextRef = $state<HTMLTextAreaElement | null>(null);
 	let editSentenceTextRef = $state<HTMLTextAreaElement | null>(null);
@@ -175,14 +179,6 @@
 		}
 
 		return result;
-	});
-
-	let chapterSentenceCounts = $derived.by(() => {
-		const counts = new Map<string, number>();
-		for (const s of sentences) {
-			counts.set(s.chapterId, (counts.get(s.chapterId) || 0) + 1);
-		}
-		return counts;
 	});
 
 	/** Sentences grouped by track (getChapterTracks order). Sentences whose
@@ -247,6 +243,17 @@
 	let newSentenceOverLimit = $derived(newSentenceText.length > 200);
 	let editingSentenceOverLimit = $derived(editingSentenceText.length > 200);
 
+	/** Deleting a track cascades over its whole subtree, so the confirm dialog
+	    states how many tracks and sentences are actually going away. */
+	let deleteTrackPreview = $derived.by(() => {
+		if (!deleteTrackTarget) return { tracks: 0, sentences: 0 };
+		const scope = getNodeDescendantTrackIds(deleteTrackTarget.id, tracks);
+		return {
+			tracks: scope.size,
+			sentences: sentences.filter((s) => scope.has(s.trackId)).length
+		};
+	});
+
 	// --- Helper functions ---
 	function collectChapterIds(allChapters: Chapter[], chapterId: string): Set<string> {
 		const ids = new Set<string>([chapterId]);
@@ -257,10 +264,6 @@
 			}
 		}
 		return ids;
-	}
-
-	function getChildren(chapterId: string | null): Chapter[] {
-		return flatChapters.filter((c) => c.parentId === chapterId);
 	}
 
 	function getChapterName(chapterId: string): string {
@@ -290,16 +293,6 @@
 	});
 
 	// --- Chapter operations ---
-	function toggleExpand(chapterId: string) {
-		const newSet = new Set(expandedChapters);
-		if (newSet.has(chapterId)) {
-			newSet.delete(chapterId);
-		} else {
-			newSet.add(chapterId);
-		}
-		expandedChapters = newSet;
-	}
-
 	function startAddRootChapter() {
 		cancelAllEdits();
 		addingRootChapter = true;
@@ -322,41 +315,6 @@
 	function cancelAddRootChapter() {
 		addingRootChapter = false;
 		newRootName = '';
-		chapterValidationError = '';
-	}
-
-	function startAddChildChapter(parentId: string) {
-		cancelAllEdits();
-		addingChildToId = parentId;
-		newChildName = '';
-		chapterValidationError = '';
-		// Expand parent
-		const newSet = new Set(expandedChapters);
-		newSet.add(parentId);
-		expandedChapters = newSet;
-	}
-
-	function confirmAddChildChapter() {
-		if (!newChildName.trim()) {
-			chapterValidationError = 'チャプター名は必須です';
-			return;
-		}
-		if (!addingChildToId) return;
-		addChapter(newChildName.trim(), addingChildToId);
-		const parentId = addingChildToId;
-		addingChildToId = null;
-		newChildName = '';
-		chapterValidationError = '';
-		refreshData();
-		// Ensure parent is expanded
-		const newSet = new Set(expandedChapters);
-		newSet.add(parentId);
-		expandedChapters = newSet;
-	}
-
-	function cancelAddChildChapter() {
-		addingChildToId = null;
-		newChildName = '';
 		chapterValidationError = '';
 	}
 
@@ -422,6 +380,97 @@
 		updateChapter(chapter.id, { order: other.order });
 		updateChapter(other.id, { order: chapter.order });
 		refreshData();
+	}
+
+	// --- Tree operations (chapters and tracks share one tree) ---
+
+	/** Direct children of a track; `parentTrackId === null` means "direct children
+	    of the chapter". A track never leaves its own chapter, so the chapter id is
+	    always part of the lookup. */
+	function getTrackChildren(chapterId: string, parentTrackId: string | null): Track[] {
+		return tracks
+			.filter((t) => t.chapterId === chapterId && (t.parentId ?? null) === parentTrackId)
+			.sort((a, b) => a.order - b.order);
+	}
+
+	function findNode(id: string): Chapter | Track | null {
+		return tracks.find((t) => t.id === id) ?? chapters.find((c) => c.id === id) ?? null;
+	}
+
+	/** The chapter a node belongs to: a track carries it, a chapter *is* it. */
+	function nodeChapterId(node: Chapter | Track): string {
+		return 'chapterId' in node ? node.chapterId : node.id;
+	}
+
+	function isExpanded(id: string): boolean {
+		return !collapsedNodes.has(id);
+	}
+
+	function toggleExpand(id: string) {
+		const newSet = new Set(collapsedNodes);
+		if (newSet.has(id)) {
+			newSet.delete(id);
+		} else {
+			newSet.add(id);
+		}
+		collapsedNodes = newSet;
+	}
+
+	function expandNode(id: string) {
+		const newSet = new Set(collapsedNodes);
+		newSet.delete(id);
+		collapsedNodes = newSet;
+	}
+
+	/** Sentences of one track only — descendants are counted on their own row. */
+	function getOwnSentenceCount(trackId: string): number {
+		return sentences.filter((s) => s.trackId === trackId).length;
+	}
+
+	/** A chapter row aggregates its whole track subtree. */
+	function getChapterSentenceTotal(chapterId: string): number {
+		return flattenTrackTree(chapterId, tracks).reduce(
+			(sum, t) => sum + getOwnSentenceCount(t.id),
+			0
+		);
+	}
+
+	function startAddChildTrack(node: Chapter | Track): void {
+		cancelAllEdits();
+		addingChildTrackToId = node.id;
+		addingChildTrackIsChapter = !('chapterId' in node);
+		newTrackName = '';
+		trackValidationError = '';
+		// The new child must be visible right after it is created
+		expandNode(node.id);
+	}
+
+	function confirmAddChildTrack(): void {
+		if (!addingChildTrackToId) return;
+		if (!newTrackName.trim()) {
+			trackValidationError = 'トラック名は必須です';
+			return;
+		}
+		const node = findNode(addingChildTrackToId);
+		if (!node) return;
+		addTrack(
+			nodeChapterId(node),
+			newTrackName.trim(),
+			addingChildTrackIsChapter ? null : addingChildTrackToId
+		);
+		addingChildTrackToId = null;
+		addingChildTrackIsChapter = false;
+		newTrackName = '';
+		trackValidationError = '';
+		refreshData();
+		expandNode(node.id);
+	}
+
+	function cancelAddChildTrack(): void {
+		addingChildTrackToId = null;
+		addingChildTrackIsChapter = false;
+		newTrackName = '';
+		trackValidationError = '';
 	}
 
 	// --- Track operations ---
@@ -502,16 +551,14 @@
 		refreshData();
 	}
 
-	// --- Track reorder (swap order with adjacent sibling in the chapter) ---
+	// --- Track reorder (swap order with the adjacent sibling under the same parent) ---
 
-	function getTrackSiblings(trackId: string): Track[] {
-		const track = tracks.find((t) => t.id === trackId);
-		if (!track) return [];
-		return getChapterTracks(track.chapterId, tracks);
+	function getTrackSiblings(track: Track): Track[] {
+		return getTrackChildren(track.chapterId, track.parentId ?? null);
 	}
 
 	function canMoveTrack(track: Track, direction: -1 | 1): boolean {
-		const siblings = getTrackSiblings(track.id);
+		const siblings = getTrackSiblings(track);
 		const idx = siblings.findIndex((t) => t.id === track.id);
 		if (idx === -1) return false;
 		const target = idx + direction;
@@ -519,12 +566,12 @@
 	}
 
 	function moveTrack(track: Track, direction: -1 | 1): void {
-		const siblings = getTrackSiblings(track.id);
+		const siblings = getTrackSiblings(track);
 		const idx = siblings.findIndex((t) => t.id === track.id);
 		const target = idx + direction;
 		if (idx === -1 || target < 0 || target >= siblings.length) return;
 		const other = siblings[target];
-		// Swap order values so the groups re-sort correctly
+		// Swap order values so the tree re-sorts correctly
 		updateTrack(track.id, { order: other.order });
 		updateTrack(other.id, { order: track.order });
 		refreshData();
@@ -617,10 +664,11 @@
 
 	function cancelAllEdits() {
 		editingChapterId = null;
-		addingChildToId = null;
 		addingRootChapter = false;
 		addingSentence = false;
 		editingSentenceId = null;
+		addingChildTrackToId = null;
+		addingChildTrackIsChapter = false;
 		addingTrackToChapterId = null;
 		addingTrackToTrackId = null;
 		newTrackName = '';
@@ -650,10 +698,10 @@
 	// Auto-focus the first field when a form opens
 	$effect(() => {
 		if (addingRootChapter) newRootNameRef?.focus();
-		if (addingChildToId) newChildNameRef?.focus();
 		if (editingChapterId) editChapterNameRef?.focus();
 		if (addingSentence) newSentenceTextRef?.focus();
 		if (editingSentenceId) editSentenceTextRef?.focus();
+		if (addingChildTrackToId) newTrackNameRef?.focus();
 		if (addingTrackToChapterId) newTrackNameRef?.focus();
 		if (editingTrackId) editTrackNameRef?.focus();
 	});
@@ -1005,163 +1053,297 @@
 				</div>
 			{/if}
 
-			{#snippet chapterNode(chapter: Chapter, depth: number)}
+			{#snippet nodeRow(opts: {
+				// Exactly one of chapter / track is non-null. `opts.chapter` is the
+				// discriminant, so the branch narrows it to a real Chapter / Track —
+				// no casts needed, and the consts below keep the narrowing inside the
+				// click handlers.
+				chapter: Chapter | null;
+				track: Track | null;
+				id: string;
+				name: string;
+				depth: number;
+				hasChildren: boolean;
+				count: number;
+			})}
 				<div
-					class="tree-node mb-1"
+					class="{opts.chapter ? 'chapter-row' : 'track-row'} tree-node mb-1"
 					role="treeitem"
 					aria-selected="false"
-					style:margin-left={`${depth * 1.5}rem`}
-					aria-expanded={expandedChapters.has(chapter.id)}
+					style:margin-left={`${opts.depth * 1.5}rem`}
+					data-testid={opts.chapter ? undefined : 'tree-track-row'}
 				>
-					<div class="chapter-row flex flex-wrap items-center gap-2 rounded-md border border-border bg-background p-2">
+					<div class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background p-2">
 						<Button
 							variant="ghost"
 							size="icon-xs"
 							class="expand-toggle h-11 w-11 text-xs text-muted-foreground"
-							onclick={() => toggleExpand(chapter.id)}
-							aria-label={expandedChapters.has(chapter.id) ? '折りたたむ' : '展開する'}
+							onclick={() => toggleExpand(opts.id)}
+							aria-label={isExpanded(opts.id) ? '折りたたむ' : '展開する'}
+							aria-expanded={isExpanded(opts.id)}
 						>
-							{#if getChildren(chapter.id).length > 0}
-								{expandedChapters.has(chapter.id) ? '▼' : '▶'}
+							{#if opts.hasChildren}
+								{isExpanded(opts.id) ? '▼' : '▶'}
 							{:else}
 								<span class="inline-block w-4"></span>
 							{/if}
 						</Button>
 
-						{#if editingChapterId === chapter.id}
-							<div class="flex flex-1 flex-col gap-2 rounded-md border border-border bg-muted/50 p-2">
-								<Input
-									type="text"
-									bind:value={editingChapterName}
-									bind:ref={editChapterNameRef}
-									onkeydown={(e) =>
-										handleChapterKeydown(e, confirmEditChapter, cancelEditChapter)}
-									data-testid="edit-chapter-name"
-								/>
-								{#if chapterValidationError}
-									<div
-										class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
-										role="alert"
-										data-testid="chapter-validation-error"
-									>
-										{chapterValidationError}
+						{#if opts.chapter}
+							{@const chapter = opts.chapter}
+							{#if editingChapterId === opts.id}
+								<div class="flex flex-1 flex-col gap-2 rounded-md border border-border bg-muted/50 p-2">
+									<Input
+										type="text"
+										bind:value={editingChapterName}
+										bind:ref={editChapterNameRef}
+										onkeydown={(e) =>
+											handleChapterKeydown(e, confirmEditChapter, cancelEditChapter)}
+										data-testid="edit-chapter-name"
+									/>
+									{#if chapterValidationError}
+										<div
+											class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
+											role="alert"
+											data-testid="chapter-validation-error"
+										>
+											{chapterValidationError}
+										</div>
+									{/if}
+									<div class="flex gap-2">
+										<Button size="sm" class="h-11" onclick={confirmEditChapter} data-testid="confirm-edit-chapter">保存</Button>
+										<Button size="sm" variant="outline" class="h-11" onclick={cancelEditChapter}>キャンセル</Button>
 									</div>
-								{/if}
-								<div class="flex gap-2">
-									<Button size="sm" class="h-11" onclick={confirmEditChapter} data-testid="confirm-edit-chapter">保存</Button>
-									<Button size="sm" variant="outline" class="h-11" onclick={cancelEditChapter}>キャンセル</Button>
 								</div>
-							</div>
-						{:else}
-							{#each chapterLanguages(chapter.id) as lang (lang)}
-								{@render languageBadge(lang, lang.toUpperCase())}
-							{/each}
-							<span class="chapter-name min-w-0 flex-1 truncate font-medium" data-testid="chapter-name">{chapter.name}</span>
-							<span class="sentence-count text-xs whitespace-nowrap text-muted-foreground">
-								({chapterSentenceCounts.get(chapter.id) || 0}文)
-							</span>
-							<div class="chapter-actions flex shrink-0 flex-wrap items-center gap-2">
-								<Button
-									size="sm"
-									variant="outline"
-									onclick={() => startAddChildChapter(chapter.id)}
-									aria-label="子チャプターを追加"
-									data-testid="add-child-chapter"
-									class="h-11 min-w-16 sm:h-8 sm:min-w-14"
-								>
-									+ 子
-								</Button>
-								<div class="flex gap-1" role="group" aria-label="並び替え">
+							{:else}
+								{#each chapterLanguages(chapter.id) as lang (lang)}
+									{@render languageBadge(lang, lang.toUpperCase())}
+								{/each}
+								<span class="chapter-name min-w-0 flex-1 truncate font-medium" data-testid="chapter-name">{chapter.name}</span>
+								<span class="sentence-count text-xs whitespace-nowrap text-muted-foreground">
+									({getChapterSentenceTotal(chapter.id)}文)
+								</span>
+								<div class="chapter-actions flex shrink-0 flex-wrap items-center gap-2">
 									<Button
 										size="sm"
 										variant="outline"
-										onclick={() => moveChapter(chapter, -1)}
-										aria-label="上へ移動"
-										data-testid="move-chapter-up"
-										disabled={!canMove(chapter, -1)}
-										class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+										onclick={() => startAddChildTrack(chapter)}
+										aria-label="トラックを追加"
+										data-testid="add-child-track"
+										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
 									>
-										↑
+										+ トラック
 									</Button>
+									<div class="flex gap-1" role="group" aria-label="並び替え">
+										<Button
+											size="sm"
+											variant="outline"
+											onclick={() => moveChapter(chapter, -1)}
+											aria-label="上へ移動"
+											data-testid="move-chapter-up"
+											disabled={!canMove(chapter, -1)}
+											class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+										>
+											↑
+										</Button>
+										<Button
+											size="sm"
+											variant="outline"
+											onclick={() => moveChapter(chapter, 1)}
+											aria-label="下へ移動"
+											data-testid="move-chapter-down"
+											disabled={!canMove(chapter, 1)}
+											class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+										>
+											↓
+										</Button>
+									</div>
 									<Button
 										size="sm"
 										variant="outline"
-										onclick={() => moveChapter(chapter, 1)}
-										aria-label="下へ移動"
-										data-testid="move-chapter-down"
-										disabled={!canMove(chapter, 1)}
-										class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+										onclick={() => startEditChapter(chapter)}
+										aria-label="名前を編集"
+										data-testid="edit-chapter"
+										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
 									>
-										↓
+										編集
+									</Button>
+									<Button
+										size="sm"
+										variant="destructive"
+										onclick={() => {
+											deleteChapterTarget = chapter;
+											deleteChapterDialogOpen = true;
+										}}
+										aria-label="削除"
+										data-testid="delete-chapter"
+										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
+									>
+										削除
 									</Button>
 								</div>
-								<Button
-									size="sm"
-									variant="outline"
-									onclick={() => startEditChapter(chapter)}
-									aria-label="名前を編集"
-									data-testid="edit-chapter"
-									class="h-11 min-w-16 sm:h-8 sm:min-w-14"
-								>
-									編集
-								</Button>
-								<Button
-									size="sm"
-									variant="destructive"
-									onclick={() => {
-										deleteChapterTarget = chapter;
-										deleteChapterDialogOpen = true;
-									}}
-									aria-label="削除"
-									data-testid="delete-chapter"
-									class="h-11 min-w-16 sm:h-8 sm:min-w-14"
-								>
-									削除
-								</Button>
-							</div>
+							{/if}
+						{:else if opts.track}
+							{@const track = opts.track}
+							{#if editingTrackId === opts.id}
+								<div class="flex flex-1 flex-col gap-2 rounded-md border border-border bg-muted/50 p-2">
+									<Input
+										type="text"
+										bind:value={editingTrackName}
+										bind:ref={editTrackNameRef}
+										onkeydown={(e) =>
+											handleChapterKeydown(e, confirmEditTrack, cancelEditTrack)}
+										data-testid="tree-edit-track-name"
+									/>
+									{#if trackValidationError}
+										<div
+											class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
+											role="alert"
+											data-testid="tree-track-validation-error"
+										>
+											{trackValidationError}
+										</div>
+									{/if}
+									<div class="flex gap-2">
+										<Button size="sm" class="h-11" onclick={confirmEditTrack} data-testid="tree-confirm-edit-track">保存</Button>
+										<Button size="sm" variant="outline" class="h-11" onclick={cancelEditTrack}>キャンセル</Button>
+									</div>
+								</div>
+							{:else}
+								<span class="min-w-0 flex-1 truncate font-medium" data-testid="tree-track-name">{track.name}</span>
+								<span class="sentence-count text-xs whitespace-nowrap text-muted-foreground">
+									({getOwnSentenceCount(track.id)}文)
+								</span>
+								<div class="track-actions flex shrink-0 flex-wrap items-center gap-2">
+									<Button
+										size="sm"
+										variant="outline"
+										onclick={() => startAddChildTrack(track)}
+										aria-label="子トラックを追加"
+										data-testid="add-child-track"
+										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
+									>
+										+ 子
+									</Button>
+									<div class="flex gap-1" role="group" aria-label="トラック並び替え">
+										<Button
+											size="sm"
+											variant="outline"
+											onclick={() => moveTrack(track, -1)}
+											aria-label="上へ移動"
+											data-testid="tree-track-up"
+											disabled={!canMoveTrack(track, -1)}
+											class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+										>
+											↑
+										</Button>
+										<Button
+											size="sm"
+											variant="outline"
+											onclick={() => moveTrack(track, 1)}
+											aria-label="下へ移動"
+											data-testid="tree-track-down"
+											disabled={!canMoveTrack(track, 1)}
+											class="h-11 min-w-11 sm:h-8 sm:min-w-8"
+										>
+											↓
+										</Button>
+									</div>
+									<Button
+										size="sm"
+										variant="outline"
+										onclick={() => startEditTrack(track)}
+										aria-label="トラック名を編集"
+										data-testid="tree-track-edit"
+										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
+									>
+										編集
+									</Button>
+									<Button
+										size="sm"
+										variant="destructive"
+										onclick={() => {
+											deleteTrackTarget = track;
+											deleteTrackDialogOpen = true;
+										}}
+										aria-label="トラックを削除"
+										data-testid="tree-track-delete"
+										class="h-11 min-w-16 sm:h-8 sm:min-w-14"
+									>
+										削除
+									</Button>
+								</div>
+							{/if}
 						{/if}
 					</div>
 
-					{#if addingChildToId === chapter.id}
+					{#if addingChildTrackToId === opts.id}
 						<div class="child-form ml-10 mt-1 flex flex-col gap-2 rounded-md border border-border bg-muted/50 p-2">
 							<Input
 								type="text"
-								bind:value={newChildName}
-								bind:ref={newChildNameRef}
-								placeholder="子チャプター名"
-								onkeydown={(e) =>
-									handleChapterKeydown(e, confirmAddChildChapter, cancelAddChildChapter)}
-								data-testid="new-child-chapter-name"
+								bind:value={newTrackName}
+								bind:ref={newTrackNameRef}
+								placeholder="トラック名"
+								onkeydown={(e) => handleChapterKeydown(e, confirmAddChildTrack, cancelAddChildTrack)}
+								data-testid="new-child-track-name"
 							/>
-							{#if chapterValidationError}
+							{#if trackValidationError}
 								<div
 									class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
 									role="alert"
-									data-testid="chapter-validation-error"
+									data-testid="track-validation-error"
 								>
-									{chapterValidationError}
+									{trackValidationError}
 								</div>
 							{/if}
 							<div class="flex gap-2">
-								<Button size="sm" class="h-11" onclick={confirmAddChildChapter} data-testid="confirm-add-child">追加</Button>
-								<Button size="sm" variant="outline" class="h-11" onclick={cancelAddChildChapter}>キャンセル</Button>
+								<Button size="sm" class="h-11" onclick={confirmAddChildTrack} data-testid="confirm-add-track">追加</Button>
+								<Button size="sm" variant="outline" class="h-11" onclick={cancelAddChildTrack}>キャンセル</Button>
 							</div>
-						</div>
-					{/if}
-
-					{#if expandedChapters.has(chapter.id)}
-						<div class="children mt-1" role="group">
-							{#each getChildren(chapter.id) as child (child.id)}
-								{@render chapterNode(child, depth + 1)}
-							{/each}
 						</div>
 					{/if}
 				</div>
 			{/snippet}
 
-			<div class="chapter-tree mt-2" role="tree" aria-label="チャプターツリー">
-				{#each getChildren(null) as chapter (chapter.id)}
-					{@render chapterNode(chapter, 0)}
+			<!-- One row per node only: the recursion lives in trackBranch, so there is
+			     no hard-coded depth limit. -->
+			{#snippet trackBranch(chapterId: string, parentTrackId: string | null, depth: number)}
+				{#each getTrackChildren(chapterId, parentTrackId) as track (track.id)}
+					{@render nodeRow({
+						chapter: null,
+						track,
+						id: track.id,
+						name: track.name,
+						depth,
+						hasChildren: getTrackChildren(track.chapterId, track.id).length > 0,
+						count: getOwnSentenceCount(track.id)
+					})}
+					{#if isExpanded(track.id)}
+						{@render trackBranch(track.chapterId, track.id, depth + 1)}
+					{/if}
+				{/each}
+			{/snippet}
+
+			{#snippet chapterBranch(chapter: Chapter, depth: number)}
+				{@render nodeRow({
+					chapter,
+					track: null,
+					id: chapter.id,
+					name: chapter.name,
+					depth,
+					hasChildren: getTrackChildren(chapter.id, null).length > 0,
+					count: getChapterSentenceTotal(chapter.id)
+				})}
+				{#if isExpanded(chapter.id)}
+					<div class="children" role="group">
+						{@render trackBranch(chapter.id, null, depth + 1)}
+					</div>
+				{/if}
+			{/snippet}
+
+			<div class="chapter-tree mt-2" role="tree" aria-label="チャプターとトラックのツリー">
+				{#each flatChapters.filter((c) => (c.parentId ?? null) === null) as chapter (chapter.id)}
+					{@render chapterBranch(chapter, 0)}
 				{/each}
 			</div>
 		</section>
@@ -1838,8 +2020,8 @@
 		<AlertDialog.Content>
 			<AlertDialog.Header>
 				<AlertDialog.Title>トラックを削除</AlertDialog.Title>
-				<AlertDialog.Description>
-					このトラックと含まれる文章を削除しますか？<br />「{deleteTrackTarget?.name}」
+				<AlertDialog.Description data-testid="delete-track-preview">
+					{deleteTrackPreview.tracks}件のトラックと {deleteTrackPreview.sentences}件の文章を削除しますか？<br />「{deleteTrackTarget?.name}」
 				</AlertDialog.Description>
 			</AlertDialog.Header>
 			<AlertDialog.Footer>

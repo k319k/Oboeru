@@ -29,10 +29,30 @@ const nestedSeed = {
 	]
 };
 
+/**
+ * A chapter with a two-level track tree plus a sibling track. Used by the
+ * chapters-tab tree tests (expand/collapse, sibling reordering, cascade).
+ */
+const hierarchySeed = {
+	chapters: [{ id: 'ch-ja-01', name: 'はじめの一歩（日本語）', parentId: null, order: 1 }],
+	tracks: [
+		{ id: 't1', chapterId: 'ch-ja-01', name: '基本', order: 1, parentId: null },
+		{ id: 't1-1', chapterId: 'ch-ja-01', name: '基本-1', order: 1, parentId: 't1' },
+		{ id: 't1-2', chapterId: 'ch-ja-01', name: '基本-2', order: 2, parentId: 't1' },
+		{ id: 't2', chapterId: 'ch-ja-01', name: '応用', order: 2, parentId: null }
+	],
+	sentences: [
+		{ id: 's1', chapterId: 'ch-ja-01', trackId: 't1', text: '基本の文章', language: 'ja', order: 1 },
+		{ id: 's2', chapterId: 'ch-ja-01', trackId: 't1-1', text: '基本1の文章', language: 'ja', order: 1 },
+		{ id: 's3', chapterId: 'ch-ja-01', trackId: 't1-2', text: '基本2の文章', language: 'ja', order: 1 },
+		{ id: 's4', chapterId: 'ch-ja-01', trackId: 't2', text: '応用の文章', language: 'ja', order: 1 }
+	]
+};
+
 /** Seed localStorage then navigate to /manage. Waits for chapter rows to render — the $effect loads localStorage during hydration, and clicks before that are lost (handler not yet attached). */
 async function gotoManage(
 	page: Page,
-	data?: { chapters?: unknown[]; sentences?: unknown[] }
+	data?: { chapters?: unknown[]; tracks?: unknown[]; sentences?: unknown[] }
 ): Promise<void> {
 	await gotoWithSeed(page, data);
 	await page.goto('/manage');
@@ -48,6 +68,19 @@ async function gotoManage(
 async function pickOption(page: Page, testId: string, optionLabel: string): Promise<void> {
 	await page.getByTestId(testId).click();
 	await page.getByRole('option', { name: optionLabel }).click();
+}
+
+/**
+ * A chapters-tab track row located by its exact name. The row also renders the
+ * count and the action labels, so `filter({ hasText: /^name$/ })` on the row
+ * itself never matches — go through the name span and walk up to the row.
+ * (Substring matching would also be ambiguous: 基本 / 基本-1 / 基本-2.)
+ */
+function trackRow(page: Page, name: string) {
+	return page
+		.getByTestId('tree-track-name')
+		.filter({ hasText: new RegExp(`^${name}$`) })
+		.locator('xpath=ancestor::*[@data-testid="tree-track-row"][1]');
 }
 
 // ---------------------------------------------------------------------------
@@ -184,58 +217,58 @@ test.describe('Chapter CRUD', () => {
 		expect(await page.getByTestId('chapter-name').count()).toBe(initialCount);
 	});
 
-	test('rejects empty child chapter name with inline error', async ({ page }) => {
+	test('rejects empty child track name with inline error and keeps store intact', async ({
+		page
+	}) => {
 		await gotoManage(page, seed);
+		const before = await page.evaluate((key) => localStorage.getItem(key), 'oboeru:v1');
 
 		const jaRow = page.locator('.chapter-row', { hasText: 'はじめの一歩（日本語）' });
-		await jaRow.getByTestId('add-child-chapter').click();
-		await page.getByTestId('new-child-chapter-name').fill('   ');
-		await page.getByTestId('confirm-add-child').click();
+		await jaRow.getByTestId('add-child-track').click();
+		await page.getByTestId('confirm-add-track').click();
+		await expect(page.getByTestId('track-validation-error')).toBeVisible();
 
-		await expect(page.getByTestId('chapter-validation-error')).toBeVisible();
-		await expect(page.getByTestId('chapter-validation-error')).toContainText('必須');
+		const after = await page.evaluate((key) => localStorage.getItem(key), 'oboeru:v1');
+		expect(after).toBe(before);
 	});
 });
 
 // ---------------------------------------------------------------------------
-// Chapter nesting (unlimited depth, recursive rendering)
+// Track nesting (章 + トラックが 1 本の木, recursive rendering)
 // ---------------------------------------------------------------------------
 
-test.describe('Chapter nesting', () => {
-	test('adds child and grandchild, renders with increasing indentation', async ({
+test.describe('Track nesting', () => {
+	test('adds a child track to a track, rendering with increasing indentation', async ({
 		page
 	}) => {
 		await gotoManage(page, seed);
 
-		// Add child to ch-ja-01
 		const jaRow = page.locator('.chapter-row', { hasText: 'はじめの一歩（日本語）' });
-		await jaRow.getByTestId('add-child-chapter').click();
-		await page.getByTestId('new-child-chapter-name').fill('子チャプター');
-		await page.getByTestId('confirm-add-child').click();
+		await jaRow.getByTestId('add-child-track').click();
+		await page.getByTestId('new-child-track-name').fill('子トラック');
+		await page.getByTestId('confirm-add-track').click();
 		await expect(
-			page.getByTestId('chapter-name').filter({ hasText: '子チャプター' })
+			page.getByTestId('tree-track-name').filter({ hasText: '子トラック' })
 		).toBeVisible();
 
-		// Add grandchild to the child
-		const childRow = page.locator('.chapter-row', { hasText: '子チャプター' });
-		await childRow.getByTestId('add-child-chapter').click();
-		await page.getByTestId('new-child-chapter-name').fill('孫チャプター');
-		await page.getByTestId('confirm-add-child').click();
+		await trackRow(page, '子トラック').getByTestId('add-child-track').click();
+		await page.getByTestId('new-child-track-name').fill('孫トラック');
+		await page.getByTestId('confirm-add-track').click();
 		await expect(
-			page.getByTestId('chapter-name').filter({ hasText: '孫チャプター' })
+			page.getByTestId('tree-track-name').filter({ hasText: '孫トラック' })
 		).toBeVisible();
 
-		// Depth assertion: grandchild node is indented deeper than child node
 		const childNode = page
-			.getByTestId('chapter-name')
-			.filter({ hasText: '子チャプター' })
+			.getByTestId('tree-track-name')
+			.filter({ hasText: '子トラック' })
 			.locator('xpath=ancestor::div[contains(@class,"tree-node")][1]');
 		const grandchildNode = page
-			.getByTestId('chapter-name')
-			.filter({ hasText: '孫チャプター' })
+			.getByTestId('tree-track-name')
+			.filter({ hasText: '孫トラック' })
 			.locator('xpath=ancestor::div[contains(@class,"tree-node")][1]');
-
-		const childMargin = parseFloat(await childNode.evaluate((el) => getComputedStyle(el).marginLeft));
+		const childMargin = parseFloat(
+			await childNode.evaluate((el) => getComputedStyle(el).marginLeft)
+		);
 		const grandchildMargin = parseFloat(
 			await grandchildNode.evaluate((el) => getComputedStyle(el).marginLeft)
 		);
@@ -243,36 +276,67 @@ test.describe('Chapter nesting', () => {
 		expect(childMargin).toBeGreaterThan(0);
 	});
 
-	test('collapses and expands nested children', async ({ page }) => {
-		await gotoManage(page, nestedSeed);
+	test('collapses and expands nested tracks', async ({ page }) => {
+		await gotoManage(page, hierarchySeed);
+		// Nodes default to expanded: the chapter and 基本 are both open.
+		await expect(page.getByTestId('tree-track-name')).toHaveCount(4);
 
-		// Parent is collapsed by default → child hidden
-		await expect(
-			page.getByTestId('chapter-name').filter({ hasText: '子チャプター' })
-		).toHaveCount(0);
+		const chapterRow = page.locator('.chapter-row', { hasText: 'はじめの一歩（日本語）' });
+		await chapterRow.locator('.expand-toggle').click();
+		await expect(page.getByTestId('tree-track-name')).toHaveCount(0);
 
-		// Expand parent
-		const parentRow = page.locator('.chapter-row', { hasText: '親チャプター' });
-		await parentRow.locator('.expand-toggle').click();
-		await expect(
-			page.getByTestId('chapter-name').filter({ hasText: '子チャプター' })
-		).toBeVisible();
+		await chapterRow.locator('.expand-toggle').click();
+		await expect(page.getByTestId('tree-track-name')).toHaveCount(4);
 
-		// Expand child → grandchild visible
-		const childRow = page.locator('.chapter-row', { hasText: '子チャプター' });
-		await childRow.locator('.expand-toggle').click();
-		await expect(
-			page.getByTestId('chapter-name').filter({ hasText: '孫チャプター' })
-		).toBeVisible();
+		await trackRow(page, '基本').locator('.expand-toggle').click();
+		await expect(page.getByTestId('tree-track-name')).toHaveCount(2);
+	});
+});
 
-		// Collapse parent → all descendants hidden
-		await parentRow.locator('.expand-toggle').click();
-		await expect(
-			page.getByTestId('chapter-name').filter({ hasText: '子チャプター' })
-		).toHaveCount(0);
-		await expect(
-			page.getByTestId('chapter-name').filter({ hasText: '孫チャプター' })
-		).toHaveCount(0);
+test.describe('Track CRUD in the tree', () => {
+	test('reorders tracks within the same parent only', async ({ page }) => {
+		await gotoManage(page, hierarchySeed);
+
+		const t1 = trackRow(page, '基本');
+		const t2 = trackRow(page, '応用');
+
+		await expect(t1.getByTestId('tree-track-up')).toBeDisabled();
+		await expect(t1.getByTestId('tree-track-down')).toBeEnabled();
+		await expect(t2.getByTestId('tree-track-down')).toBeDisabled();
+		// A lone child has no siblings to swap with
+		await expect(trackRow(page, '基本-1').getByTestId('tree-track-up')).toBeDisabled();
+
+		await t2.getByTestId('tree-track-up').click();
+		await expect(page.getByTestId('tree-track-row').nth(0)).toContainText('応用');
+	});
+
+	test('renames a track from its row', async ({ page }) => {
+		await gotoManage(page, hierarchySeed);
+		await trackRow(page, '応用').getByTestId('tree-track-edit').click();
+		await page.getByTestId('tree-edit-track-name').fill('上級');
+		await page.getByTestId('tree-confirm-edit-track').click();
+		await expect(page.getByTestId('tree-track-name').filter({ hasText: '上級' })).toBeVisible();
+	});
+
+	test('rejects an empty child track name', async ({ page }) => {
+		await gotoManage(page, hierarchySeed);
+		await trackRow(page, '応用').getByTestId('add-child-track').click();
+		await page.getByTestId('confirm-add-track').click();
+		await expect(page.getByTestId('track-validation-error')).toBeVisible();
+	});
+
+	test('deleting a track removes its descendant tracks and sentences', async ({ page }) => {
+		await gotoManage(page, hierarchySeed);
+		await trackRow(page, '基本').getByTestId('tree-track-delete').click();
+		// 基本 + 基本-1 + 基本-2
+		await expect(page.getByTestId('delete-track-preview')).toContainText('3');
+		await page.getByTestId('confirm-delete-track').click();
+
+		await expect(page.getByTestId('tree-track-name')).toHaveCount(1);
+		await expect(page.getByTestId('tree-track-name').filter({ hasText: '応用' })).toBeVisible();
+
+		await page.getByRole('tab', { name: '文章' }).click();
+		await expect(page.getByTestId('sentence-text')).toHaveCount(1);
 	});
 });
 
@@ -303,11 +367,10 @@ test.describe('Chapter delete with descendants', () => {
 	test('dismissing confirm keeps everything unchanged', async ({ page }) => {
 		await gotoManage(page, nestedSeed);
 
-		// Expand parent and child so all nested chapters are rendered
+		// 子/孫 chapters became tracks of 親チャプター (the shim also keeps the
+		// per-chapter トラック1, so the chapter owns 5 track rows in total).
 		const parentRow = page.locator('.chapter-row', { hasText: '親チャプター' });
-		await parentRow.locator('.expand-toggle').click();
-		const childRow = page.locator('.chapter-row', { hasText: '子チャプター' });
-		await childRow.locator('.expand-toggle').click();
+		await expect(page.getByTestId('tree-track-name')).toHaveCount(5);
 
 		await parentRow.getByTestId('delete-chapter').click();
 		await page.getByTestId('cancel-delete-chapter').click();
@@ -316,11 +379,12 @@ test.describe('Chapter delete with descendants', () => {
 		await expect(
 			page.getByTestId('chapter-name').filter({ hasText: '親チャプター' })
 		).toBeVisible();
+		await expect(page.getByTestId('tree-track-name')).toHaveCount(5);
 		await expect(
-			page.getByTestId('chapter-name').filter({ hasText: '子チャプター' })
+			page.getByTestId('tree-track-name').filter({ hasText: '子チャプター' })
 		).toBeVisible();
 		await expect(
-			page.getByTestId('chapter-name').filter({ hasText: '孫チャプター' })
+			page.getByTestId('tree-track-name').filter({ hasText: '孫チャプター' })
 		).toBeVisible();
 
 		// Sentences live in the 文章 tab.
