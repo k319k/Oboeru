@@ -61,16 +61,45 @@ function defaultTrackFor(ch: Chapter): Track {
 
 /**
  * Normalise stored / imported data to the track-hierarchy schema: sub-chapters
- * become tracks of their nearest ancestor chapter, every chapter becomes a root
- * (parentId null) and every track gets a parentId. Idempotent — running it on
- * its own output changes nothing.
+ * become tracks of their nearest ancestor chapter (their own tracks move along,
+ * so the sentence grouping survives), every chapter becomes a root (parentId
+ * null) and every track gets a parentId. A sub-chapter whose root cannot be
+ * resolved is kept as a root chapter instead of being converted — dropping it
+ * would make everything below it unreachable. Idempotent — running it on its own
+ * output changes nothing.
  */
 export function migrateToV3(data: StorageData): StorageData {
-	// Sub-chapters cease to exist as chapters — they only survive as tracks of
-	// their nearest surviving (root) ancestor.
-	const chapters: Chapter[] = data.chapters
-		.filter((c) => c.parentId === null)
+	const chapterById = new Map(data.chapters.map((c) => [c.id, c]));
+	// Walk up the chapter tree to the root chapter that would survive the
+	// migration. `null` means "unresolvable" — a missing ancestor or a cycle.
+	//
+	// **Unresolvable chapters must not be dropped** (spec §移行 rule 4): converting
+	// them would put the generated track's `chapterId` on a chapter that does not
+	// exist, so every sentence under it becomes unreachable from the UI and from
+	// `getNodeSentences` — permanently, because the shim is idempotent and would
+	// not heal it. Such a chapter stays a root instead.
+	const rootChapterIdOf = (chapterId: string): string | null => {
+		let current = chapterId;
+		const guard = new Set<string>();
+		while (!guard.has(current)) {
+			guard.add(current);
+			const chapter = chapterById.get(current);
+			if (!chapter) return null;
+			const parentId = chapter.parentId ?? null;
+			if (parentId === null) return chapter.id;
+			current = parentId;
+		}
+		return null;
+	};
+	// A missing `parentId` key means "root", so normalise before classifying.
+	const isRootChapter = (c: Chapter): boolean => (c.parentId ?? null) === null;
+	const survivingChapters: Chapter[] = data.chapters
+		.filter((c) => isRootChapter(c) || rootChapterIdOf(c.id) === null)
 		.map((c) => ({ ...c, parentId: null }));
+	// Only sub-chapters that resolve to a surviving root are converted.
+	const nestedChapters: Chapter[] = data.chapters.filter(
+		(c) => !isRootChapter(c) && rootChapterIdOf(c.id) !== null
+	);
 	// A `parentId` pointing at a track that does not exist would make the track
 	// unreachable in `flattenTrackTree` (invisible in the tree, and `addSentence`
 	// would attach its sentences to a different track), so repair those to null.
@@ -90,30 +119,35 @@ export function migrateToV3(data: StorageData): StorageData {
 	}));
 	const sentences: Sentence[] = data.sentences.map((s) => ({ ...s }));
 
-	const nestedChapters = data.chapters.filter((c) => c.parentId !== null);
 	if (nestedChapters.length === 0) {
-		return { chapters, tracks, sentences };
+		return { chapters: survivingChapters, tracks, sentences };
 	}
-
-	const chapterById = new Map(data.chapters.map((c) => [c.id, c]));
-	// Old chapters disappear, so their sentences must be re-pointed at the
-	// nearest ancestor that survives.
-	const rootChapterIdOf = (chapterId: string): string => {
-		let current = chapterId;
-		const guard = new Set<string>();
-		while (!guard.has(current)) {
-			guard.add(current);
-			const chapter = chapterById.get(current);
-			if (!chapter) break;
-			if (chapter.parentId === null) return chapter.id;
-			current = chapter.parentId;
-		}
-		return chapterId;
-	};
 
 	const usedTrackIds = new Set(tracks.map((t) => t.id));
 	for (const oldChapter of nestedChapters) {
 		const ownerId = rootChapterIdOf(oldChapter.id);
+		// `nestedChapters` only holds resolvable chapters, so this cannot be null.
+		if (ownerId === null) continue;
+
+		// The sub-chapter's own tracks move to the ancestor chapter (spec rule 3) so
+		// their sentence grouping survives. `ownTrackIds` is captured *before* the
+		// tracks are re-parented, because the sentence rule below (rule 5) asks
+		// whether the sentence's `trackId` was valid *before* the migration.
+		const ownTracks = tracks.filter((t) => t.chapterId === oldChapter.id);
+		const ownTrackIds = new Set(ownTracks.map((t) => t.id));
+		let nextOrder = tracks
+			.filter((t) => t.chapterId === ownerId && (t.parentId ?? null) === null)
+			.reduce((max, t) => Math.max(max, t.order), 0);
+		for (const t of ownTracks) {
+			t.chapterId = ownerId;
+			if ((t.parentId ?? null) === null) {
+				// Chapter-direct tracks join the end of the ancestor chapter's list.
+				// A nested track keeps its parent — the parent is re-parented too, so
+				// the whole sub-tree stays reachable without losing its depth.
+				t.order = ++nextOrder;
+			}
+		}
+
 		const base = `tr-from-ch-${oldChapter.id}`;
 		let newId = base;
 		let n = 2;
@@ -122,25 +156,28 @@ export function migrateToV3(data: StorageData): StorageData {
 			n++;
 		}
 		usedTrackIds.add(newId);
-		const maxOrder = tracks
-			.filter((t) => t.chapterId === ownerId && (t.parentId ?? null) === null)
-			.reduce((max, t) => Math.max(max, t.order), 0);
+		nextOrder += 1;
 		tracks.push({
 			id: newId,
 			chapterId: ownerId,
 			name: oldChapter.name,
-			order: maxOrder + 1,
+			order: nextOrder,
 			parentId: null
 		});
 		for (const s of sentences) {
-			if (s.chapterId === oldChapter.id) {
-				s.chapterId = ownerId;
+			if (s.chapterId !== oldChapter.id) continue;
+			s.chapterId = ownerId;
+			// Spec rule 5: sentences that still point at one of the re-parented
+			// tracks keep it (sub-grouping and per-track order preserved). Only
+			// sentences with no valid track (broken reference / pre-track data) move
+			// into the chapter's own new track.
+			if (!ownTrackIds.has(s.trackId)) {
 				s.trackId = newId;
 			}
 		}
 	}
 
-	return { chapters, tracks, sentences };
+	return { chapters: survivingChapters, tracks, sentences };
 }
 
 function loadData(): StorageData {

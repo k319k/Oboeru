@@ -618,7 +618,8 @@ describe('deleteChapter with tracks', () => {
 	it('deletes tracks of the chapter and its descendants', () => {
 		// Legacy shape: the sub-chapter's track is converted into a track of the
 		// root chapter by the read shim, so "its descendants" are the tracks the
-		// sub-chapters were converted into.
+		// sub-chapters were converted into. The sub-chapter owns a track of its own,
+		// so this also pins that no track is left pointing at the removed chapter.
 		storage.store.set(
 			STORAGE_KEY,
 			JSON.stringify({
@@ -626,12 +627,20 @@ describe('deleteChapter with tracks', () => {
 					{ id: 'root', name: 'Root', parentId: null, order: 1 },
 					{ id: 'child', name: 'Child', parentId: 'root', order: 1 }
 				],
-				tracks: [{ id: 'tr-root', chapterId: 'root', name: 'Root Track', order: 1, parentId: null }],
+				tracks: [
+					{ id: 'tr-root', chapterId: 'root', name: 'Root Track', order: 1, parentId: null },
+					{ id: 'tr-child', chapterId: 'child', name: 'Child Track', order: 1, parentId: null }
+				],
 				sentences: [
-					{ id: 's1', chapterId: 'root', trackId: 'tr-root', text: 'root', language: 'en', order: 1 }
+					{ id: 's1', chapterId: 'root', trackId: 'tr-root', text: 'root', language: 'en', order: 1 },
+					{ id: 's2', chapterId: 'child', trackId: 'tr-child', text: 'child', language: 'en', order: 1 }
 				]
 			})
 		);
+
+		// Without this step the `not.toContain('child')` assertion below would be
+		// vacuous: before the shim runs, nothing has a dangling `chapterId` yet.
+		expect(loadTracks().map((t) => t.chapterId)).not.toContain('child');
 
 		deleteChapter('root');
 
@@ -991,6 +1000,125 @@ describe('migrateToV3', () => {
 		expect(out.tracks.find((t) => t.id === 't1')?.parentId).toBeNull();
 		// a valid parentId is untouched
 		expect(out.tracks.find((t) => t.id === 't2')?.parentId).toBe('t1');
+	});
+
+	it('re-parents tracks that belonged to a sub-chapter and keeps their sentences', () => {
+		const out = migrateToV3({
+			chapters: [
+				{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+				{ id: 'ch-2', name: '子章', parentId: 'ch-1', order: 1 }
+			],
+			tracks: [
+				{ id: 't-existing', chapterId: 'ch-1', name: '既存', order: 1, parentId: null },
+				{ id: 'ta', chapterId: 'ch-2', name: 'トラックA', order: 1, parentId: null },
+				{ id: 'tb', chapterId: 'ch-2', name: 'トラックB', order: 2, parentId: null }
+			],
+			sentences: [
+				{ id: 's-a1', chapterId: 'ch-2', trackId: 'ta', text: 'A1', language: 'ja', order: 1 },
+				{ id: 's-a2', chapterId: 'ch-2', trackId: 'ta', text: 'A2', language: 'ja', order: 2 },
+				{ id: 's-b1', chapterId: 'ch-2', trackId: 'tb', text: 'B1', language: 'ja', order: 1 }
+			]
+		});
+
+		expect(out.chapters.map((c) => c.id)).toEqual(['ch-1']);
+		// Both tracks moved to the ancestor chapter, appended after the existing one
+		const movedA = out.tracks.find((t) => t.id === 'ta')!;
+		const movedB = out.tracks.find((t) => t.id === 'tb')!;
+		expect(movedA.chapterId).toBe('ch-1');
+		expect(movedA.parentId).toBeNull();
+		expect(movedA.order).toBe(2);
+		expect(movedB.chapterId).toBe('ch-1');
+		expect(movedB.order).toBe(3);
+		// The chapter's own new track still exists (empty here)
+		expect(out.tracks.map((t) => t.id)).toContain('tr-from-ch-ch-2');
+		// Sentences keep their trackId, only chapterId is re-pointed
+		expect(out.sentences).toEqual([
+			{ id: 's-a1', chapterId: 'ch-1', trackId: 'ta', text: 'A1', language: 'ja', order: 1 },
+			{ id: 's-a2', chapterId: 'ch-1', trackId: 'ta', text: 'A2', language: 'ja', order: 2 },
+			{ id: 's-b1', chapterId: 'ch-1', trackId: 'tb', text: 'B1', language: 'ja', order: 1 }
+		]);
+		expect(getNodeSentences('ch-1', out.chapters, out.tracks, out.sentences)).toHaveLength(3);
+	});
+
+	it('is idempotent when tracks were re-parented', () => {
+		const once = migrateToV3({
+			chapters: [
+				{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+				{ id: 'ch-2', name: '子章', parentId: 'ch-1', order: 1 },
+				{ id: 'ch-3', name: '孫章', parentId: 'ch-2', order: 1 }
+			],
+			tracks: [
+				{ id: 't-existing', chapterId: 'ch-1', name: '既存', order: 1, parentId: null },
+				{ id: 'ta', chapterId: 'ch-2', name: 'トラックA', order: 1, parentId: null },
+				{ id: 'ta-1', chapterId: 'ch-2', name: 'トラックA-1', order: 1, parentId: 'ta' }
+			],
+			sentences: [
+				{ id: 's-a1', chapterId: 'ch-2', trackId: 'ta', text: 'A1', language: 'ja', order: 1 },
+				{ id: 's-a2', chapterId: 'ch-2', trackId: 'ta-1', text: 'A1-1', language: 'ja', order: 1 },
+				{ id: 's-orphan', chapterId: 'ch-3', trackId: 'nope', text: '迷子', language: 'ja', order: 1 }
+			]
+		});
+		expect(migrateToV3(once)).toEqual(once);
+	});
+
+	it('keeps a chapter whose parentId points at a missing chapter as a root', () => {
+		const out = migrateToV3({
+			chapters: [
+				{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+				{ id: 'ch-2', name: '迷子章', parentId: 'missing', order: 2 }
+			],
+			tracks: [{ id: 't1', chapterId: 'ch-2', name: 'A', order: 1, parentId: null }],
+			sentences: [
+				{ id: 's1', chapterId: 'ch-2', trackId: 't1', text: '文', language: 'ja', order: 1 }
+			]
+		});
+		expect(out.chapters.map((c) => c.id)).toEqual(['ch-1', 'ch-2']);
+		expect(out.chapters[1].parentId).toBeNull();
+		expect(out.tracks.map((t) => t.id)).toEqual(['t1']); // no conversion track
+		// Deterministic assertion: still reachable from the UI. Dropping the chapter
+		// would leave `t1.chapterId` pointing at a chapter that no longer exists, so
+		// its sentence would be invisible forever (and idempotency would not heal it).
+		expect(getNodeSentences('ch-2', out.chapters, out.tracks, out.sentences)).toHaveLength(1);
+		expect(migrateToV3(out)).toEqual(out);
+	});
+
+	it('keeps a chapter pair in a parentId cycle as roots', () => {
+		const out = migrateToV3({
+			chapters: [
+				{ id: 'ch-a', name: 'A', parentId: 'ch-b', order: 1 },
+				{ id: 'ch-b', name: 'B', parentId: 'ch-a', order: 2 }
+			],
+			tracks: [
+				{ id: 'ta', chapterId: 'ch-a', name: 'TA', order: 1, parentId: null },
+				{ id: 'tb', chapterId: 'ch-b', name: 'TB', order: 1, parentId: null }
+			],
+			sentences: [
+				{ id: 's1', chapterId: 'ch-a', trackId: 'ta', text: 'A1', language: 'ja', order: 1 },
+				{ id: 's2', chapterId: 'ch-b', trackId: 'tb', text: 'B1', language: 'ja', order: 1 }
+			]
+		});
+		expect(out.chapters.map((c) => c.id)).toEqual(['ch-a', 'ch-b']);
+		expect(out.chapters.map((c) => c.parentId)).toEqual([null, null]);
+		expect(out.tracks.map((t) => t.id)).toEqual(['ta', 'tb']); // no conversion tracks
+		expect(getNodeSentences('ch-a', out.chapters, out.tracks, out.sentences)).toHaveLength(1);
+		expect(getNodeSentences('ch-b', out.chapters, out.tracks, out.sentences)).toHaveLength(1);
+	});
+
+	it('treats a chapter without a parentId key as a root', () => {
+		const out = migrateToV3({
+			chapters: [
+				{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+				{ id: 'ch-2', name: 'キーなし章', order: 2 } as Chapter
+			],
+			tracks: [{ id: 't1', chapterId: 'ch-2', name: 'A', order: 1, parentId: null }],
+			sentences: [
+				{ id: 's1', chapterId: 'ch-2', trackId: 't1', text: '文', language: 'ja', order: 1 }
+			]
+		});
+		expect(out.chapters.map((c) => c.id)).toEqual(['ch-1', 'ch-2']);
+		expect(out.chapters[1].parentId).toBeNull();
+		expect(out.tracks.map((t) => t.id)).toEqual(['t1']);
+		expect(getNodeSentences('ch-2', out.chapters, out.tracks, out.sentences)).toHaveLength(1);
 	});
 
 	it('keeps a cyclic parentId pair (repair is existence-based, not reachability)', () => {
