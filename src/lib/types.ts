@@ -7,9 +7,10 @@ export interface Chapter {
 
 export interface Track {
 	id: string;
-	chapterId: string;
+	chapterId: string;      // 最上位章。所属章を間接的に指定する冗長フィールド
 	name: string;
-	order: number;
+	order: number;          // 同一親 (章 or 親トラック) 内での順序
+	parentId: string | null; // NEW。親トラック。null なら章直下
 }
 
 export interface Sentence {

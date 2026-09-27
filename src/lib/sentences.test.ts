@@ -359,7 +359,7 @@ describe('loadTracks / saveTracks', () => {
 	});
 
 	it('saves and loads tracks', () => {
-		const tracks: Track[] = [{ id: 't1', chapterId: 'c1', name: 'Track', order: 0 }];
+		const tracks: Track[] = [{ id: 't1', chapterId: 'c1', name: 'Track', order: 0, parentId: null }];
 		saveTracks(tracks);
 		expect(storage.setItem).toHaveBeenCalled();
 		expect(loadTracks()).toEqual(tracks);
@@ -438,9 +438,9 @@ describe('deleteTrack', () => {
 describe('getChapterTracks', () => {
 	it('returns tracks for a chapter ordered by order', () => {
 		const tracks: Track[] = [
-			{ id: 't1', chapterId: 'c1', name: 'B', order: 2 },
-			{ id: 't2', chapterId: 'c1', name: 'A', order: 1 },
-			{ id: 't3', chapterId: 'c2', name: 'Other', order: 0 }
+			{ id: 't1', chapterId: 'c1', name: 'B', order: 2, parentId: null },
+			{ id: 't2', chapterId: 'c1', name: 'A', order: 1, parentId: null },
+			{ id: 't3', chapterId: 'c2', name: 'Other', order: 0, parentId: null }
 		];
 		const result = getChapterTracks('c1', tracks);
 		expect(result.map((t) => t.id)).toEqual(['t2', 't1']);
@@ -466,7 +466,9 @@ describe('old-format read shim', () => {
 
 	it('synthesizes a default track per chapter when stored data has no tracks', () => {
 		storage.store.set(STORAGE_KEY, JSON.stringify(oldData));
-		expect(loadTracks()).toEqual([{ id: 'tr-c1', chapterId: 'c1', name: 'トラック1', order: 1 }]);
+		expect(loadTracks()).toEqual([
+			{ id: 'tr-c1', chapterId: 'c1', name: 'トラック1', order: 1, parentId: null }
+		]);
 	});
 
 	it('backfills trackId on sentences without skipping unknown chapters', () => {
@@ -506,7 +508,8 @@ describe('addSentence with tracks', () => {
 			id: `tr-${chapter.id}`,
 			chapterId: chapter.id,
 			name: 'トラック1',
-			order: 1
+			order: 1,
+			parentId: null
 		});
 	});
 

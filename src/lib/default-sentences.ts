@@ -6,8 +6,8 @@ export const defaultChapters: Chapter[] = [
 ];
 
 export const defaultTracks: Track[] = [
-	{ id: 'tr-ch-ja-01', chapterId: 'ch-ja-01', name: 'トラック1', order: 1 },
-	{ id: 'tr-ch-en-01', chapterId: 'ch-en-01', name: 'トラック1', order: 1 },
+	{ id: 'tr-ch-ja-01', chapterId: 'ch-ja-01', name: 'トラック1', order: 1, parentId: null },
+	{ id: 'tr-ch-en-01', chapterId: 'ch-en-01', name: 'トラック1', order: 1, parentId: null },
 ];
 
 export const defaultSentences: Sentence[] = [

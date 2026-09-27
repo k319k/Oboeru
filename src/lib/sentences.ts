@@ -52,17 +52,17 @@ export function saveTracks(tracks: Track[]): void {
 // Internal read/write (shared structure)
 // ---------------------------------------------------------------------------
 
-interface StoreData {
+export interface StorageData {
 	chapters: Chapter[];
 	tracks: Track[];
 	sentences: Sentence[];
 }
 
 function defaultTrackFor(ch: Chapter): Track {
-	return { id: `tr-${ch.id}`, chapterId: ch.id, name: 'トラック1', order: 1 };
+	return { id: `tr-${ch.id}`, chapterId: ch.id, name: 'トラック1', order: 1, parentId: null };
 }
 
-function loadData(): StoreData {
+function loadData(): StorageData {
 	try {
 		const raw = localStorage.getItem(STORAGE_KEY);
 		if (raw === null) {
@@ -101,7 +101,7 @@ function loadData(): StoreData {
 	}
 }
 
-function saveData(data: StoreData): void {
+function saveData(data: StorageData): void {
 	localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
@@ -168,18 +168,21 @@ function collectDescendantIds(chapters: Chapter[], parentId: string): string[] {
 // Track CRUD
 // ---------------------------------------------------------------------------
 
-export function addTrack(chapterId: string, name: string): Track {
+export function addTrack(chapterId: string, name: string, parentTrackId: string | null = null): Track {
 	if (!name.trim()) {
 		throw new Error('Track name must not be empty');
 	}
 	const tracks = loadTracks();
-	const siblings = tracks.filter((t) => t.chapterId === chapterId);
+	const siblings = tracks.filter(
+		(t) => t.chapterId === chapterId && (t.parentId ?? null) === parentTrackId
+	);
 	const maxOrder = siblings.reduce((max, t) => Math.max(max, t.order), 0);
 	const track: Track = {
 		id: generateId(),
 		chapterId,
 		name: name.trim(),
-		order: maxOrder + 1
+		order: maxOrder + 1,
+		parentId: parentTrackId
 	};
 	tracks.push(track);
 	saveTracks(tracks);
@@ -240,7 +243,7 @@ export function addSentence(
 	if (!resolvedTrackId) {
 		const chapterTracks = getChapterTracks(chapterId, tracks);
 		if (chapterTracks.length === 0) {
-			const track: Track = { id: `tr-${chapterId}`, chapterId, name: 'トラック1', order: 1 };
+			const track: Track = { id: `tr-${chapterId}`, chapterId, name: 'トラック1', order: 1, parentId: null };
 			tracks.push(track);
 			saveTracks(tracks);
 			resolvedTrackId = track.id;
@@ -285,7 +288,7 @@ export function updateSentence(id: string, updates: Partial<Omit<Sentence, 'id'>
 	const chapterTracks = getChapterTracks(next.chapterId, loadTracks());
 	if (!chapterTracks.some((t) => t.id === next.trackId)) {
 		if (chapterTracks.length === 0) {
-			const track: Track = { id: `tr-${next.chapterId}`, chapterId: next.chapterId, name: 'トラック1', order: 1 };
+			const track: Track = { id: `tr-${next.chapterId}`, chapterId: next.chapterId, name: 'トラック1', order: 1, parentId: null };
 			saveTracks([...loadTracks(), track]);
 			next.trackId = track.id;
 		} else {
