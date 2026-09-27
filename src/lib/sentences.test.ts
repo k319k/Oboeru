@@ -22,7 +22,9 @@ import {
 	flattenTrackTree,
 	getNodeDescendantTrackIds,
 	getNodeSentences,
-	getNodeTrail
+	getNodeTrail,
+	migrateToV3,
+	type StorageData
 } from './sentences';
 import { defaultChapters, defaultSentences, defaultTracks } from './default-sentences';
 
@@ -155,22 +157,45 @@ describe('deleteChapter', () => {
 	});
 
 	it('deletes descendant chapters and their sentences recursively', () => {
-		const root = addChapter('Root', null);
-		const child = addChapter('Child', root.id);
-		const grandchild = addChapter('Grandchild', child.id);
-		addSentence(child.id, 'child sentence', 'en');
-		addSentence(grandchild.id, 'grandchild sentence', 'ja');
+		// Seeded in the *legacy* shape on purpose: the read shim turns every
+		// sub-chapter into a track of its root before `deleteChapter` looks at the
+		// data, so a sub-chapter can no longer be created through the public API.
+		// The recursive sub-tree is deleted as the tracks converted from it.
+		storage.store.set(
+			STORAGE_KEY,
+			JSON.stringify({
+				chapters: [
+					{ id: 'root', name: 'Root', parentId: null, order: 1 },
+					{ id: 'child', name: 'Child', parentId: 'root', order: 1 },
+					{ id: 'grandchild', name: 'Grandchild', parentId: 'child', order: 1 }
+				],
+				tracks: [{ id: 'tr-root', chapterId: 'root', name: 'Root Track', order: 1, parentId: null }],
+				sentences: [
+					{ id: 's1', chapterId: 'root', trackId: 'tr-root', text: 'root', language: 'en', order: 1 },
+					{ id: 's2', chapterId: 'child', trackId: 'tr-root', text: 'child', language: 'en', order: 1 },
+					{
+						id: 's3',
+						chapterId: 'grandchild',
+						trackId: 'tr-root',
+						text: 'grandchild',
+						language: 'ja',
+						order: 1
+					}
+				]
+			})
+		);
+		// The shim has already lifted both levels into tracks of `root`.
+		expect(loadTracks().map((t) => t.name)).toEqual([
+			'Root Track',
+			'Child',
+			'Grandchild'
+		]);
 
-		deleteChapter(root.id);
+		deleteChapter('root');
 
-		const chapters = loadChapters();
-		expect(chapters.find((c) => c.id === root.id)).toBeUndefined();
-		expect(chapters.find((c) => c.id === child.id)).toBeUndefined();
-		expect(chapters.find((c) => c.id === grandchild.id)).toBeUndefined();
-
-		const sentences = loadSentences();
-		expect(sentences.filter((s) => s.chapterId === child.id)).toHaveLength(0);
-		expect(sentences.filter((s) => s.chapterId === grandchild.id)).toHaveLength(0);
+		expect(loadChapters()).toEqual([]);
+		expect(loadTracks()).toEqual([]);
+		expect(loadSentences()).toEqual([]);
 	});
 });
 
@@ -591,16 +616,29 @@ describe('addSentence with tracks', () => {
 
 describe('deleteChapter with tracks', () => {
 	it('deletes tracks of the chapter and its descendants', () => {
-		const root = addChapter('Root', null);
-		const child = addChapter('Child', root.id);
-		addTrack(root.id, 'Root Track');
-		addTrack(child.id, 'Child Track');
+		// Legacy shape: the sub-chapter's track is converted into a track of the
+		// root chapter by the read shim, so "its descendants" are the tracks the
+		// sub-chapters were converted into.
+		storage.store.set(
+			STORAGE_KEY,
+			JSON.stringify({
+				chapters: [
+					{ id: 'root', name: 'Root', parentId: null, order: 1 },
+					{ id: 'child', name: 'Child', parentId: 'root', order: 1 }
+				],
+				tracks: [{ id: 'tr-root', chapterId: 'root', name: 'Root Track', order: 1, parentId: null }],
+				sentences: [
+					{ id: 's1', chapterId: 'root', trackId: 'tr-root', text: 'root', language: 'en', order: 1 }
+				]
+			})
+		);
 
-		deleteChapter(root.id);
+		deleteChapter('root');
 
 		const chapterIds = loadTracks().map((t) => t.chapterId);
-		expect(chapterIds).not.toContain(root.id);
-		expect(chapterIds).not.toContain(child.id);
+		expect(chapterIds).not.toContain('root');
+		expect(chapterIds).not.toContain('child');
+		expect(loadChapters().find((c) => c.id === 'root')).toBeUndefined();
 	});
 });
 
@@ -850,5 +888,217 @@ describe('getNodeTrail', () => {
 			{ type: 'track', id: 'b', name: 'B' },
 			{ type: 'track', id: 'a', name: 'A' }
 		]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// migrateToV3
+// ---------------------------------------------------------------------------
+
+describe('migrateToV3', () => {
+	const flatData: StorageData = {
+		chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+		tracks: [{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null }],
+		sentences: [
+			{ id: 's1', chapterId: 'ch-1', trackId: 't1', text: '文1', language: 'ja', order: 1 }
+		]
+	};
+
+	it('passes a v3 payload through unchanged', () => {
+		expect(migrateToV3(flatData)).toEqual(flatData);
+	});
+
+	it('only adds parentId: null to tracks of a v2 payload', () => {
+		const v2: StorageData = {
+			...flatData,
+			tracks: [{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1 } as Track]
+		};
+		const out = migrateToV3(v2);
+		expect(out.chapters).toEqual(v2.chapters);
+		expect(out.sentences).toEqual(v2.sentences);
+		expect(out.tracks).toEqual([
+			{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null }
+		]);
+	});
+
+	it('converts a child chapter into a track of its parent chapter', () => {
+		const out = migrateToV3({
+			chapters: [
+				{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+				{ id: 'ch-2', name: '子章', parentId: 'ch-1', order: 1 }
+			],
+			tracks: [{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null }],
+			sentences: [
+				{ id: 's1', chapterId: 'ch-1', trackId: 't1', text: '直下', language: 'ja', order: 1 },
+				{ id: 's2', chapterId: 'ch-2', trackId: 't1', text: '子', language: 'ja', order: 1 }
+			]
+		});
+		expect(out.chapters.map((c) => c.id)).toEqual(['ch-1']);
+		expect(out.tracks.map((t) => t.id)).toEqual(['t1', 'tr-from-ch-ch-2']);
+		expect(out.tracks[1]).toEqual({
+			id: 'tr-from-ch-ch-2',
+			chapterId: 'ch-1',
+			name: '子章',
+			order: 2,
+			parentId: null
+		});
+		expect(out.sentences).toEqual([
+			{ id: 's1', chapterId: 'ch-1', trackId: 't1', text: '直下', language: 'ja', order: 1 },
+			{ id: 's2', chapterId: 'ch-1', trackId: 'tr-from-ch-ch-2', text: '子', language: 'ja', order: 1 }
+		]);
+	});
+
+	it('lifts a grandchild chapter into the nearest ancestor chapter', () => {
+		const out = migrateToV3({
+			chapters: [
+				{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+				{ id: 'ch-2', name: '子章', parentId: 'ch-1', order: 1 },
+				{ id: 'ch-3', name: '孫章', parentId: 'ch-2', order: 1 }
+			],
+			tracks: [],
+			sentences: [
+				{ id: 's3', chapterId: 'ch-3', trackId: 't-x', text: '孫', language: 'ja', order: 1 }
+			]
+		});
+		expect(out.chapters.map((c) => c.id)).toEqual(['ch-1']);
+		expect(out.tracks.map((t) => t.id)).toEqual(['tr-from-ch-ch-2', 'tr-from-ch-ch-3']);
+		expect(out.sentences[0].chapterId).toBe('ch-1');
+	});
+
+	it('is idempotent', () => {
+		const once = migrateToV3({
+			chapters: [
+				{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+				{ id: 'ch-2', name: '子章', parentId: 'ch-1', order: 1 }
+			],
+			tracks: [],
+			sentences: [
+				{ id: 's2', chapterId: 'ch-2', trackId: 't-x', text: '子', language: 'ja', order: 1 }
+			]
+		});
+		expect(migrateToV3(once)).toEqual(once);
+	});
+
+	it('repairs a parentId that points at a missing track', () => {
+		const out = migrateToV3({
+			chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+			tracks: [
+				{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: 'deleted-parent' },
+				{ id: 't2', chapterId: 'ch-1', name: 'B', order: 2, parentId: 't1' }
+			],
+			sentences: []
+		});
+		expect(out.tracks.find((t) => t.id === 't1')?.parentId).toBeNull();
+		// a valid parentId is untouched
+		expect(out.tracks.find((t) => t.id === 't2')?.parentId).toBe('t1');
+	});
+
+	it('keeps a cyclic parentId pair (repair is existence-based, not reachability)', () => {
+		const out = migrateToV3({
+			chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+			tracks: [
+				{ id: 'a', chapterId: 'ch-1', name: 'A', order: 1, parentId: 'b' },
+				{ id: 'b', chapterId: 'ch-1', name: 'B', order: 2, parentId: 'a' }
+			],
+			sentences: []
+		});
+		expect(out.tracks.find((t) => t.id === 'a')?.parentId).toBe('b');
+		expect(out.tracks.find((t) => t.id === 'b')?.parentId).toBe('a');
+		// Both parents exist, so the cycle survives and stays invisible to the tree.
+		expect(flattenTrackTree('ch-1', out.tracks)).toEqual([]);
+	});
+
+	it('re-numbers a converted track when the id already exists', () => {
+		const out = migrateToV3({
+			chapters: [
+				{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+				{ id: 'ch-2', name: '子章', parentId: 'ch-1', order: 1 }
+			],
+			tracks: [
+				{ id: 'tr-from-ch-ch-2', chapterId: 'ch-1', name: '既存', order: 1, parentId: null }
+			],
+			sentences: [
+				{ id: 's2', chapterId: 'ch-2', trackId: 't-x', text: '子', language: 'ja', order: 1 }
+			]
+		});
+		expect(out.tracks.map((t) => t.id)).toEqual(['tr-from-ch-ch-2', 'tr-from-ch-ch-2-2']);
+		expect(out.sentences[0].trackId).toBe('tr-from-ch-ch-2-2');
+	});
+
+	it('places converted tracks after the existing tracks of the ancestor chapter', () => {
+		const out = migrateToV3({
+			chapters: [
+				{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+				{ id: 'ch-2', name: '子章', parentId: 'ch-1', order: 1 }
+			],
+			tracks: [
+				{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null },
+				{ id: 't2', chapterId: 'ch-1', name: 'B', order: 2, parentId: null }
+			],
+			sentences: []
+		});
+		expect(out.tracks[2].order).toBe(3);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// loadData migration (through the load* accessors)
+// ---------------------------------------------------------------------------
+
+describe('loadData migration (through the load* accessors)', () => {
+	it('converts a stored sub-chapter into a track and writes it back', () => {
+		localStorage.setItem(
+			STORAGE_KEY,
+			JSON.stringify({
+				chapters: [
+					{ id: 'ch-1', name: '1章', parentId: null, order: 1 },
+					{ id: 'ch-2', name: '子章', parentId: 'ch-1', order: 1 }
+				],
+				tracks: [{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null }],
+				sentences: [
+					{ id: 's1', chapterId: 'ch-1', trackId: 't1', text: '直下', language: 'ja', order: 1 },
+					{ id: 's2', chapterId: 'ch-2', trackId: 't1', text: '子', language: 'ja', order: 1 }
+				]
+			})
+		);
+
+		expect(loadChapters().map((c) => c.id)).toEqual(['ch-1']);
+		expect(loadTracks().map((t) => t.name)).toEqual(['A', '子章']);
+
+		const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
+		expect(stored.chapters).toHaveLength(1);
+		expect(stored.tracks.map((t: Track) => t.name)).toEqual(['A', '子章']);
+		expect(stored.sentences.find((s: Sentence) => s.id === 's2').chapterId).toBe('ch-1');
+	});
+
+	it('backfills parentId: null on legacy tracks that have no parentId', () => {
+		localStorage.setItem(
+			STORAGE_KEY,
+			JSON.stringify({
+				chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+				tracks: [{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1 }],
+				sentences: [
+					{ id: 's1', chapterId: 'ch-1', trackId: 't1', text: 'あ', language: 'ja', order: 1 }
+				]
+			})
+		);
+
+		// Read path must hand out a fully-populated Track: the hierarchy functions
+		// compare `t.parentId === null` directly, so `undefined` would misclassify
+		// a legacy chapter-direct track as a child track.
+		expect(loadTracks()).toEqual([
+			{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null }
+		]);
+	});
+
+	it('leaves already-migrated data untouched (no extra write)', () => {
+		saveChapters([{ id: 'ch-1', name: '1章', parentId: null, order: 1 }]);
+		saveTracks([{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null }]);
+		saveSentences([]);
+		const before = localStorage.getItem(STORAGE_KEY);
+		storage.setItem.mockClear();
+		loadChapters();
+		expect(storage.setItem).not.toHaveBeenCalled();
+		expect(localStorage.getItem(STORAGE_KEY)).toBe(before);
 	});
 });

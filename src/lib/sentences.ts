@@ -59,6 +59,90 @@ function defaultTrackFor(ch: Chapter): Track {
 	return { id: `tr-${ch.id}`, chapterId: ch.id, name: 'トラック1', order: 1, parentId: null };
 }
 
+/**
+ * Normalise stored / imported data to the track-hierarchy schema: sub-chapters
+ * become tracks of their nearest ancestor chapter, every chapter becomes a root
+ * (parentId null) and every track gets a parentId. Idempotent — running it on
+ * its own output changes nothing.
+ */
+export function migrateToV3(data: StorageData): StorageData {
+	// Sub-chapters cease to exist as chapters — they only survive as tracks of
+	// their nearest surviving (root) ancestor.
+	const chapters: Chapter[] = data.chapters
+		.filter((c) => c.parentId === null)
+		.map((c) => ({ ...c, parentId: null }));
+	// A `parentId` pointing at a track that does not exist would make the track
+	// unreachable in `flattenTrackTree` (invisible in the tree, and `addSentence`
+	// would attach its sentences to a different track), so repair those to null.
+	//
+	// **Definition matters**: the test is "the parent id is not in this payload",
+	// NOT "the track cannot reach a chapter-direct root". A reachability-based
+	// rule would also promote `a(parent: b) ↔ b(parent: a)` cycles to roots, which
+	// breaks the cycle invariant test in `sentences.test.ts`. `flattenTrackTree`'s
+	// `seen` set already makes cycle data terminate, so no further guard is needed.
+	const trackIds = new Set(data.tracks.map((t) => t.id));
+	const tracks: Track[] = data.tracks.map((t) => ({
+		...t,
+		parentId:
+			t.parentId !== null && t.parentId !== undefined && trackIds.has(t.parentId)
+				? t.parentId
+				: null
+	}));
+	const sentences: Sentence[] = data.sentences.map((s) => ({ ...s }));
+
+	const nestedChapters = data.chapters.filter((c) => c.parentId !== null);
+	if (nestedChapters.length === 0) {
+		return { chapters, tracks, sentences };
+	}
+
+	const chapterById = new Map(data.chapters.map((c) => [c.id, c]));
+	// Old chapters disappear, so their sentences must be re-pointed at the
+	// nearest ancestor that survives.
+	const rootChapterIdOf = (chapterId: string): string => {
+		let current = chapterId;
+		const guard = new Set<string>();
+		while (!guard.has(current)) {
+			guard.add(current);
+			const chapter = chapterById.get(current);
+			if (!chapter) break;
+			if (chapter.parentId === null) return chapter.id;
+			current = chapter.parentId;
+		}
+		return chapterId;
+	};
+
+	const usedTrackIds = new Set(tracks.map((t) => t.id));
+	for (const oldChapter of nestedChapters) {
+		const ownerId = rootChapterIdOf(oldChapter.id);
+		const base = `tr-from-ch-${oldChapter.id}`;
+		let newId = base;
+		let n = 2;
+		while (usedTrackIds.has(newId)) {
+			newId = `${base}-${n}`;
+			n++;
+		}
+		usedTrackIds.add(newId);
+		const maxOrder = tracks
+			.filter((t) => t.chapterId === ownerId && (t.parentId ?? null) === null)
+			.reduce((max, t) => Math.max(max, t.order), 0);
+		tracks.push({
+			id: newId,
+			chapterId: ownerId,
+			name: oldChapter.name,
+			order: maxOrder + 1,
+			parentId: null
+		});
+		for (const s of sentences) {
+			if (s.chapterId === oldChapter.id) {
+				s.chapterId = ownerId;
+				s.trackId = newId;
+			}
+		}
+	}
+
+	return { chapters, tracks, sentences };
+}
+
 function loadData(): StorageData {
 	try {
 		const raw = localStorage.getItem(STORAGE_KEY);
@@ -76,19 +160,24 @@ function loadData(): StorageData {
 		const storedSentences: Sentence[] = Array.isArray(parsed.sentences)
 			? parsed.sentences
 			: [...defaultSentences];
-		if (!Array.isArray(parsed.tracks)) {
-			// Old format without tracks: synthesize a default track per chapter and
-			// backfill trackId (sentences with unknown chapterId are not skipped).
-			return {
-				chapters,
-				tracks: chapters.map(defaultTrackFor),
-				sentences: storedSentences.map((s) => ({
-					...s,
-					trackId: s.trackId ?? `tr-${s.chapterId}`
-				}))
-			};
+		const base: StorageData = Array.isArray(parsed.tracks)
+			? { chapters, tracks: parsed.tracks, sentences: storedSentences }
+			: {
+					// Old format without tracks: synthesize a default track per chapter and
+					// backfill trackId (sentences with unknown chapterId are not skipped).
+					chapters,
+					tracks: chapters.map(defaultTrackFor),
+					sentences: storedSentences.map((s) => ({
+						...s,
+						trackId: s.trackId ?? `tr-${s.chapterId}`
+					}))
+				};
+		const migrated = migrateToV3(base);
+		// Lazy write-back so the shim runs once per browser.
+		if (JSON.stringify(migrated) !== raw) {
+			saveData(migrated);
 		}
-		return { chapters, tracks: parsed.tracks, sentences: storedSentences };
+		return migrated;
 	} catch {
 		return {
 			chapters: [...defaultChapters],
