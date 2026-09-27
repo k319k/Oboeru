@@ -71,6 +71,19 @@ async function pickOption(page: Page, testId: string, optionLabel: string): Prom
 }
 
 /**
+ * Make sure a chapter node is open. Nodes default to expanded, so this is a
+ * no-op unless the chapter was collapsed first — the tests below use it to state
+ * their precondition without depending on the default.
+ */
+async function expandChapter(page: Page, name: string): Promise<void> {
+	const row = page.locator('.chapter-row', { hasText: name });
+	const toggle = row.locator('.expand-toggle');
+	if ((await toggle.textContent())?.includes('▶')) {
+		await toggle.click();
+	}
+}
+
+/**
  * A chapters-tab track row located by its exact name. The row also renders the
  * count and the action labels, so `filter({ hasText: /^name$/ })` on the row
  * itself never matches — go through the name span and walk up to the row.
@@ -290,6 +303,64 @@ test.describe('Track nesting', () => {
 
 		await trackRow(page, '基本').locator('.expand-toggle').click();
 		await expect(page.getByTestId('tree-track-name')).toHaveCount(2);
+	});
+});
+
+test.describe('Inline sentence editing from the tree', () => {
+	test('edits a sentence inline from a track row and keeps it after reload', async ({ page }) => {
+		await gotoManage(page, hierarchySeed);
+		await expandChapter(page, 'はじめの一歩（日本語）');
+
+		const input = page.getByTestId('inline-sentence-text').first();
+		await input.fill('書き換えた文です。');
+		await input.press('Enter');
+
+		await page.reload();
+		// Wait for hydration before clicking the tab: a click that lands before
+		// the handler is attached is lost and the 文章 tabpanel stays `hidden`.
+		await page.waitForSelector('[data-testid="chapter-name"]', { timeout: 10000 });
+		await page.getByRole('tab', { name: '文章' }).click();
+		await expect(
+			page.getByTestId('sentence-text').filter({ hasText: '書き換えた文です。' })
+		).toBeVisible();
+	});
+
+	test('inline editing saves on blur and rejects an empty text', async ({ page }) => {
+		await gotoManage(page, hierarchySeed);
+		await expandChapter(page, 'はじめの一歩（日本語）');
+
+		await page.getByTestId('inline-sentence-text').first().fill('blr で保存');
+		await page.getByTestId('chapter-name').first().click();
+		await page.getByRole('tab', { name: '文章' }).click();
+		await expect(
+			page.getByTestId('sentence-text').filter({ hasText: 'blr で保存' })
+		).toBeVisible();
+
+		await page.getByRole('tab', { name: 'チャプター' }).click();
+		await expandChapter(page, 'はじめの一歩（日本語）');
+		await page.getByTestId('inline-sentence-text').first().fill('');
+		await page.getByTestId('inline-sentence-text').first().press('Enter');
+		await expect(page.getByTestId('inline-sentence-error')).toBeVisible();
+		// The rejected draft stays in the field so the text is not lost
+		await expect(page.getByTestId('inline-sentence-text').first()).toHaveValue('');
+	});
+
+	test('only track rows inline their own sentences, never the chapter row', async ({
+		page
+	}) => {
+		await gotoManage(page, hierarchySeed);
+		// Every node defaults to expanded, so all four track rows are open and
+		// each shows its own single sentence: 4 editors for the seed's 4
+		// sentences. 8 would mean the chapter row duplicated its children's
+		// sentences, 1 per track would mean only the chapter's own.
+		await expandChapter(page, 'はじめの一歩（日本語）');
+		await expect(page.getByTestId('inline-sentence-text')).toHaveCount(4);
+
+		// Collapsing 基本 drops its own editor *and* both child rows
+		// (基本-1 / 基本-2) — a parent's editor never lists descendant sentences.
+		await trackRow(page, '基本').locator('.expand-toggle').click();
+		await expect(page.getByTestId('inline-sentence-text')).toHaveCount(1);
+		await expect(page.getByTestId('inline-sentence-text').first()).toHaveValue('応用の文章');
 	});
 });
 

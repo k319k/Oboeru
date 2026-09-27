@@ -106,6 +106,11 @@
 	// the top page: everything is expanded until the user collapses it.
 	let collapsedNodes = $state<Set<string>>(new Set());
 
+	// Inline sentence editing from the tree (text only — language, track and
+	// order stay in the 文章 tab)
+	let inlineDrafts = $state<Record<string, string>>({});
+	let inlineError = $state<Record<string, string>>({});
+
 	// Chapter form state
 	let editingChapterId = $state<string | null>(null);
 	let editingChapterName = $state('');
@@ -425,6 +430,44 @@
 	/** Sentences of one track only — descendants are counted on their own row. */
 	function getOwnSentenceCount(trackId: string): number {
 		return sentences.filter((s) => s.trackId === trackId).length;
+	}
+
+	/**
+	 * A track's own sentences in practice order. Descendant tracks are never
+	 * included: the chapter row deliberately has no inline editor, otherwise the
+	 * same sentence would get two editors.
+	 */
+	function ownSentencesOf(trackId: string): Sentence[] {
+		return sentences.filter((s) => s.trackId === trackId).sort((a, b) => a.order - b.order);
+	}
+
+	/**
+	 * Save an inline draft on Enter (event passed) or on blur (no event).
+	 *
+	 * `e.isComposing` is true while an IME candidate window is open, and
+	 * `keyCode === 229` is the legacy signal browsers used before
+	 * `isComposing` existed. Both are checked because the Enter that commits a
+	 * Japanese conversion arrives as a normal keydown — saving there would
+	 * persist the half-typed pre-conversion text on every candidate keystroke.
+	 * The blur handler passes no event, so the text committed by that Enter is
+	 * still saved (just by blur instead).
+	 */
+	function saveInlineSentence(sentenceId: string, e?: KeyboardEvent): void {
+		if (e && (e.isComposing || e.keyCode === 229)) return;
+		const draft = inlineDrafts[sentenceId];
+		if (draft === undefined) return;
+		if (!draft.trim()) {
+			inlineError = { ...inlineError, [sentenceId]: '文章テキストは必須です' };
+			return;
+		}
+		updateSentence(sentenceId, { text: draft });
+		const nextDrafts = { ...inlineDrafts };
+		delete nextDrafts[sentenceId];
+		inlineDrafts = nextDrafts;
+		const nextErrors = { ...inlineError };
+		delete nextErrors[sentenceId];
+		inlineError = nextErrors;
+		refreshData();
 	}
 
 	/** A chapter row aggregates its whole track subtree. */
@@ -1276,6 +1319,46 @@
 							{/if}
 						{/if}
 					</div>
+
+					<!-- Track rows only. The chapter row shows the same sentences on
+					     its child track rows, so an editor here would give every
+					     sentence two fields. -->
+					{#if opts.track && isExpanded(opts.id)}
+						<div
+							class="inline-sentences ml-10 mt-1 flex flex-col gap-2"
+							data-testid="inline-sentence-list"
+						>
+							{#each ownSentencesOf(opts.id) as sentence (sentence.id)}
+								<div class="flex flex-col gap-1">
+									<Textarea
+										rows={2}
+										value={inlineDrafts[sentence.id] ?? sentence.text}
+										oninput={(e) => {
+											inlineDrafts = { ...inlineDrafts, [sentence.id]: e.currentTarget.value };
+										}}
+										onkeydown={(e) => {
+											if (e.key === 'Enter' && !e.shiftKey) {
+												e.preventDefault();
+												saveInlineSentence(sentence.id, e);
+											}
+										}}
+										onblur={() => saveInlineSentence(sentence.id)}
+										aria-label={`${opts.name} 文 ${sentence.order}: ${sentence.text}`}
+										data-testid="inline-sentence-text"
+									/>
+									{#if inlineError[sentence.id]}
+										<div
+											class="rounded-md border border-destructive/30 bg-background p-2 text-xs text-destructive"
+											role="alert"
+											data-testid="inline-sentence-error"
+										>
+											{inlineError[sentence.id]}
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
 
 					{#if addingChildTrackToId === opts.id}
 						<div class="child-form ml-10 mt-1 flex flex-col gap-2 rounded-md border border-border bg-muted/50 p-2">
