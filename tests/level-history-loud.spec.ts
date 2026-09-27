@@ -98,7 +98,7 @@ async function setupPractice(page: Page) {
 		})
 	);
 
-	await page.goto('/practice?chapter=ch-ja-01');
+	await page.goto('/practice?node=ch-ja-01');
 }
 
 test.describe('level history overflow — deterministic loud source', () => {

@@ -26,6 +26,7 @@ interface SeedTrack {
 	chapterId: string;
 	name: string;
 	order: number;
+	parentId?: string | null;
 }
 
 interface SeedOptions {
@@ -166,14 +167,14 @@ async function mockJudge(page: Page, responses: JudgeResponse[]): Promise<JudgeM
 async function setupPractice(
 	page: Page,
 	opts: SeedOptions & { transcribe?: TranscribeResponse[] } = {},
-	chapterId = 'ch-ja-01'
+	nodeId = 'ch-ja-01'
 ) {
 	await seedPractice(page, opts);
 	await mockTts(page);
 	if (opts.transcribe) {
 		await mockTranscribe(page, opts.transcribe);
 	}
-	await page.goto(`/practice?chapter=${chapterId}`);
+	await page.goto(`/practice?node=${nodeId}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,34 +182,28 @@ async function setupPractice(
 // ---------------------------------------------------------------------------
 
 test.describe('Practice — Error states', () => {
-	test('missing chapter param shows summary with error', async ({ page }) => {
+	test('missing node param shows summary with error', async ({ page }) => {
 		await seedPractice(page);
 		await page.goto('/practice');
 
 		await expect(page.getByTestId('summary')).toBeVisible();
-		await expect(page.getByTestId('error-message')).toContainText(
-			'章 ID が指定されていません'
-		);
+		await expect(page.getByTestId('error-message')).toContainText('ID が指定されていません');
 	});
 
-	test('unknown chapter shows summary with error', async ({ page }) => {
+	test('unknown node shows summary with error', async ({ page }) => {
 		await seedPractice(page);
-		await page.goto('/practice?chapter=nope');
+		await page.goto('/practice?node=nope');
 
 		await expect(page.getByTestId('summary')).toBeVisible();
-		await expect(page.getByTestId('error-message')).toContainText(
-			'章が見つかりません: nope'
-		);
+		await expect(page.getByTestId('error-message')).toContainText('ノードが見つかりません: nope');
 	});
 
-	test('chapter with no sentences shows summary with error', async ({ page }) => {
+	test('node with no sentences shows summary with error', async ({ page }) => {
 		await seedPractice(page, { sentences: [] });
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		await expect(page.getByTestId('summary')).toBeVisible();
-		await expect(page.getByTestId('error-message')).toContainText(
-			'この章には文がありません'
-		);
+		await expect(page.getByTestId('error-message')).toContainText('このノードには文がありません');
 	});
 });
 
@@ -539,6 +534,87 @@ test.describe('Practice — Tracks', () => {
 		await expect(page.getByTestId('sentence-text')).toHaveText('こんにちは。');
 		await expect(page.getByTestId('progress')).toHaveText('応用 · 2 / 2');
 	});
+
+	test('starting from a track shows the breadcrumb and a plain progress line', async ({
+		page
+	}) => {
+		await setupPractice(
+			page,
+			{
+				transcribe: [{ text: 'x' }],
+				tracks: [
+					{ id: 'tr-a', chapterId: 'ch-ja-01', name: '基本', order: 1, parentId: null },
+					{ id: 'tr-b', chapterId: 'ch-ja-01', name: '応用', order: 2, parentId: null }
+				],
+				sentences: [
+					{ id: 'ja-01', chapterId: 'ch-ja-01', trackId: 'tr-a', text: 'おはようございます。', language: 'ja', order: 1 },
+					{ id: 'ja-02', chapterId: 'ch-ja-01', trackId: 'tr-a', text: 'こんにちは。', language: 'ja', order: 2 }
+				]
+			},
+			'tr-a'
+		);
+
+		await expect(page.getByTestId('chapter-name')).toHaveText('日本語 › 基本');
+		// The breadcrumb already carries the track name, so the progress line stays plain
+		await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+	});
+
+	test('a track session collects its own and its descendant tracks in pre-order', async ({
+		page
+	}) => {
+		await setupPractice(
+			page,
+			{
+				transcribe: [{ text: 'x' }],
+				tracks: [
+					{ id: 'tr-a', chapterId: 'ch-ja-01', name: 'A', order: 1, parentId: null },
+					{ id: 'tr-a-1', chapterId: 'ch-ja-01', name: 'A-1', order: 1, parentId: 'tr-a' },
+					{ id: 'tr-a-2', chapterId: 'ch-ja-01', name: 'A-2', order: 2, parentId: 'tr-a' },
+					{ id: 'tr-b', chapterId: 'ch-ja-01', name: 'B', order: 2, parentId: null }
+				],
+				sentences: [
+					{ id: 's-a2', chapterId: 'ch-ja-01', trackId: 'tr-a-2', text: 'あ-2', language: 'ja', order: 1 },
+					{ id: 's-a1', chapterId: 'ch-ja-01', trackId: 'tr-a-1', text: 'あ-1', language: 'ja', order: 1 },
+					{ id: 's-b', chapterId: 'ch-ja-01', trackId: 'tr-b', text: 'びー', language: 'ja', order: 1 },
+					{ id: 's-a', chapterId: 'ch-ja-01', trackId: 'tr-a', text: 'あ', language: 'ja', order: 1 }
+				]
+			},
+			'tr-a'
+		);
+
+		await expect(page.getByTestId('sentence-text')).toHaveText('あ');
+		await expect(page.getByTestId('progress')).toHaveText('1 / 3');
+		await page.getByTestId('skip-btn').click();
+		await expect(page.getByTestId('sentence-text')).toHaveText('あ-1');
+		await page.getByTestId('skip-btn').click();
+		await expect(page.getByTestId('sentence-text')).toHaveText('あ-2');
+		// tr-b is outside the tr-a subtree
+		await expect(page.getByTestId('progress')).toHaveText('3 / 3');
+	});
+
+	test('a chapter session still walks nested tracks in pre-order', async ({ page }) => {
+		await setupPractice(
+			page,
+			{
+				transcribe: [{ text: 'x' }],
+				tracks: [
+					{ id: 'tr-a', chapterId: 'ch-ja-01', name: 'A', order: 1, parentId: null },
+					{ id: 'tr-a-1', chapterId: 'ch-ja-01', name: 'A-1', order: 1, parentId: 'tr-a' }
+				],
+				sentences: [
+					{ id: 's-a1', chapterId: 'ch-ja-01', trackId: 'tr-a-1', text: 'あ-1', language: 'ja', order: 1 },
+					{ id: 's-a', chapterId: 'ch-ja-01', trackId: 'tr-a', text: 'あ', language: 'ja', order: 1 }
+				]
+			},
+			'ch-ja-01'
+		);
+
+		await expect(page.getByTestId('chapter-name')).toHaveText('日本語');
+		await expect(page.getByTestId('sentence-text')).toHaveText('あ');
+		await expect(page.getByTestId('progress')).toHaveText('A · 1 / 2');
+		await page.getByTestId('skip-btn').click();
+		await expect(page.getByTestId('progress')).toHaveText('A-1 · 2 / 2');
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -606,7 +682,7 @@ test.describe('Practice — T6 keyboard', () => {
 				body: MOCK_MIC_DELAYED
 			})
 		);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');
 		await expect(page.getByTestId('chapter-name')).toHaveText('日本語');
@@ -843,7 +919,7 @@ test.describe('Practice — T6 error retry', () => {
 			await route.fulfill({ status: 200, contentType: 'audio/wav', body: silentWavBytes(80) });
 		});
 		await mockTranscribe(page, [{ text: 'おはようございます。' }]);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		// show-prefetch (#1) + tts speak (#2) both fail → un-stuck error UI.
 		await expect(page.getByTestId('error-message')).toBeVisible({ timeout: 10000 });
@@ -883,7 +959,7 @@ test.describe('Practice — T6 error retry', () => {
 				body: MOCK_MIC_DENY_ONCE
 			})
 		);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 
@@ -921,7 +997,7 @@ test.describe('Practice — T6 error retry', () => {
 				body: JSON.stringify({ text: 'おはようございます。' })
 			});
 		});
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 		await holdAndRelease(page);
@@ -957,7 +1033,7 @@ test.describe('Practice — T6 word diff', () => {
 		});
 		await mockTts(page);
 		await mockTranscribe(page, [{ text: 'Good banana' }]);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 		await holdAndRelease(page);
@@ -1074,7 +1150,7 @@ test.describe('Practice — T13 push-to-talk', () => {
 				body: JSON.stringify({ text: 'おはようございます。' })
 			});
 		});
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 
 		await page.keyboard.down('Space');
@@ -1147,7 +1223,7 @@ test.describe('Practice — text selection is suppressed on the record controls'
 	test('the hold button and the action zone refuse text selection', async ({ page }) => {
 		await seedPractice(page);
 		await mockTts(page);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 
 		// `user-select` is the only one of the three declarations Chromium can
@@ -1164,7 +1240,7 @@ test.describe('Practice — text selection is suppressed on the record controls'
 	test('sentence text and diff tokens stay selectable', async ({ page }) => {
 		await seedPractice(page);
 		await mockTts(page);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 		await expect(page.getByTestId('sentence-text')).toBeVisible();
 
 		// The suppression is scoped to the record controls; the sentence itself
@@ -1178,7 +1254,7 @@ test.describe('Practice — text selection is suppressed on the record controls'
 	test('a long press with a drag selects nothing on the record controls', async ({ page }) => {
 		await seedPractice(page);
 		await mockTts(page);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 		await expect(page.getByTestId('sentence-text')).toBeVisible();
 
 		// Positive control: the very same gesture over the sentence does select,
@@ -1348,7 +1424,7 @@ test.describe('Practice — no auto-advance', () => {
 		});
 		await mockTts(page);
 		await mockTranscribe(page, [{ text: 'おはようございます。' }]);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 		await holdAndRelease(page);
@@ -1417,7 +1493,7 @@ test.describe('Practice — Jev judge', () => {
 		await mockJudge(page, [
 			{ available: true, noul: 0.95, category: 'orthography_variant', confidence: 0.9 }
 		]);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		// sim 29 (< 80) → judge is consulted → max(29, round(0.95*100)) = 95
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
@@ -1431,7 +1507,7 @@ test.describe('Practice — Jev judge', () => {
 		await mockTts(page);
 		await mockTranscribe(page, [{ text: 'ぜんぜんちがう' }]);
 		await mockJudge(page, [{ available: false }]);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		// sim 29 stays 29 — no boost without an available judge.
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
@@ -1445,7 +1521,7 @@ test.describe('Practice — Jev judge', () => {
 		await mockTts(page);
 		await mockTranscribe(page, [{ text: 'こんにちは。' }]);
 		const judge = await mockJudge(page, [{ available: true, noul: 0.95 }]);
-		await page.goto('/practice?chapter=ch-ja-01');
+		await page.goto('/practice?node=ch-ja-01');
 
 		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
 		await holdAndRelease(page);

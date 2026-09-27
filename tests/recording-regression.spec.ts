@@ -101,7 +101,7 @@ test('recorder is NOT stopped immediately after creation (regression)', async ({
 	page
 }) => {
 	await seedAndMock(page);
-	await page.goto('/practice?chapter=ch-ja-01');
+	await page.goto('/practice?node=ch-ja-01');
 
 	// Wait for the ready state BEFORE pressing Space: a keydown fired
 	// before Svelte hydration attaches the document keydown listener is
@@ -196,7 +196,7 @@ test('runtime: real recorder records ≥800ms and transcribes the blob', async (
 		}
 	});
 
-	await page.goto('/practice?chapter=ch-ja-01');
+	await page.goto('/practice?node=ch-ja-01');
 
 	// Wait for the ready state BEFORE pressing Space: a keydown fired
 	// before Svelte hydration attaches the document keydown listener is

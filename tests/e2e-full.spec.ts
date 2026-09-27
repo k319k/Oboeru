@@ -228,7 +228,7 @@ test('TTS end event fires: show → tts → hidden(ready) → hold → transcrib
 	await mockJudgeFallback(page);
 	await mockTranscribe(page, [{ text: 'おはようございます。', delayMs: 1000 }]);
 
-	await page.goto('/practice?chapter=ch-ja-01');
+	await page.goto('/practice?node=ch-ja-01');
 
 	// Show phase: sentence visible
 	await expect(page.getByTestId('sentence-text')).toBeVisible();
@@ -257,7 +257,7 @@ test('API down (500): error UI shown, sentence hidden, skip/stop still work', as
 	await mockJudgeFallback(page);
 	await mockTranscribe(page, [{ status: 500 }]);
 
-	await page.goto('/practice?chapter=ch-ja-01');
+	await page.goto('/practice?node=ch-ja-01');
 
 	// Hold → release → transcribe 500 → error feedback
 	await expect(page.getByTestId('sentence-text')).toHaveText('おはようございます。');

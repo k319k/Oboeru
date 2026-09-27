@@ -344,7 +344,7 @@ test.describe('Accessibility (WCAG AA)', () => {
 	test('practice show/tts — light & dark', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
 		await mockSlowTts(page, 3000);
-		await page.goto('/practice?chapter=child-1');
+		await page.goto('/practice?node=parent-1');
 		await expect(page.getByTestId('sentence-text')).toBeVisible();
 		await expectNoSeriousCritical(page, '/practice show/tts light');
 		await expectTapTargets(page, '/practice show/tts light');
@@ -358,7 +358,7 @@ test.describe('Accessibility (WCAG AA)', () => {
 	test('practice recording — light & dark', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
-		await page.goto('/practice?chapter=child-1');
+		await page.goto('/practice?node=parent-1');
 		// T13 push-to-talk: recording runs only while Space is held.
 		await startHold(page);
 		// The recording phase is static (only the timer/level meter ticks)
@@ -384,7 +384,7 @@ test.describe('Accessibility (WCAG AA)', () => {
 		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
 		await mockTranscribe(page, 'こんにちは。');
-		await page.goto('/practice?chapter=child-1');
+		await page.goto('/practice?node=parent-1');
 		// T13 push-to-talk: hold Space past the 0.5s short-tap guard, release → score.
 		await holdAndRelease(page);
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
@@ -417,7 +417,7 @@ test.describe('Accessibility (WCAG AA)', () => {
 		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
 		await mockTranscribe(page, 'ぜんぜんちがう');
-		await page.goto('/practice?chapter=child-1');
+		await page.goto('/practice?node=parent-1');
 		// T13 push-to-talk: hold Space past the 0.5s short-tap guard, release → score.
 		await holdAndRelease(page);
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
@@ -527,7 +527,7 @@ test.describe('Accessibility (WCAG AA)', () => {
 		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
 		await mockTranscribe(page, 'こんにちは。');
-		await page.goto('/practice?chapter=child-1');
+		await page.goto('/practice?node=parent-1');
 
 		const animName = (sel: string) =>
 			page.evaluate((s) => {

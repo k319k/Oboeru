@@ -253,7 +253,7 @@ test.describe('Responsive layout (390px)', () => {
 	test.describe('App shell — practice hides the global nav', () => {
 		test('/practice has no global nav; / still does', async ({ page }) => {
 			await gotoWithSeed(page, SEED);
-			await page.goto('/practice?chapter=child-1');
+			await page.goto('/practice?node=parent-1');
 			await expect(page.getByTestId('sentence-text')).toBeVisible();
 
 			await expect(page.getByRole('link', { name: 'おぼえる', exact: true })).toHaveCount(0);
@@ -322,7 +322,7 @@ test.describe('Responsive layout (390px)', () => {
 	}) => {
 		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
-		await page.goto('/practice?chapter=child-1');
+		await page.goto('/practice?node=parent-1');
 
 		await expectNoHorizontalOverflow(page, '/practice show');
 		await expectTapTargets(page, '/practice show');
@@ -376,7 +376,7 @@ test.describe('Responsive layout (390px)', () => {
 	test('practice recording — no overflow, tap targets >= 44px', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
-		await page.goto('/practice?chapter=child-1');
+		await page.goto('/practice?node=parent-1');
 
 		// T13 push-to-talk: hold Space to enter (and stay in) the recording phase.
 		// The ready state is asserted first: `record-ready-hint` only exists while
@@ -432,7 +432,7 @@ test.describe('Responsive layout (390px)', () => {
 			await page.setViewportSize({ width, height: 844 });
 			await gotoWithSeed(page, SEED);
 			await mockTtsApi(page);
-			await page.goto('/practice?chapter=child-1');
+			await page.goto('/practice?node=parent-1');
 
 			await startHold(page);
 			// Bars are appended on every level callback (100ms), loud or quiet, so
@@ -527,7 +527,7 @@ test.describe('Responsive layout (390px)', () => {
 		await gotoWithSeed(page, SEED);
 		await mockTtsApi(page);
 		await mockTranscribe(page, 'こんにちは。');
-		await page.goto('/practice?chapter=child-1');
+		await page.goto('/practice?node=parent-1');
 
 		// T13 push-to-talk: hold Space past the 0.5s short-tap guard, release → score.
 		await holdAndRelease(page);
@@ -624,7 +624,7 @@ test.describe('Responsive layout (390px)', () => {
 		await gotoWithSeed(page, TALL_SEED);
 		await mockTtsApi(page);
 		await mockTranscribe(page, TALL_TRANSCRIPT);
-		await page.goto('/practice?chapter=tall-1');
+		await page.goto('/practice?node=tall-1');
 
 		await holdAndRelease(page);
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
@@ -688,7 +688,7 @@ test.describe('Responsive layout (390px)', () => {
 		// A wrong transcript → the retry path, so the next round is reached via
 		// もう一度試す rather than 次へ.
 		await mockTranscribe(page, 'ちがう');
-		await page.goto('/practice?chapter=tall-1');
+		await page.goto('/practice?node=tall-1');
 
 		await holdAndRelease(page);
 		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10000 });
@@ -722,7 +722,7 @@ test.describe('Responsive layout (390px)', () => {
 		await gotoWithSeed(page, TALL_SEED);
 		await mockTtsApi(page);
 		await mockTranscribe(page, 'ちがう');
-		await page.goto('/practice?chapter=tall-1');
+		await page.goto('/practice?node=tall-1');
 
 		// Each sentence gets a real failing attempt (that is what populates
 		// 間違えた文 — skip() alone would not), then a skip onward. Three

@@ -7,8 +7,9 @@
 		loadChapters,
 		loadSentences,
 		loadTracks,
-		flattenChapterTree,
-		getChapterSentences
+		getNodeSentences,
+		getNodeTrail,
+		type NodeRef
 	} from '$lib/sentences';
 	import { speak, cancelSpeech, prefetchTts } from '$lib/tts';
 	import { startRecording } from '$lib/recorder';
@@ -106,7 +107,12 @@
 	let voiceURI: string | null = $state(null);
 	let retryFrom: 'tts' | 'rerecord' = $state('tts');
 
-	let chapterName: string = $state('');
+	// Breadcrumb of the node the session started from (chapter → ancestors → self).
+	let nodeTrail: NodeRef[] = $state([]);
+	// A chapter-started session may show the current track name in the progress
+	// line. A track-started session already shows it in the breadcrumb, so the
+	// progress line stays plain.
+	let startedFromChapter: boolean = $state(false);
 
 	// Tracks of the practiced chapter (loaded once at session start) — powers
 	// the current-track badge in the header.
@@ -117,7 +123,9 @@
 
 	// Mid-session restore (T9). The phase machine is held behind the restore
 	// dialog (sessionReady) until the user picks 続ける / 最初から.
-	let currentChapterId: string | null = null;
+	// Node (chapter or track) the session belongs to. Written into the progress
+	// record's `chapterId` field, which predates tracks.
+	let sessionNodeId: string | null = null;
 	let sessionReady: boolean = $state(false);
 	let pendingRestore: PracticeProgress | null = null;
 	let restoreDialogOpen: boolean = $state(false);
@@ -131,6 +139,7 @@
 	// ---------------------------------------------------------------------------
 
 	let currentSentence = $derived(sentences[currentIndex] ?? null);
+	let nodeTrailText = $derived(nodeTrail.map((n) => n.name).join(' › '));
 	let progress = $derived(
 		sentences.length > 0 ? `${currentIndex + 1} / ${sentences.length}` : ''
 	);
@@ -144,7 +153,9 @@
 	let chapterTrackCount = $derived(
 		sentences[0] ? tracks.filter((t) => t.chapterId === sentences[0]?.chapterId).length : 0
 	);
-	let showTrackBadge = $derived(chapterTrackCount > 1 && currentTrackName !== '');
+	let showTrackBadge = $derived(
+		startedFromChapter && chapterTrackCount > 1 && currentTrackName !== ''
+	);
 	let averageScore = $derived(
 		completedCount > 0 ? Math.round(totalScore / completedCount) : 0
 	);
@@ -819,13 +830,15 @@
 			clearPracticeProgress();
 			return;
 		}
-		if (!currentChapterId) return;
+		if (!sessionNodeId) return;
 		const index =
 			phase === 'feedback' && score !== null && !errorMessage && score >= threshold
 				? currentIndex + 1
 				: currentIndex;
 		savePracticeProgress({
-			chapterId: currentChapterId,
+			// The progress record predates tracks; its `chapterId` field now
+			// carries the session's node id (chapter or track).
+			chapterId: sessionNodeId,
 			currentIndex: index,
 			completedCount,
 			totalScore,
@@ -845,43 +858,43 @@
 		voiceURI = settings.voiceURI;
 		retryFrom = settings.retryFrom;
 
-		const chapterId = page.url.searchParams.get('chapter');
-		if (!chapterId) {
-			errorMessage = '章 ID が指定されていません';
+		const rawNodeId = page.url.searchParams.get('node');
+		if (!rawNodeId) {
+			errorMessage = 'ID が指定されていません';
 			endedEarly = true;
 			phase = 'summary';
 			return;
 		}
 
 		const allChapters = loadChapters();
-		const flatChapters = flattenChapterTree(allChapters);
-		const targetChapter = flatChapters.find((c) => c.id === chapterId);
+		const allTracks = loadTracks();
+		const trail = getNodeTrail(rawNodeId, allChapters, allTracks);
 
-		if (!targetChapter) {
-			errorMessage = `章が見つかりません: ${chapterId}`;
+		if (trail.length === 0) {
+			errorMessage = `ノードが見つかりません: ${rawNodeId}`;
 			endedEarly = true;
 			phase = 'summary';
 			return;
 		}
 
-		chapterName = targetChapter.name;
+		nodeTrail = trail;
+		startedFromChapter = trail.length === 1 && trail[0].type === 'chapter';
 
-		const allSentences = loadSentences();
-		const chapterSentences = getChapterSentences(chapterId, allSentences);
+		const nodeSentences = getNodeSentences(rawNodeId, allChapters, allTracks, loadSentences());
 
-		if (chapterSentences.length === 0) {
-			errorMessage = 'この章には文がありません';
+		if (nodeSentences.length === 0) {
+			errorMessage = 'このノードには文がありません';
 			endedEarly = true;
 			phase = 'summary';
 			return;
 		}
 
-		sentences = chapterSentences;
+		sentences = nodeSentences;
 		currentIndex = 0;
-		currentChapterId = chapterId;
-		tracks = loadTracks();
+		sessionNodeId = rawNodeId;
+		tracks = allTracks;
 
-		const saved = loadPracticeProgress(chapterId);
+		const saved = loadPracticeProgress(rawNodeId);
 		const hasProgress =
 			saved !== null &&
 			(saved.currentIndex > 0 || saved.completedCount > 0 || saved.skippedCount > 0);
@@ -991,7 +1004,7 @@
 
 		<header class="flex flex-none items-center gap-2 pb-3" data-testid="practice-header">
 			<h1 class="min-w-0 flex-1 truncate text-sm font-bold sm:text-base" data-testid="chapter-name">
-				{chapterName}
+				{nodeTrailText}
 			</h1>
 			<Button
 				variant="outline"
@@ -1336,7 +1349,7 @@
 			<AlertDialogHeader>
 				<AlertDialogTitle>前回の続きから再開しますか?</AlertDialogTitle>
 				<AlertDialogDescription>
-					{chapterName}の練習途中の状態が残っています。
+					{nodeTrailText}の練習途中の状態が残っています。
 				</AlertDialogDescription>
 			</AlertDialogHeader>
 			<AlertDialogFooter>
