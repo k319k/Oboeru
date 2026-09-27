@@ -209,12 +209,54 @@ export function deleteTrack(id: string): void {
 }
 
 /**
- * Get tracks for a specific chapter, ordered by `order`.
+ * Flatten one chapter's track tree in depth-first (pre-order) order: the
+ * chapter's direct children (parentId === null) sorted by `order`, each
+ * immediately followed by its own subtree. Tracks of other chapters are never
+ * collected, so a `parentId` pointing outside the chapter cannot leak nodes in.
+ */
+export function flattenTrackTree(chapterId: string, tracks: Track[]): Track[] {
+	const result: Track[] = [];
+
+	function walk(parentTrackId: string | null): void {
+		const children = tracks
+			.filter((t) => t.chapterId === chapterId && (t.parentId ?? null) === parentTrackId)
+			.sort((a, b) => a.order - b.order);
+		for (const child of children) {
+			result.push(child);
+			walk(child.id);
+		}
+	}
+
+	walk(null);
+	return result;
+}
+
+/**
+ * Ids of `trackId` plus every descendant track. Terminates on cyclic data
+ * because an id is never visited twice.
+ */
+export function getNodeDescendantTrackIds(trackId: string, tracks: Track[]): Set<string> {
+	const ids = new Set<string>([trackId]);
+	let grew = true;
+	while (grew) {
+		grew = false;
+		for (const t of tracks) {
+			if (t.parentId !== null && ids.has(t.parentId) && !ids.has(t.id)) {
+				ids.add(t.id);
+				grew = true;
+			}
+		}
+	}
+	return ids;
+}
+
+/**
+ * All tracks of a chapter in pre-order. Thin wrapper over `flattenTrackTree`
+ * kept for the existing callers (addSentence / updateSentence auto-assign,
+ * manage's chapter-filtered group list).
  */
 export function getChapterTracks(chapterId: string, tracks: Track[]): Track[] {
-	return tracks
-		.filter((t) => t.chapterId === chapterId)
-		.sort((a, b) => a.order - b.order);
+	return flattenTrackTree(chapterId, tracks);
 }
 
 // ---------------------------------------------------------------------------

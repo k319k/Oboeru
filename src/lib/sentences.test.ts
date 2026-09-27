@@ -18,7 +18,9 @@ import {
 	addTrack,
 	updateTrack,
 	deleteTrack,
-	getChapterTracks
+	getChapterTracks,
+	flattenTrackTree,
+	getNodeDescendantTrackIds
 } from './sentences';
 import { defaultChapters, defaultSentences, defaultTracks } from './default-sentences';
 
@@ -579,5 +581,82 @@ describe('deleteChapter with tracks', () => {
 		const chapterIds = loadTracks().map((t) => t.chapterId);
 		expect(chapterIds).not.toContain(root.id);
 		expect(chapterIds).not.toContain(child.id);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Track hierarchy traversal
+// ---------------------------------------------------------------------------
+
+function track(over: Partial<Track> & { id: string }): Track {
+	return { chapterId: 'ch-1', name: over.id, order: 1, parentId: null, ...over };
+}
+
+describe('flattenTrackTree', () => {
+	it('returns direct children then their subtrees in pre-order', () => {
+		const tracks = [
+			track({ id: 't2', name: 'B', order: 2 }),
+			track({ id: 't1-1', name: 'B-1', order: 1, parentId: 't1' }),
+			track({ id: 't1', name: 'A', order: 1 }),
+			track({ id: 't1-2', name: 'A-2', order: 2, parentId: 't1' }),
+			track({ id: 't1-1-1', name: 'A-1-1', order: 1, parentId: 't1-1' })
+		];
+		expect(flattenTrackTree('ch-1', tracks).map((t) => t.id)).toEqual([
+			't1',
+			't1-1',
+			't1-1-1',
+			't1-2',
+			't2'
+		]);
+	});
+
+	it('never collects tracks from another chapter', () => {
+		const tracks = [
+			track({ id: 't1', chapterId: 'ch-1' }),
+			track({ id: 'x1', chapterId: 'ch-2' }),
+			track({ id: 'x1-1', chapterId: 'ch-2', parentId: 'x1' })
+		];
+		expect(flattenTrackTree('ch-1', tracks).map((t) => t.id)).toEqual(['t1']);
+	});
+
+	it('returns an empty array for a chapter without tracks', () => {
+		expect(flattenTrackTree('ch-none', [track({ id: 't1' })])).toEqual([]);
+	});
+});
+
+describe('getNodeDescendantTrackIds', () => {
+	it('includes the track itself and all descendants', () => {
+		const tracks = [
+			track({ id: 't1' }),
+			track({ id: 't1-1', parentId: 't1' }),
+			track({ id: 't1-1-1', parentId: 't1-1' }),
+			track({ id: 't2' })
+		];
+		expect([...getNodeDescendantTrackIds('t1', tracks)].sort()).toEqual(['t1', 't1-1', 't1-1-1']);
+	});
+
+	it('terminates on a cyclic parentId chain', () => {
+		const tracks = [track({ id: 'a', parentId: 'b' }), track({ id: 'b', parentId: 'a' })];
+		expect([...getNodeDescendantTrackIds('a', tracks)].sort()).toEqual(['a', 'b']);
+	});
+});
+
+describe('getChapterTracks (pre-order wrapper)', () => {
+	it('lists nested tracks after their parent', () => {
+		const tracks = [
+			track({ id: 't1' }),
+			track({ id: 't1-1', parentId: 't1' }),
+			track({ id: 't2', order: 2 })
+		];
+		expect(getChapterTracks('ch-1', tracks).map((t) => t.id)).toEqual(['t1', 't1-1', 't2']);
+	});
+
+	it('places a parent before its child even when the child has a lower order', () => {
+		const tracks = [
+			track({ id: 't1', order: 2 }),
+			track({ id: 't1-1', parentId: 't1', order: 1 }),
+			track({ id: 't2', order: 1 })
+		];
+		expect(getChapterTracks('ch-1', tracks).map((t) => t.id)).toEqual(['t2', 't1', 't1-1']);
 	});
 });
