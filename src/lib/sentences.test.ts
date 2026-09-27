@@ -402,6 +402,43 @@ describe('addTrack', () => {
 		const chapter = addChapter('C', null);
 		expect(() => addTrack(chapter.id, '   ')).toThrow();
 	});
+
+	it('creates a child track with parentId set', () => {
+		saveChapters([{ id: 'ch-1', name: '1章', parentId: null, order: 1 }]);
+		saveTracks([{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null }]);
+
+		const created = addTrack('ch-1', 'A-1', 't1');
+
+		expect(created.parentId).toBe('t1');
+		expect(created.chapterId).toBe('ch-1');
+		expect(loadTracks().find((t) => t.id === created.id)?.parentId).toBe('t1');
+	});
+
+	it('numbers children within their own parent, not across the chapter', () => {
+		saveChapters([{ id: 'ch-1', name: '1章', parentId: null, order: 1 }]);
+		saveTracks([
+			{ id: 't1', chapterId: 'ch-1', name: 'A', order: 1, parentId: null },
+			{ id: 't1-1', chapterId: 'ch-1', name: 'A-1', order: 1, parentId: 't1' }
+		]);
+
+		addTrack('ch-1', 'A-2', 't1');
+		addTrack('ch-1', 'B', null);
+
+		const tracks = loadTracks();
+		expect(tracks.find((t) => t.name === 'A-2')?.order).toBe(2);
+		expect(tracks.find((t) => t.name === 'B')?.order).toBe(2);
+	});
+
+	it('treats a legacy track without parentId as a direct child of the chapter', () => {
+		saveChapters([{ id: 'ch-1', name: '1章', parentId: null, order: 1 }]);
+		// Simulate data written before the parentId field existed
+		saveTracks([{ id: 't1', chapterId: 'ch-1', name: 'A', order: 7 } as Track]);
+
+		const created = addTrack('ch-1', 'B');
+
+		expect(created.order).toBe(8);
+		expect(created.parentId).toBeNull();
+	});
 });
 
 describe('updateTrack', () => {
