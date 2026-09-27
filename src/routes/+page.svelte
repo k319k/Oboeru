@@ -38,29 +38,48 @@
 			.sort((a, b) => a.order - b.order);
 	}
 
-	/** Sentences of one track only — descendants are counted on their own row. */
-	function ownCount(trackId: string): number {
-		return sentences.filter((s) => s.trackId === trackId).length;
+	/**
+	 * One `getNodeSentences` call per node id, computed once per data change and
+	 * then read by every row. It is the single source of truth for all three
+	 * numbers a row shows, so a chapter's count and its 練習 button can never
+	 * disagree (counting by track id while the button counted by chapterId showed
+	 * `0文` next to a button whenever a track id was broken).
+	 */
+	let sentencesByNode = $derived.by(() => {
+		const map = new Map<string, Sentence[]>();
+		for (const chapter of rootChapters()) {
+			map.set(chapter.id, getNodeSentences(chapter.id, chapters, tracks, sentences));
+			for (const track of flattenTrackTree(chapter.id, tracks)) {
+				map.set(track.id, getNodeSentences(track.id, chapters, tracks, sentences));
+			}
+		}
+		return map;
+	});
+
+	function nodeSentences(nodeId: string): Sentence[] {
+		return sentencesByNode.get(nodeId) ?? [];
 	}
 
-	/** A chapter row aggregates its whole subtree; a track row shows only its own sentences. */
+	/** A track row counts only its own sentences — descendants have their own rows. */
+	function ownCount(trackId: string): number {
+		return nodeSentences(trackId).filter((s) => s.trackId === trackId).length;
+	}
+
+	/** A chapter row aggregates its whole subtree. */
 	function chapterTotal(chapterId: string): number {
-		return flattenTrackTree(chapterId, tracks).reduce((sum, t) => sum + ownCount(t.id), 0);
+		return nodeSentences(chapterId).length;
 	}
 
 	/** Languages present in the chapter's subtree, JA first. Chapter rows only. */
 	function chapterLanguages(chapterId: string): ('ja' | 'en')[] {
-		const scope = new Set(flattenTrackTree(chapterId, tracks).map((t) => t.id));
 		const langs = new Set<'ja' | 'en'>();
-		for (const s of sentences) {
-			if (scope.has(s.trackId)) langs.add(s.language);
-		}
+		for (const s of nodeSentences(chapterId)) langs.add(s.language);
 		return [...langs].sort((a, b) => (a === 'ja' ? -1 : 1));
 	}
 
 	/** A node is startable when its subtree holds at least one sentence. */
 	function canPractice(nodeId: string): boolean {
-		return getNodeSentences(nodeId, chapters, tracks, sentences).length > 0;
+		return nodeSentences(nodeId).length > 0;
 	}
 
 	function isExpanded(id: string): boolean {

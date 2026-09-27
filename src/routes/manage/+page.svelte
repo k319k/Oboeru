@@ -23,7 +23,6 @@
 		deleteSentence,
 		flattenChapterTree,
 		flattenTrackTree,
-		getChapterSentences,
 		getChapterTracks,
 		getNodeDescendantTrackIds,
 		migrateToV3
@@ -257,13 +256,33 @@
 	let editingSentenceOverLimit = $derived(editingSentenceText.length > 200);
 
 	/** Deleting a track cascades over its whole subtree, so the confirm dialog
-	    states how many tracks and sentences are actually going away. */
+	    states how many tracks and sentences are actually going away. The walk is
+	    chapter-scoped, matching `deleteTrack`: a cross-chapter duplicate id must
+	    not inflate the preview with another chapter's data. */
 	let deleteTrackPreview = $derived.by(() => {
-		if (!deleteTrackTarget) return { tracks: 0, sentences: 0 };
-		const scope = getNodeDescendantTrackIds(deleteTrackTarget.id, tracks);
+		const target = deleteTrackTarget;
+		if (!target) return { tracks: 0, sentences: 0 };
+		const scope = getNodeDescendantTrackIds(target.id, tracks, target.chapterId);
 		return {
 			tracks: scope.size,
-			sentences: sentences.filter((s) => scope.has(s.trackId)).length
+			sentences: sentences.filter(
+				(s) => s.chapterId === target.chapterId && scope.has(s.trackId)
+			).length
+		};
+	});
+
+	/** Same idea for a chapter: `deleteChapter` removes every track of the chapter
+	    and every sentence whose `chapterId` is that chapter, so the dialog counts
+	    exactly that set instead of describing the cascade in prose. */
+	let deleteChapterPreview = $derived.by(() => {
+		const target = deleteChapterTarget;
+		if (!target) return { tracks: 0, sentences: 0 };
+		const scope = new Set(flattenTrackTree(target.id, tracks).map((t) => t.id));
+		return {
+			tracks: scope.size,
+			sentences: sentences.filter(
+				(s) => s.chapterId === target.id || scope.has(s.trackId)
+			).length
 		};
 	});
 
@@ -811,7 +830,7 @@
 		}
 
 		// Validate required fields for tracks
-		const trackIdsByChapter = new Map<string, Set<string>>();
+		const seenTrackIds = new Set<string>();
 		for (const t of obj.tracks) {
 			if (typeof t !== 'object' || t === null) {
 				return { valid: false, error: '不正なトラックデータです' };
@@ -824,23 +843,20 @@
 			) {
 				return { valid: false, error: 'トラックに必須フィールドがありません' };
 			}
-			const trackId = track.id;
-			const trackChapterId = track.chapterId;
-			// Two tracks sharing an id inside one chapter make the hierarchy walk
-			// ambiguous — a track resolves its parent by id, so the duplicate can
-			// become its own ancestor and send `flattenTrackTree` into a cycle.
-			// Cross-chapter duplicates stay allowed: nothing resolves a track's
-			// ancestors within a chapter, and ids are matched globally there
-			// (e.g. by `getNodeDescendantTrackIds`).
-			let seenInChapter = trackIdsByChapter.get(trackChapterId);
-			if (seenInChapter === undefined) {
-				seenInChapter = new Set<string>();
-				trackIdsByChapter.set(trackChapterId, seenInChapter);
-			}
-			if (seenInChapter.has(trackId)) {
+			// Two tracks sharing an id make the hierarchy walk ambiguous — a track
+			// resolves its parent by id, so the duplicate can become its own
+			// ancestor and send `flattenTrackTree` into a cycle. The rule is
+			// **global**, not per chapter: ids are matched globally everywhere
+			// downstream (`getNodeSentences` looks a track up with
+			// `tracks.find`), and `deleteTrack` only knows the id it was given. So
+			// a cross-chapter duplicate would make one chapter's delete take the
+			// other chapter's track and sentences with it. Legitimate ids come
+			// from `generateId()`, which does not repeat across chapters, so
+			// rejecting at the input is the honest guarantee.
+			if (seenTrackIds.has(track.id)) {
 				return { valid: false, error: 'トラック id が重複しています' };
 			}
-			seenInChapter.add(trackId);
+			seenTrackIds.add(track.id);
 		}
 
 		// Validate required fields for sentences
@@ -1923,8 +1939,9 @@
 		<AlertDialog.Content>
 			<AlertDialog.Header>
 				<AlertDialog.Title>チャプターを削除</AlertDialog.Title>
-				<AlertDialog.Description>
-					このチャプターとすべての子孫チャプター・含まれる文章を削除しますか？<br />「{deleteChapterTarget?.name}」
+				<AlertDialog.Description data-testid="delete-chapter-preview">
+					このチャプター配下の{deleteChapterPreview.tracks}件のトラックと{deleteChapterPreview
+						.sentences}件の文章を削除しますか？<br />「{deleteChapterTarget?.name}」
 				</AlertDialog.Description>
 			</AlertDialog.Header>
 			<AlertDialog.Footer>

@@ -433,6 +433,23 @@ test.describe('Track CRUD in the tree', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('Chapter delete with descendants', () => {
+	test('the confirm dialog states how many tracks and sentences go away', async ({ page }) => {
+		await gotoManage(page, nestedSeed);
+
+		// nestedSeed has no `tracks`, so the read shim creates one per chapter and
+		// then the v3 shim turns 子/孫チャプター into tracks of 親チャプター: 5
+		// tracks in total, and both sentences (親の文章 / 子の文章) end up in it.
+		const parentRow = page.locator('.chapter-row', { hasText: '親チャプター' });
+		await parentRow.getByTestId('delete-chapter').click();
+
+		const preview = page.getByTestId('delete-chapter-preview');
+		await expect(preview).toContainText('5件のトラック');
+		await expect(preview).toContainText('2件の文章');
+		// The dialog must not describe a cascade that no longer exists (chapters
+		// are roots only since the track hierarchy landed).
+		await expect(preview).not.toContainText('子孫チャプター');
+	});
+
 	test('accepting confirm cascades: chapters and sentences removed', async ({ page }) => {
 		await gotoManage(page, nestedSeed);
 
