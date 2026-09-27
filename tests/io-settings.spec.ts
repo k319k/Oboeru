@@ -521,7 +521,7 @@ test.describe('JSON Import — Duplicate track ids', () => {
 		expect(stored.tracks.map((t: { id: string }) => t.id)).not.toContain('tdup');
 	});
 
-	test('the same track id in two different chapters is accepted', async ({ page }) => {
+	test('the same track id in two different chapters is rejected', async ({ page }) => {
 		await seedData(page);
 		await page.getByRole('tab', { name: 'データ' }).click();
 
@@ -548,13 +548,23 @@ test.describe('JSON Import — Duplicate track ids', () => {
 			buffer: Buffer.from(JSON.stringify(importData))
 		});
 
-		// Cross-chapter duplicates are out of scope for the rejection rule
-		// (`getNodeDescendantTrackIds` is not chapter-scoped), so the import goes
-		// through. Only the absence of the duplicate error is asserted — the id
-		// merge itself is pre-existing behaviour and is not what this test covers.
+		// The duplicate rule is global, not per chapter. Track ids are matched
+		// globally downstream (`getNodeSentences` looks a track up by id,
+		// `deleteTrack` only receives the id), so a cross-chapter duplicate would
+		// let one chapter's delete take the other chapter's data with it. Legit
+		// ids come from `generateId()` and never repeat, so this is rejected.
 		const message = page.getByTestId('import-message');
-		await expect(message).toHaveClass(/success/);
-		await expect(message).not.toContainText('重複しています');
+		await expect(message).toHaveClass(/error/);
+		await expect(message).toContainText('トラック id が重複しています');
+
+		// Nothing was written: neither chapter nor track reached the storage.
+		const stored = await page.evaluate(
+			(key) => JSON.parse(localStorage.getItem(key)!),
+			STORAGE_KEY
+		);
+		expect(stored.chapters.map((c: { id: string }) => c.id)).not.toContain('c-a');
+		expect(stored.chapters.map((c: { id: string }) => c.id)).not.toContain('c-b');
+		expect(stored.tracks.map((t: { id: string }) => t.id)).not.toContain('tshared');
 	});
 });
 

@@ -327,14 +327,31 @@ export function updateTrack(id: string, updates: Partial<Omit<Track, 'id' | 'par
 	saveTracks(tracks);
 }
 
-/** Delete a track together with its whole subtree (descendant tracks + sentences). */
+/**
+ * Delete a track together with its whole subtree (descendant tracks + sentences),
+ * strictly inside the chapter that owns the track.
+ *
+ * Both the walk and the sentence filter are chapter-scoped: the track id itself
+ * is the only lookup key, so a cross-chapter duplicate id (importable before the
+ * duplicate rule, and writable to localStorage by hand) would otherwise delete
+ * the other chapter's track and sentences as well.
+ *
+ * An unknown id is a no-op: without the track there is no owning chapter to
+ * scope to, and deleting by id alone could remove a foreign chapter's data.
+ */
 export function deleteTrack(id: string): void {
 	const tracks = loadTracks();
+	const target = tracks.find((t) => t.id === id);
+	if (!target) return;
 	const sentences = loadSentences();
-	const doomed = getNodeDescendantTrackIds(id, tracks);
+	const doomed = getNodeDescendantTrackIds(id, tracks, target.chapterId);
 
-	const remainingTracks = tracks.filter((t) => !doomed.has(t.id));
-	const remainingSentences = sentences.filter((s) => !doomed.has(s.trackId));
+	const remainingTracks = tracks.filter(
+		(t) => t.chapterId !== target.chapterId || !doomed.has(t.id)
+	);
+	const remainingSentences = sentences.filter(
+		(s) => s.chapterId !== target.chapterId || !doomed.has(s.trackId)
+	);
 
 	saveTracks(remainingTracks);
 	saveSentences(remainingSentences);
@@ -372,15 +389,28 @@ export function flattenTrackTree(chapterId: string, tracks: Track[]): Track[] {
 }
 
 /**
- * Ids of `trackId` plus every descendant track. Terminates on cyclic data
- * because an id is never visited twice.
+ * Ids of `trackId` plus every descendant track **of `chapterId`**. Terminates on
+ * cyclic data because an id is never visited twice.
+ *
+ * `chapterId` is required, never optional: a track's parent is resolved by id
+ * alone, so a chapter-less walk would follow another chapter's same-id track and
+ * hand `deleteTrack` a subtree belonging to a different chapter. Import rejects
+ * cross-chapter duplicate ids, but localStorage written before that rule (or by
+ * hand) can still hold them, and the walk must stay inside the chapter either
+ * way. `trackId` itself is always included even if it is unknown, so callers
+ * that scope by a caller-supplied chapter stay correct for a missing track.
  */
-export function getNodeDescendantTrackIds(trackId: string, tracks: Track[]): Set<string> {
+export function getNodeDescendantTrackIds(
+	trackId: string,
+	tracks: Track[],
+	chapterId: string
+): Set<string> {
 	const ids = new Set<string>([trackId]);
 	let grew = true;
 	while (grew) {
 		grew = false;
 		for (const t of tracks) {
+			if (t.chapterId !== chapterId) continue;
 			if (t.parentId !== null && ids.has(t.parentId) && !ids.has(t.id)) {
 				ids.add(t.id);
 				grew = true;
@@ -559,7 +589,7 @@ export function getNodeSentences(
 	const found = tracks.find((t) => t.id === nodeId);
 	if (!found) return [];
 	const position = new Map(flattenTrackTree(found.chapterId, tracks).map((t, i) => [t.id, i]));
-	const scope = getNodeDescendantTrackIds(found.id, tracks);
+	const scope = getNodeDescendantTrackIds(found.id, tracks, found.chapterId);
 	return byTrackPosition(
 		sentences.filter((s) => s.chapterId === found.chapterId && scope.has(s.trackId)),
 		position

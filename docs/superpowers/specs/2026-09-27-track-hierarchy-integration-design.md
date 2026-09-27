@@ -123,13 +123,27 @@ export interface Sentence {
 - v2 変換は**ディスク JS 内で行わない**。`validateImportJson` は「version が 2 または 3」で
   必須フィールド検証のみ行い、変換は upsert 前に別の純関数 `migrateToV3(data)` を通す
 - 成功メッセージは v3 と同じ形式 (「N件のチャプター、N件のトラック、N件の文章をインポートしました」)
+- **トラック id の重複は「章をまたいでいても」拒否する** (「トラック id が重複しています」)。
+  章内で閉じる検査ではなく **グローバル** な重複検査とする。理由:
+  - 下流は id を**グローバルに**照合する (`getNodeSentences` は `tracks.find` でトラックを
+    引く / `deleteTrack` は id だけを受け取る / `getNodeTrail` も同様)。章をまたいだ重複は
+    「別々のノード」に見えない。
+  - 重複が残ると `deleteTrack` のカスケードが**他章のトラックと文まで巻き込む** (経路は
+    `src/lib/sentences.test.ts` の `deleteTrack with a track id duplicated across chapters`
+    で実測済み)。`getNodeDescendantTrackIds` を章スコープにしたのはその**防止**で、
+    入力側の検査は別系統の保証。
+  - 正当な id は `generateId()` 由来 (`Date.now()` + 乱数) で章をまたいで衝突しない。
+    したがって入力で弾くのが「保証」に正確。
+  - 結果として「章をまたぐ重複は受理する」という旧裁定は**撤回**する
+    (io-settings の `the same track id in two different chapters is accepted` も
+    「is rejected」へ反転)。
 
 ## 純関数 (`sentences.ts` に追加/変更)
 
 | 関数 | 役割 |
 |---|---|
 | `flattenTrackTree(chapterId, tracks): Track[]` | 章直下 + 子孫トラックを pre-order で平坦化 |
-| `getNodeDescendantTrackIds(nodeId, tracks): Set<string>` | ノード自身 + 子孫トラックの id 集合 |
+| `getNodeDescendantTrackIds(trackId, tracks, chapterId): Set<string>` | ノード自身 + **その章の**子孫トラックの id 集合。`chapterId` は**必須** (省略不可) — 親は id だけで引かれるため章スコープ無しでは他章の同名 id を辿り、`deleteTrack` が他章のデータを消す |
 | `getNodeSentences(nodeId, chapters, tracks, sentences): Sentence[]` | 章なら配下全トラックの葉、トラックなら自文 + 子孫トラックの葉を pre-order で集める |
 | `getNodeTrail(nodeId, chapters, tracks): Node[]` | パンくず用 `[{type, id, name}]` (章から nid まで) |
 | `migrateToV3(data): StorageData` | 子チャプター → 子トラック変換 (§移行) |
@@ -163,11 +177,15 @@ snapshot を渡す (既存 `getChapterSentences` は内部で `loadTracks()` す
 | 操作 | 対象 |
 |---|---|
 | 文の削除 | その文のみ (現状どおり) |
-| トラックの削除 | **子孫トラック** + 自トラックの文 + 子孫トラックの文 |
+| トラックの削除 | **子孫トラック** + 自トラックの文 + 子孫トラックの文 (すべて**その章の中だけ**) |
 | 章の削除 | 配下の全トラック + 全文 (現状どおり) |
 
-- AlertDialog の確認文言に「子孫トラック」を含める (章の文言は現状で既に「すべての子孫チャプター・含まれる文章を削除しますか？」)
-- 削除の確認プレビューに**削除されるトラック数と文数**を出す
+- AlertDialog の確認文言は**実態に合わせる**。トラックの文言は「N件のトラックと M件の文章を
+  削除しますか？」、章の文言は「このチャプター配下の N件のトラックと M件の文章を削除しますか？」
+  (「子孫チャプター」は**廃止済みの概念**なので書かない)
+- 削除の確認プレビューに**削除されるトラック数と文数**を出す (トラック側・章側とも)。
+  章側は `flattenTrackTree(chapterId, tracks)` の id 集合と章 id の両方で文を数える
+  (`deleteChapter` が消す集合と一致させる)
 
 ## 練習画面
 
@@ -225,6 +243,12 @@ showTrackBadge = startedFromChapter && chapterTrackCount > 1 && currentTrackName
   これが「章 = 合計、トラック = 直属」という 1 段差别の読み取り規則になる
 - 各ノードに「練習」ボタンを置く。**そのノードの配下 (自文 + 子孫トラック) に 1 文以上あれば有効**。
   現在の「章は直接文を持つ場合だけボタン」のロジックを置き換える
+- **集計は `getNodeSentences` 1 系統**にする。文数・言語バッジ・ボタンの有効判定が別々の
+  データ subset を数えると、壊れた `trackId` の章で「`0文` なのに練習ボタンあり」等の
+  矛盾が生じる。`$derived.by` で **ノード id から `getNodeSentences` の結果**への対応を
+  1 度だけ作り、全ての行がそれを参照する (章ごと・行の属性ごとに再計算しない)。
+  トラックの行の「自文のみ」は、そのノードの結果を `s.trackId === trackId` で抜き出す
+  (子孫は自分の行で数えるので二重計上しない)
 - 折り畳み状態は章・トラックで共通 (既存の `expandedChapters` 相当をノード id 集合に一般化)
 - 言語バッジは「章に複数言語の文がある章」を表すので**章の行にだけ**出す。
   トラックの行には出さない
@@ -291,6 +315,7 @@ showTrackBadge = startedFromChapter && chapterTrackCount > 1 && currentTrackName
 | `?node=` 無し / 未知の id | 既存の summary エラー表示 |
 | ノードの配下に 1 文も無い | 既存の summary エラー表示 (`chapter with no sentences` と同文) |
 | 名の重複 | **許容する** (既存の章・トラック名の重複禁止なし) |
+| **トラック id の重複** (章をまたぐもの含む) | **インポートを拒否**する (「トラック id が重複しています」)。何も書かずに戻る |
 | 空文字のノード名 / 本文 | インラインエラー。保存しない |
 | 移行シムの失敗 | 例外を握りつぶさず読込エラーとして扱う (空配列で黙って上書きしない) |
 
@@ -302,8 +327,14 @@ showTrackBadge = startedFromChapter && chapterTrackCount > 1 && currentTrackName
 - `getNodeSentences`: 章から → 子孫トラックの文を pre-order で全収集 / トラックから → 自文 + 子孫
   / 同一トラックの文は `order` 昇順 / 未知 trackId は末尾
 - `getNodeTrail`: 章から → 1 要素 / 子孫トラックから → 章→親→自 の 3 要素 / 未知 id → 空
+- `getNodeDescendantTrackIds`: 自ノード + 全子孫 / サイクルで停止 / **他章へ出ない**
+  (章をまたいだ重複 id を含むデータでも) / 未知 id はそれ自身のみ
+- `deleteTrack`: 子孫トラック + その配下の文を消す / 葉では親と自文を残す /
+  未知 id は no-op / **章をまたぐ重複 id では他章のトラックと文を残す**
 - 移行シム: 子章 1 段 → 親章直下のトラック化 / 子章 2 段 (孫) → 最も近い祖先章の直下へ /
   文の `chapterId`・`trackId` 差替え / 既存トラックに `parentId` を補う /
+  **入れ子トラックは `chapterId` だけ差し替え `parentId` を保持する** (冪等性だけでは
+  検証にならないので移植後の値を直接アサートする) /
   **冪等性** (2 回適用しても結果が変わらない) / id 衝突時の再採番 /
   既存データ (子チャプターなし) では**章と文が完全に不変**、トラックは `parentId: null` が
   補われるだけ (v3 入力なら 3 つとも完全不変)
@@ -320,12 +351,13 @@ showTrackBadge = startedFromChapter && chapterTrackCount > 1 && currentTrackName
   進捗行が `1 / 12` 形式 (トラック開始) と `基本 · 1 / 12` 形式 (章開始) の両モード /
   復元が `?node=` でも効く / 未知 `node` は summary エラー
 - **manage**: 木からトラックを追加・改名・並び替え・削除できる /
-  子トラックの追加 / 兄弟順序の境界ボタン disabled / 削除確認に子孫数が出る /
+  子トラックの追加 / 兄弟順序の境界ボタン disabled / 削除確認に**トラック側・章側の両方**の
+  件数が出る (章側は「子孫チャプター」を書かない) /
   **インライン本文編集** (展開 → textarea に input → Enter で保存 → リロードしても保持 /
   空文字はエラー) / トラックの select が pre-order のインデント付きで並び、
   子孫を選んで文を移動できる
 - **io-settings**: v3 エクスポート / v3 インポート / **v2 インポートが受理され v3 として保存される** /
-  v1 インポートは拒否 (既存テストの更新)
+  v1 インポートは拒否 (既存テストの更新) / トラック id の重複は**章内・章をまたぐ両方**で拒否
 - **既存の書き換え (削除ではない)**: `manage.spec.ts` の `Chapter nesting`
   (`adds child and grandchild, renders with increasing indentation` /
   `collapses and expands nested children`) は子**チャプター**の生成を前提としているので、

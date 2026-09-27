@@ -36,7 +36,7 @@ npm install
 - `src/lib/jev.ts` — `buildJudgeRequest` / `parseJudgeResponse` 純関数
 - `src/lib/alignment.ts` — 差分トークン (feedback の色分け)
 - `src/lib/practice-progress.ts` — セッション途中再開の永続化 (sessionStorage `oboeru:progress:v1`、30分 TTL)。**`chapterId` フィールドには章ではなくセッションのノード id (章 or トラック) が入る** (トラックの概念導入以前の名残。復元の一致判定はその id で行う)
-- `src/routes/+page.svelte` — トップページ (章を根とする1本の木。章行はサブツリー合計、トラック行は直属のみ、`/practice?node=` へのリンク)
+- `src/routes/+page.svelte` — トップページ (章を根とする1本の木。章行はサブツリー合計、トラック行は直属のみ、`/practice?node=` へのリンク)。**文数・言語バッジ・`練習` ボタンの判定はすべて `getNodeSentences` の 1 系統** — `$derived.by` の `sentencesByNode` (ノード id → 文配列) を 1 度だけ作って全ての行が参照する。別の subset で数えると「`0文` なのに `練習` ボタン」等の矛盾が壊れた `trackId` の章で起きる。トラック行の「直属のみ」は自ノードの結果を `s.trackId === trackId` で抜く
 - `src/routes/practice/+page.svelte` — 練習画面 (`?node=<章id|トラックid>` が唯一の入口。ヘッダはパンくず固定、7フェーズstate machine、T13プッシュトゥトーク、doTranscribe 採点+Jev統合)
 - `src/routes/manage/+page.svelte` — 管理画面 (chapters タブ = 章 + トラックの1本の木 + トラックのインライン本文編集 (IME ガード付き) / sentences タブ = 文の一覧と階層 select (トラックの CRUD は無い) / 設定 / データ。インポート v3 + v2 自動変換)
 - `src/routes/api/{transcribe,tts,judge}/+server.ts` — サーバーproxy (キーは `$env/dynamic/private`、クライアント不露出)
@@ -70,8 +70,11 @@ npm install
 - 練習順 = **pre-order** (自文 → 子トラック1配下 → 子トラック2配下)、各トラック内は `sentence.order` 昇順。走査は `flattenTrackTree` が正。章の文の並びも `getNodeSentences` が pre-order で返す (`track.order` だけのソートは入れ子で破綻する)
 - `Track.parentId` を更新する API は存在しない (`updateTrack` の引数型から除外)。トラックの親は追加時に確定し、サイクルは構造的に発生しない。`addChapter(name, parentId)` はシグネチャに残っているが UI から `null` しか渡らない
 - インポート/エクスポートは **version 3** (`{version: 3, chapters, tracks, sentences}`)。`validateImportJson` は v2 も受理して `migrateToV3` で変換、v1 は「対応していないバージョンです」で拒否。choice/noul の Jev 判定で使うため sentence の `trackId` 欠落は絶対に許さない
+- **トラック id の重複検査はグローバル** (章をまたいでも拒否 / 「トラック id が重複しています」)。下流は id をグローバルに照合する (`getNodeSentences` は `tracks.find`、`deleteTrack` は id だけを受け取る) ので、章をまたいだ重複は「別々のノード」に見えず、`deleteTrack` のカスケードが他章のトラックと文まで巻き込む。正当な id は `generateId()` 由来で章をまたいで衝突しないので入力で弾く。io-settings の `the same track id in two different chapters is rejected` がその契約
+- **章スコープの純関数契約**: `flattenTrackTree(chapterId, …)` と `getNodeDescendantTrackIds(trackId, tracks, chapterId)` は**必ず章を跨がない**。後者の `chapterId` は**省略不可** (省略可にすると、他章の同名 id を親として辿り `deleteTrack` が他章を消す — 2026-09-27 のレビューで実測)。`getNodeSentences` / `getNodeTrail` は章とトラックの両方を受け付ける
 - 読み込みシム `migrateToV3` (冪等・`loadData` から呼び、差分があれば `saveData` で書き戻し): `tracks` 欠落の旧データ → 章ごとに既定トラック生成 / **子チャプター → 最上位章直下のトラック** (`tr-from-ch-<章id>`、祖先が近い順に投入。その章の既存トラックは祖先章へ追従、順序は後続) / 全トラックに `parentId` を補う。祖先が解決できない子チャプターはルート章のまま残す (**落とすと配下が到達不能になる**)、`parentId` が存在しないトラックを指す場合は `null` に修復
-- 削除カスケード: 章削除 → 配下の全トラック + 全文 / トラック削除 → 子孫トラック + 配下の全文
+- 読み込みシムの**入れ子トラックは `chapterId` だけ差し替え `parentId` は保持**する (深さを潰さない / 兄弟化しない)。冪等性アサーションだけだと `t.parentId = null` を混入しても緑になるので、移植後の値を直接アサートするテストを維持すること
+- 削除カスケード: 章削除 → 配下の全トラック + 全文 / トラック削除 → 子孫トラック + 配下の全文 (**どちらもその章の中だけ**)。削除ダイアログは**件数プレビュー**を両方に出す — トラックは「N件のトラックと M件の文章を削除しますか？」、章は「このチャプター配下の N件のトラックと M件の文章を削除しますか？」 (`delete-track-preview` / `delete-chapter-preview`。「子孫チャプター」は廃止済み概念なので書いてはいけない)
 - `updateSentence` は chapter/track の整合を自動修復する (他章の trackId が来たら章の先頭トラックに再割当)
 
 ## 採点パイプライン規約

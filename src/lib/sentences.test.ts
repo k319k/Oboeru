@@ -738,12 +738,35 @@ describe('getNodeDescendantTrackIds', () => {
 			mkTrack({ id: 't1-1-1', parentId: 't1-1' }),
 			mkTrack({ id: 't2' })
 		];
-		expect([...getNodeDescendantTrackIds('t1', tracks)].sort()).toEqual(['t1', 't1-1', 't1-1-1']);
+		expect([...getNodeDescendantTrackIds('t1', tracks, 'ch-1')].sort()).toEqual([
+			't1',
+			't1-1',
+			't1-1-1'
+		]);
 	});
 
 	it('terminates on a cyclic parentId chain', () => {
 		const tracks = [mkTrack({ id: 'a', parentId: 'b' }), mkTrack({ id: 'b', parentId: 'a' })];
-		expect([...getNodeDescendantTrackIds('a', tracks)].sort()).toEqual(['a', 'b']);
+		expect([...getNodeDescendantTrackIds('a', tracks, 'ch-1')].sort()).toEqual(['a', 'b']);
+	});
+
+	// A parentId is resolved by id alone, so without the chapter scope a child
+	// of another chapter's same-id track would be dragged in (and `deleteTrack`
+	// would delete it).
+	it('never leaves the given chapter', () => {
+		const tracks = [
+			mkTrack({ id: 't1', chapterId: 'ch-1' }),
+			mkTrack({ id: 't1-1', parentId: 't1', chapterId: 'ch-2' }),
+			mkTrack({ id: 't1-1-1', parentId: 't1-1', chapterId: 'ch-1' })
+		];
+		expect([...getNodeDescendantTrackIds('t1', tracks, 'ch-1')].sort()).toEqual(['t1']);
+		expect([...getNodeDescendantTrackIds('t1', tracks, 'ch-2')].sort()).toEqual(['t1', 't1-1']);
+	});
+
+	it('returns only the id itself when the track is unknown', () => {
+		expect([...getNodeDescendantTrackIds('nope', [mkTrack({ id: 't1' })], 'ch-1')]).toEqual([
+			'nope'
+		]);
 	});
 });
 
@@ -1011,17 +1034,27 @@ describe('migrateToV3', () => {
 			tracks: [
 				{ id: 't-existing', chapterId: 'ch-1', name: '既存', order: 1, parentId: null },
 				{ id: 'ta', chapterId: 'ch-2', name: 'トラックA', order: 1, parentId: null },
+				{ id: 'ta-1', chapterId: 'ch-2', name: 'トラックA-1', order: 1, parentId: 'ta' },
 				{ id: 'tb', chapterId: 'ch-2', name: 'トラックB', order: 2, parentId: null }
 			],
 			sentences: [
 				{ id: 's-a1', chapterId: 'ch-2', trackId: 'ta', text: 'A1', language: 'ja', order: 1 },
 				{ id: 's-a2', chapterId: 'ch-2', trackId: 'ta', text: 'A2', language: 'ja', order: 2 },
+				{
+					id: 's-a1-1',
+					chapterId: 'ch-2',
+					trackId: 'ta-1',
+					text: 'A1-1',
+					language: 'ja',
+					order: 1
+				},
 				{ id: 's-b1', chapterId: 'ch-2', trackId: 'tb', text: 'B1', language: 'ja', order: 1 }
 			]
 		});
 
 		expect(out.chapters.map((c) => c.id)).toEqual(['ch-1']);
-		// Both tracks moved to the ancestor chapter, appended after the existing one
+		// Both chapter-direct tracks moved to the ancestor chapter, appended after
+		// the existing one
 		const movedA = out.tracks.find((t) => t.id === 'ta')!;
 		const movedB = out.tracks.find((t) => t.id === 'tb')!;
 		expect(movedA.chapterId).toBe('ch-1');
@@ -1029,15 +1062,36 @@ describe('migrateToV3', () => {
 		expect(movedA.order).toBe(2);
 		expect(movedB.chapterId).toBe('ch-1');
 		expect(movedB.order).toBe(3);
+		// Spec rule 3: a nested track moves to the ancestor chapter but KEEPS its
+		// parent — the depth is not flattened. Asserted on the migrated value, not
+		// only via the idempotency test, so a `t.parentId = null` in the move loop
+		// fails here.
+		const movedNested = out.tracks.find((t) => t.id === 'ta-1')!;
+		expect(movedNested.chapterId).toBe('ch-1');
+		expect(movedNested.parentId).toBe('ta');
 		// The chapter's own new track still exists (empty here)
 		expect(out.tracks.map((t) => t.id)).toContain('tr-from-ch-ch-2');
 		// Sentences keep their trackId, only chapterId is re-pointed
 		expect(out.sentences).toEqual([
 			{ id: 's-a1', chapterId: 'ch-1', trackId: 'ta', text: 'A1', language: 'ja', order: 1 },
 			{ id: 's-a2', chapterId: 'ch-1', trackId: 'ta', text: 'A2', language: 'ja', order: 2 },
+			{
+				id: 's-a1-1',
+				chapterId: 'ch-1',
+				trackId: 'ta-1',
+				text: 'A1-1',
+				language: 'ja',
+				order: 1
+			},
 			{ id: 's-b1', chapterId: 'ch-1', trackId: 'tb', text: 'B1', language: 'ja', order: 1 }
 		]);
-		expect(getNodeSentences('ch-1', out.chapters, out.tracks, out.sentences)).toHaveLength(3);
+		expect(getNodeSentences('ch-1', out.chapters, out.tracks, out.sentences)).toHaveLength(4);
+		// The nested track is still reachable as its own node, i.e. the move
+		// preserved the subtree rather than splicing it into the chapter's roots.
+		expect(
+			getNodeSentences('ta-1', out.chapters, out.tracks, out.sentences).map((s) => s.id)
+		).toEqual(['s-a1-1']);
+		expect(flattenTrackTree('ch-1', out.tracks).map((t) => t.id)).toContain('ta-1');
 	});
 
 	it('is idempotent when tracks were re-parented', () => {
@@ -1262,6 +1316,75 @@ describe('deleteTrack (hierarchy)', () => {
 		deleteTrack('t1-1-1');
 		expect(loadTracks().map((t) => t.id)).toEqual(['t1', 't1-1', 't2']);
 		expect(loadSentences().map((s) => s.id)).toEqual(['s1', 's2', 's4']);
+	});
+
+	it('is a no-op when the track id does not exist', () => {
+		deleteTrack('t-does-not-exist');
+		expect(loadTracks().map((t) => t.id)).toEqual(['t1', 't1-1', 't1-1-1', 't2']);
+		expect(loadSentences().map((s) => s.id)).toEqual(['s1', 's2', 's3', 's4']);
+	});
+});
+
+/**
+ * Duplicate track ids across chapters are rejected at import time (see
+ * `validateImportJson`), but a payload that predates that rule — or a hand-edited
+ * localStorage — can still hold them. Deleting a track must then stay inside the
+ * chapter that owns the id: a chapter-scoped walk keeps the other chapter's
+ * track and its sentences alive.
+ */
+describe('deleteTrack with a track id duplicated across chapters', () => {
+	beforeEach(() => {
+		saveChapters([
+			{ id: 'ch-a', name: 'A章', parentId: null, order: 1 },
+			{ id: 'ch-b', name: 'B章', parentId: null, order: 2 }
+		]);
+		saveTracks([
+			{ id: 'tshared', chapterId: 'ch-a', name: 'Aの親', order: 1, parentId: null },
+			{ id: 'tshared-1', chapterId: 'ch-a', name: 'Aの子', order: 1, parentId: 'tshared' },
+			{ id: 'tshared', chapterId: 'ch-b', name: 'Bの親', order: 1, parentId: null },
+			{ id: 'tshared-1', chapterId: 'ch-b', name: 'Bの子', order: 1, parentId: 'tshared' }
+		]);
+		saveSentences([
+			{ id: 'sa', chapterId: 'ch-a', trackId: 'tshared', text: 'A', language: 'ja', order: 1 },
+			{
+				id: 'sa-1',
+				chapterId: 'ch-a',
+				trackId: 'tshared-1',
+				text: 'A-1',
+				language: 'ja',
+				order: 1
+			},
+			{ id: 'sb', chapterId: 'ch-b', trackId: 'tshared', text: 'B', language: 'ja', order: 1 },
+			{
+				id: 'sb-1',
+				chapterId: 'ch-b',
+				trackId: 'tshared-1',
+				text: 'B-1',
+				language: 'ja',
+				order: 1
+			}
+		]);
+	});
+
+	it('deletes only the target chapter’s tracks and sentences', () => {
+		deleteTrack('tshared');
+
+		const remainingTracks = loadTracks();
+		expect(remainingTracks.map((t) => `${t.chapterId}:${t.id}`)).toEqual(['ch-b:tshared', 'ch-b:tshared-1']);
+		expect(loadSentences().map((s) => s.id)).toEqual(['sb', 'sb-1']);
+	});
+
+	it('leaves the other chapter’s own sentences even when they share the track id', () => {
+		// A sentence in ch-b pointing at ch-a's track id must not be collateral:
+		// the chapter guard is what keeps it.
+		saveSentences([
+			...loadSentences(),
+			{ id: 'sb-stray', chapterId: 'ch-b', trackId: 'tshared-1', text: 'B-迷子', language: 'ja', order: 2 }
+		]);
+
+		deleteTrack('tshared');
+
+		expect(loadSentences().map((s) => s.id)).toEqual(['sb', 'sb-1', 'sb-stray']);
 	});
 });
 
