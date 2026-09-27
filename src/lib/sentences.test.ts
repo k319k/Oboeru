@@ -588,18 +588,18 @@ describe('deleteChapter with tracks', () => {
 // Track hierarchy traversal
 // ---------------------------------------------------------------------------
 
-function track(over: Partial<Track> & { id: string }): Track {
+function mkTrack(over: Partial<Track> & { id: string }): Track {
 	return { chapterId: 'ch-1', name: over.id, order: 1, parentId: null, ...over };
 }
 
 describe('flattenTrackTree', () => {
 	it('returns direct children then their subtrees in pre-order', () => {
 		const tracks = [
-			track({ id: 't2', name: 'B', order: 2 }),
-			track({ id: 't1-1', name: 'B-1', order: 1, parentId: 't1' }),
-			track({ id: 't1', name: 'A', order: 1 }),
-			track({ id: 't1-2', name: 'A-2', order: 2, parentId: 't1' }),
-			track({ id: 't1-1-1', name: 'A-1-1', order: 1, parentId: 't1-1' })
+			mkTrack({ id: 't2', name: 'B', order: 2 }),
+			mkTrack({ id: 't1-1', name: 'B-1', order: 1, parentId: 't1' }),
+			mkTrack({ id: 't1', name: 'A', order: 1 }),
+			mkTrack({ id: 't1-2', name: 'A-2', order: 2, parentId: 't1' }),
+			mkTrack({ id: 't1-1-1', name: 'A-1-1', order: 1, parentId: 't1-1' })
 		];
 		expect(flattenTrackTree('ch-1', tracks).map((t) => t.id)).toEqual([
 			't1',
@@ -612,31 +612,70 @@ describe('flattenTrackTree', () => {
 
 	it('never collects tracks from another chapter', () => {
 		const tracks = [
-			track({ id: 't1', chapterId: 'ch-1' }),
-			track({ id: 'x1', chapterId: 'ch-2' }),
-			track({ id: 'x1-1', chapterId: 'ch-2', parentId: 'x1' })
+			mkTrack({ id: 't1', chapterId: 'ch-1' }),
+			mkTrack({ id: 'x1', chapterId: 'ch-2' }),
+			mkTrack({ id: 'x1-1', chapterId: 'ch-2', parentId: 'x1' })
 		];
 		expect(flattenTrackTree('ch-1', tracks).map((t) => t.id)).toEqual(['t1']);
 	});
 
 	it('returns an empty array for a chapter without tracks', () => {
-		expect(flattenTrackTree('ch-none', [track({ id: 't1' })])).toEqual([]);
+		expect(flattenTrackTree('ch-none', [mkTrack({ id: 't1' })])).toEqual([]);
+	});
+
+	it('keeps only the first of duplicate track ids instead of recursing forever', () => {
+		const tracks = [
+			mkTrack({ id: 'x', name: 'first', order: 1 }),
+			mkTrack({ id: 'x', name: 'second', order: 2, parentId: 'x' })
+		];
+		expect(flattenTrackTree('ch-1', tracks).map((t) => t.name)).toEqual(['first']);
+	});
+
+	it('does not follow a parentId that points into another chapter', () => {
+		const tracks = [
+			mkTrack({ id: 't1', chapterId: 'ch-1' }),
+			mkTrack({ id: 'foreign', chapterId: 'ch-2' }),
+			// A ch-1 track whose parent lives in ch-2: unreachable, and it must not be
+			// reachable *through* the foreign node either
+			mkTrack({ id: 'orphan', chapterId: 'ch-1', parentId: 'foreign' })
+		];
+		expect(flattenTrackTree('ch-1', tracks).map((t) => t.id)).toEqual(['t1']);
+	});
+
+	it('does not collect another chapter track hanging off a chapter-direct root', () => {
+		const tracks = [mkTrack({ id: 't1' }), mkTrack({ id: 'x1', chapterId: 'ch-2', parentId: 't1' })];
+		expect(flattenTrackTree('ch-1', tracks).map((t) => t.id)).toEqual(['t1']);
+	});
+
+	it('applies the chapter filter below the first level too', () => {
+		const tracks = [
+			mkTrack({ id: 't1' }),
+			mkTrack({ id: 't1-1', parentId: 't1' }),
+			mkTrack({ id: 'x1-1', chapterId: 'ch-2', parentId: 't1-1' })
+		];
+		expect(flattenTrackTree('ch-1', tracks).map((t) => t.id)).toEqual(['t1', 't1-1']);
+	});
+
+	it('does not collect a cycle that has no chapter-direct root', () => {
+		const tracks = [mkTrack({ id: 'a', parentId: 'b' }), mkTrack({ id: 'b', parentId: 'a' })];
+		// Both nodes are non-root, so walk(null) never enters the cycle.
+		expect(flattenTrackTree('ch-1', tracks)).toEqual([]);
 	});
 });
 
 describe('getNodeDescendantTrackIds', () => {
 	it('includes the track itself and all descendants', () => {
 		const tracks = [
-			track({ id: 't1' }),
-			track({ id: 't1-1', parentId: 't1' }),
-			track({ id: 't1-1-1', parentId: 't1-1' }),
-			track({ id: 't2' })
+			mkTrack({ id: 't1' }),
+			mkTrack({ id: 't1-1', parentId: 't1' }),
+			mkTrack({ id: 't1-1-1', parentId: 't1-1' }),
+			mkTrack({ id: 't2' })
 		];
 		expect([...getNodeDescendantTrackIds('t1', tracks)].sort()).toEqual(['t1', 't1-1', 't1-1-1']);
 	});
 
 	it('terminates on a cyclic parentId chain', () => {
-		const tracks = [track({ id: 'a', parentId: 'b' }), track({ id: 'b', parentId: 'a' })];
+		const tracks = [mkTrack({ id: 'a', parentId: 'b' }), mkTrack({ id: 'b', parentId: 'a' })];
 		expect([...getNodeDescendantTrackIds('a', tracks)].sort()).toEqual(['a', 'b']);
 	});
 });
@@ -644,18 +683,18 @@ describe('getNodeDescendantTrackIds', () => {
 describe('getChapterTracks (pre-order wrapper)', () => {
 	it('lists nested tracks after their parent', () => {
 		const tracks = [
-			track({ id: 't1' }),
-			track({ id: 't1-1', parentId: 't1' }),
-			track({ id: 't2', order: 2 })
+			mkTrack({ id: 't1' }),
+			mkTrack({ id: 't1-1', parentId: 't1' }),
+			mkTrack({ id: 't2', order: 2 })
 		];
 		expect(getChapterTracks('ch-1', tracks).map((t) => t.id)).toEqual(['t1', 't1-1', 't2']);
 	});
 
 	it('places a parent before its child even when the child has a lower order', () => {
 		const tracks = [
-			track({ id: 't1', order: 2 }),
-			track({ id: 't1-1', parentId: 't1', order: 1 }),
-			track({ id: 't2', order: 1 })
+			mkTrack({ id: 't1', order: 2 }),
+			mkTrack({ id: 't1-1', parentId: 't1', order: 1 }),
+			mkTrack({ id: 't2', order: 1 })
 		];
 		expect(getChapterTracks('ch-1', tracks).map((t) => t.id)).toEqual(['t2', 't1', 't1-1']);
 	});

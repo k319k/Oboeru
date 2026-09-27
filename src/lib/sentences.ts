@@ -213,15 +213,23 @@ export function deleteTrack(id: string): void {
  * chapter's direct children (parentId === null) sorted by `order`, each
  * immediately followed by its own subtree. Tracks of other chapters are never
  * collected, so a `parentId` pointing outside the chapter cannot leak nodes in.
+ * The chapter filter applies at every depth, and each id is emitted at most once
+ * (duplicate ids resolve first-wins), so malformed imported data cannot make the
+ * walk recurse forever.
  */
 export function flattenTrackTree(chapterId: string, tracks: Track[]): Track[] {
 	const result: Track[] = [];
+	const seen = new Set<string>();
 
 	function walk(parentTrackId: string | null): void {
 		const children = tracks
-			.filter((t) => t.chapterId === chapterId && (t.parentId ?? null) === parentTrackId)
+			.filter(
+				(t) =>
+					!seen.has(t.id) && t.chapterId === chapterId && (t.parentId ?? null) === parentTrackId
+			)
 			.sort((a, b) => a.order - b.order);
 		for (const child of children) {
+			seen.add(child.id);
 			result.push(child);
 			walk(child.id);
 		}
