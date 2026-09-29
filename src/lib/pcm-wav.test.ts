@@ -87,4 +87,9 @@ describe('pcmToWav', () => {
 		expect(wavField(wav, 28, 4)).toBe(16000 * 2 * 2);
 		expect(wavField(wav, 32, 2)).toBe(4);
 	});
+
+	it('copies the PCM payload verbatim into the data chunk', () => {
+		const wav = pcmToWav(new Uint8Array([1, 2, 3, 250, 251, 252]), 24000, 1);
+		expect(Array.from(wav.slice(44))).toEqual([1, 2, 3, 250, 251, 252]);
+	});
 });
