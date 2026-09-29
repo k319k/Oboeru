@@ -11,29 +11,61 @@ describe('buildJudgeRequest', () => {
 				same_utterance: {
 					type: 'noul',
 					instructions:
-						'Does `transcription` express the same spoken utterance as `reference`? ' +
-						'Compare PRONUNCIATION, not spelling: kanji and kana spellings of the same word ' +
-						'(争う = あらそう, 暮らし = くらし, はじめ = 初め) are THE SAME word. ' +
-						'If a native speaker reading both sentences aloud would pronounce them identically ' +
-						'(ignoring punctuation, commas, spacing, and trailing marks), answer true. ' +
-						'Different words, different pronunciations, or missing/extra content → false.',
+						'Decide whether `transcription` is the same spoken utterance as `reference`. ' +
+						'Both are normalized renderings of one practice sentence: punctuation, spacing, ' +
+						'symbols, width and Latin case are already removed and katakana is folded to ' +
+						'hiragana, so those are never evidence. Compare PRONUNCIATION and CONTENT. ' +
+						'Same reading means the same utterance however it is written: 争う/あらそう, ' +
+						'町/まち/街, 作る/つくる, 届く/とどく, 三/3, 人/人々 are all THE SAME. ' +
+						'A colloquial or contracted form of the same word is also the SAME utterance ' +
+						'(みな/みんな, 食べれる/食べられる, 走ってる/走っている) — that is a word_variant, ' +
+						'not a different one. ' +
+						'Set noul high (1) when a native speaker reading both aloud would say the same ' +
+						'thing with nothing missing and nothing extra. Set it low only for a genuinely ' +
+						'different word or reading (町 vs 川, 犬 vs 猫, 作る vs 壊す, student vs teacher) ' +
+						'or missing/extra content. A kanji/kana difference alone must never lower the score.',
 					criteria: {
-						true: 'Same utterance by a native reading, allowing notation and punctuation variants',
+						true: 'Same utterance and same content by a native reading',
 						false: 'Different utterance, wrong reading, or missing/extra content'
 					}
 				},
 				difference_kind: {
 					type: 'choice',
-					instructions: 'Classify the relationship between `reference` and `transcription`.',
+					instructions:
+						'Classify the relationship between `reference` and `transcription`. ' +
+						'Remember both are punctuation/spacing-stripped and kana-folded, so an identical ' +
+						'normalized pair means the original forms differed only in punctuation, spacing, ' +
+						'width, case or kana/kanji choice — never in meaning.',
 					criteria: {
-						identical_text: 'Text is character-for-character identical',
-						orthography_variant: 'Same words and reading, different spelling/punctuation/kanji choice',
-						word_variant: 'Same words but a colloquial or shortened form of one word (みな/みんな)',
+						identical_text: 'Character-for-character identical as given',
+						orthography_variant: 'Same words and reading; spelling differs (kana/kanji, width, case)',
+						word_variant:
+							'Colloquial or shortened form of one word (みな/みんな, 走ってる/走っている)',
 						different_utterance: 'Actually different words or meaning'
 					}
 				}
 			}
 		});
+	});
+
+	it('strips punctuation from the state so it cannot be judged', () => {
+		const punct = buildJudgeRequest('これらの人びとは、天までとどく塔をたてようと望み、', 'これらの人々は天まで届く塔を建てようと望み');
+		const plain = buildJudgeRequest('これらの人びとは天までとどく塔をたてようと望み', 'これらの人々は天まで届く塔を建てようと望み');
+		expect(punct.state).toEqual(plain.state);
+		expect(punct.state.reference).toBe('これらの人びとは天までとどく塔をたてようと望み');
+		expect(punct.state.transcription).toBe('これらの人々は天まで届く塔を建てようと望み');
+	});
+
+	it('strips width, Latin case and katakana variants from the state', () => {
+		expect(buildJudgeRequest('ＴＯＫＹＯ， に行く', 'とうきょう に 行く').state).toEqual(
+			buildJudgeRequest('TOKYO に行く', 'トウキョウに行く').state
+		);
+	});
+
+	it('keeps real word differences in the state', () => {
+		expect(buildJudgeRequest('三階', '二階').state.reference).not.toBe(
+			buildJudgeRequest('三階', '二階').state.transcription
+		);
 	});
 
 	it('exposes the pinned model constant', () => {

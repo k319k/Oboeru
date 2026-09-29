@@ -1,32 +1,55 @@
+import { normalize } from './similarity';
+
 export const JEV_MODEL = 'typesafe/jev-1.13';
 
 /** Jev 判定リクエスト (OpenRouter systemone) のボディを組み立てる。 */
 export function buildJudgeRequest(reference: string, transcription: string) {
+	// 句読点・空白・記号・全角/半角・カタカナ/ひらがな・英字大小はここで落とす。
+	// 読んでも发音が変わらないものは判定材料にすべきではなく、
+	// Jev に差分として見せること自体が誤判定の温床になるため state 側から消す。
+	// 正規化は similarity() と同一 (normalize.ts の正規格に Latin 小文字化を加えたもの)。
+	const normRef = normalize(reference);
+	const normTrn = normalize(transcription);
 	return {
 		model: JEV_MODEL,
-		state: { reference, transcription },
+		state: { reference: normRef, transcription: normTrn },
 		questions: {
 			same_utterance: {
 				type: 'noul',
+				// 実測済みの文言。Jev は state の文字列しか見ないので、句読点・空白・全角半角・
+				// 英字大小・カタカナひらがな差はここで落として前提を固定し、「同じ読み =
+				// 同じ発話」「口語・縮約形も同一」という同値クラスを明示している。
+				// 旧的文言 (疑問形 + 「無視して」) では町/街 0.67・長文 0.59 しか出ず落第。
 				instructions:
-					'Does `transcription` express the same spoken utterance as `reference`? ' +
-					'Compare PRONUNCIATION, not spelling: kanji and kana spellings of the same word ' +
-					'(争う = あらそう, 暮らし = くらし, はじめ = 初め) are THE SAME word. ' +
-					'If a native speaker reading both sentences aloud would pronounce them identically ' +
-					'(ignoring punctuation, commas, spacing, and trailing marks), answer true. ' +
-					'Different words, different pronunciations, or missing/extra content → false.',
+					'Decide whether `transcription` is the same spoken utterance as `reference`. ' +
+					'Both are normalized renderings of one practice sentence: punctuation, spacing, ' +
+					'symbols, width and Latin case are already removed and katakana is folded to ' +
+					'hiragana, so those are never evidence. Compare PRONUNCIATION and CONTENT. ' +
+					'Same reading means the same utterance however it is written: 争う/あらそう, ' +
+					'町/まち/街, 作る/つくる, 届く/とどく, 三/3, 人/人々 are all THE SAME. ' +
+					'A colloquial or contracted form of the same word is also the SAME utterance ' +
+					'(みな/みんな, 食べれる/食べられる, 走ってる/走っている) — that is a word_variant, ' +
+					'not a different one. ' +
+					'Set noul high (1) when a native speaker reading both aloud would say the same ' +
+					'thing with nothing missing and nothing extra. Set it low only for a genuinely ' +
+					'different word or reading (町 vs 川, 犬 vs 猫, 作る vs 壊す, student vs teacher) ' +
+					'or missing/extra content. A kanji/kana difference alone must never lower the score.',
 				criteria: {
-					true: 'Same utterance by a native reading, allowing notation and punctuation variants',
+					true: 'Same utterance and same content by a native reading',
 					false: 'Different utterance, wrong reading, or missing/extra content'
 				}
 			},
 			difference_kind: {
 				type: 'choice',
-				instructions: 'Classify the relationship between `reference` and `transcription`.',
+				instructions:
+					'Classify the relationship between `reference` and `transcription`. ' +
+					'Remember both are punctuation/spacing-stripped and kana-folded, so an identical ' +
+					'normalized pair means the original forms differed only in punctuation, spacing, ' +
+					'width, case or kana/kanji choice — never in meaning.',
 				criteria: {
-					identical_text: 'Text is character-for-character identical',
-					orthography_variant: 'Same words and reading, different spelling/punctuation/kanji choice',
-					word_variant: 'Same words but a colloquial or shortened form of one word (みな/みんな)',
+					identical_text: 'Character-for-character identical as given',
+					orthography_variant: 'Same words and reading; spelling differs (kana/kanji, width, case)',
+					word_variant: 'Colloquial or shortened form of one word (みな/みんな, 走ってる/走っている)',
 					different_utterance: 'Actually different words or meaning'
 				}
 			}
