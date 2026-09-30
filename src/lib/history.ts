@@ -1,0 +1,305 @@
+/**
+ * Practice history storage.
+ *
+ * A single dedicated key, outside the Settings schema and outside the
+ * content DB (`oboeru:v1`) — same pattern as `practice-progress.ts`. Every
+ * operation swallows its own errors: a browser that refuses storage must
+ * still be able to run a practice session, just without a history.
+ *
+ * History is deliberately device-local. Cloud sync (roadmap ⑥) merges
+ * chapters/tracks/sentences; it cannot merge "what I practised", and
+ * last-write-wins would silently discard it. Do not add it to a sync payload.
+ */
+
+import { generateId } from './sentences';
+import type { Sentence } from './types';
+
+const HISTORY_STORAGE_KEY = 'oboeru:history:v1';
+const HISTORY_UI_KEY = 'oboeru:history-ui:v1';
+const MAX_SESSIONS = 500;
+
+export interface SessionRecord {
+	id: string;
+	/** Session's start node — a chapter or a track id. */
+	nodeId: string;
+	/** Display name captured at session start, so a deleted node still reads. */
+	nodeName: string;
+	startedAt: number;
+	endedAt: number;
+	durationMs: number;
+	/** Scoring attempts (retries included) — same definition as completedCount. */
+	attempted: number;
+	/** Distinct sentences that passed — same definition as passedIds.length. */
+	passedSentences: number;
+	totalScore: number;
+	skipped: number;
+	endedEarly: boolean;
+}
+
+export interface SentenceStat {
+	attempts: number;
+	/** Pass / hard / untouched are all derived from this against the live threshold. */
+	lastScore: number;
+	lastPracticedAt: number;
+}
+
+export interface HistoryData {
+	version: 1;
+	/** Newest first. */
+	sessions: SessionRecord[];
+	sentences: Record<string, SentenceStat>;
+}
+
+export interface HistoryUiState {
+	open: boolean;
+}
+
+/** Fresh object per call — a shared literal would let one caller mutate the default. */
+function emptyData(): HistoryData {
+	return { version: 1, sessions: [], sentences: {} };
+}
+
+function nonNegInt(value: unknown): number {
+	if (typeof value !== 'number' || Number.isNaN(value)) return 0;
+	if (value < 0) return 0;
+	return Math.floor(value);
+}
+
+function num(value: unknown): number {
+	return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function str(value: unknown): string {
+	return typeof value === 'string' ? value : '';
+}
+
+function readStorage(): HistoryData {
+	try {
+		const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+		if (raw === null) return emptyData();
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== 'object' || parsed === null) return emptyData();
+		const obj = parsed as Record<string, unknown>;
+		if (obj.version !== 1) return emptyData();
+
+		const sessions: SessionRecord[] = [];
+		if (Array.isArray(obj.sessions)) {
+			for (const entry of obj.sessions) {
+				if (typeof entry !== 'object' || entry === null) continue;
+				const s = entry as Record<string, unknown>;
+				sessions.push({
+					id: str(s.id),
+					nodeId: str(s.nodeId),
+					nodeName: str(s.nodeName),
+					startedAt: num(s.startedAt),
+					endedAt: num(s.endedAt),
+					durationMs: nonNegInt(s.durationMs),
+					attempted: nonNegInt(s.attempted),
+					passedSentences: nonNegInt(s.passedSentences),
+					totalScore: nonNegInt(s.totalScore),
+					skipped: nonNegInt(s.skipped),
+					endedEarly: s.endedEarly === true
+				});
+				if (sessions.length >= MAX_SESSIONS) break;
+			}
+		}
+
+		const sentences: Record<string, SentenceStat> = {};
+		if (typeof obj.sentences === 'object' && obj.sentences !== null) {
+			for (const [id, value] of Object.entries(obj.sentences as Record<string, unknown>)) {
+				if (typeof value !== 'object' || value === null) continue;
+				const st = value as Record<string, unknown>;
+				sentences[id] = {
+					attempts: nonNegInt(st.attempts),
+					lastScore: nonNegInt(st.lastScore),
+					lastPracticedAt: num(st.lastPracticedAt)
+				};
+			}
+		}
+
+		return { version: 1, sessions, sentences };
+	} catch {
+		return emptyData();
+	}
+}
+
+/**
+ * Parsed data held for the tab. A practice session calls
+ * recordSentenceAttempt once per sentence; without this the full history
+ * would be re-parsed and re-serialised on every scoring (~9ms each at 165KB).
+ */
+let cache: HistoryData | null = null;
+
+function read(): HistoryData {
+	if (cache === null) cache = readStorage();
+	return cache;
+}
+
+function persist(data: HistoryData): void {
+	cache = data;
+	try {
+		localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(data));
+	} catch {
+		// Storage unavailable or over quota — the in-memory copy still works.
+	}
+}
+
+export function loadHistory(): HistoryData {
+	return readStorage();
+}
+
+export function recordSentenceAttempt(sentenceId: string, score: number, at: number): void {
+	const data = read();
+	const prev = data.sentences[sentenceId];
+	data.sentences[sentenceId] = {
+		attempts: (prev?.attempts ?? 0) + 1,
+		lastScore: Math.max(0, Math.min(100, Math.round(score))),
+		lastPracticedAt: at
+	};
+	persist(data);
+}
+
+export function finalizeSession(record: Omit<SessionRecord, 'id'>): SessionRecord {
+	const data = read();
+	const stored: SessionRecord = { id: generateId(), ...record };
+	data.sessions.unshift(stored);
+	if (data.sessions.length > MAX_SESSIONS) data.sessions.length = MAX_SESSIONS;
+	persist(data);
+	return stored;
+}
+
+export function getSessions(limit?: number): SessionRecord[] {
+	const all = read().sessions;
+	if (typeof limit !== 'number' || limit <= 0) return [...all];
+	return all.slice(0, limit);
+}
+
+export function loadHistoryUiState(): HistoryUiState {
+	try {
+		const raw = localStorage.getItem(HISTORY_UI_KEY);
+		if (raw === null) return { open: false };
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== 'object' || parsed === null) return { open: false };
+		return { open: (parsed as Record<string, unknown>).open === true };
+	} catch {
+		return { open: false };
+	}
+}
+
+export function saveHistoryUiState(state: HistoryUiState): void {
+	try {
+		localStorage.setItem(HISTORY_UI_KEY, JSON.stringify(state));
+	} catch {
+		// Storage unavailable — the section still opens for this page view.
+	}
+}
+
+// --- Pure derivations -------------------------------------------------------
+
+export type DotState = 'passed' | 'hard' | 'untouched';
+
+export interface NodeStats {
+	/** Sentence count for the row's display set. */
+	total: number;
+	passed: number;
+	/** Sentences scored at least once (= not untouched). */
+	practiced: number;
+	hard: number;
+	avgLastScore: number | null;
+	lastPracticedAt: number | null;
+	/** Empty for chapters; the display set in `order` for tracks. */
+	dots: DotState[];
+}
+
+/**
+ * Aggregate one row's display set. Pass exactly the sentences the row shows:
+ * a chapter's whole subtree, a track's own sentences. Mixing the two makes
+ * the `N/M` denominator disagree with the dot count in the same row.
+ */
+export function computeNodeStats(
+	sentences: Sentence[],
+	isChapter: boolean,
+	stats: Readonly<Record<string, SentenceStat>>,
+	threshold: number
+): NodeStats {
+	const ordered = [...sentences].sort((a, b) => a.order - b.order);
+	let passed = 0;
+	let practiced = 0;
+	let hard = 0;
+	let scoreSum = 0;
+	let lastPracticedAt: number | null = null;
+	const dots: DotState[] = [];
+
+	for (const sentence of ordered) {
+		const stat = stats[sentence.id];
+		if (!stat) {
+			if (!isChapter) dots.push('untouched');
+			continue;
+		}
+		practiced++;
+		scoreSum += stat.lastScore;
+		if (stat.lastPracticedAt > (lastPracticedAt ?? 0)) lastPracticedAt = stat.lastPracticedAt;
+		if (stat.lastScore >= threshold) {
+			passed++;
+			if (!isChapter) dots.push('passed');
+		} else {
+			hard++;
+			if (!isChapter) dots.push('hard');
+		}
+	}
+
+	return {
+		total: ordered.length,
+		passed,
+		practiced,
+		hard,
+		avgLastScore: practiced > 0 ? Math.round(scoreSum / practiced) : null,
+		lastPracticedAt,
+		dots
+	};
+}
+
+export interface StreakInfo {
+	/** Consecutive days ending today (0 when nothing was practised today). */
+	days: number;
+	/** Sum of every sentence stat's attempts — retries included. */
+	totalAttempts: number;
+}
+
+function localDayKey(ts: number): number {
+	const d = new Date(ts);
+	d.setHours(0, 0, 0, 0);
+	return d.getTime();
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function computeStreak(
+	stats: Readonly<Record<string, SentenceStat>>,
+	now: number = Date.now()
+): StreakInfo {
+	const days = new Set<number>();
+	let totalAttempts = 0;
+	for (const stat of Object.values(stats)) {
+		totalAttempts += stat.attempts;
+		if (stat.lastPracticedAt > 0) days.add(localDayKey(stat.lastPracticedAt));
+	}
+	if (days.size === 0) return { days: 0, totalAttempts: 0 };
+
+	// Today counts even before any scoring: opening the app is not a break.
+	let cursor = localDayKey(now);
+	if (!days.has(cursor)) cursor -= DAY_MS;
+	let streak = 0;
+	while (days.has(cursor)) {
+		streak++;
+		cursor -= DAY_MS;
+	}
+	return { days: streak, totalAttempts };
+}
+
+export function formatRelativeDay(ts: number, now: number = Date.now()): string {
+	const diff = Math.round((localDayKey(now) - localDayKey(ts)) / DAY_MS);
+	if (diff <= 0) return '今日';
+	if (diff === 1) return '昨日';
+	return `${diff} 日前`;
+}
