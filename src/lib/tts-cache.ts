@@ -142,9 +142,24 @@ async function totalBytes(db: IDBDatabase): Promise<number> {
   });
 }
 
-async function pruneOldest(db: IDBDatabase): Promise<void> {
+/**
+ * Delete least-recently-used records until the store fits `maxBytes`.
+ *
+ * Exported for tests. `TTS_CACHE_MAX_BYTES` is deliberately a `const` — it must
+ * not be able to drift at runtime — which also means a test cannot shrink it, so
+ * the tests pass an explicit small budget instead of writing 64 MiB. Internal
+ * callers omit the argument and get the module constant.
+ *
+ * Never rejects: this is called from the write path, and a store it cannot
+ * prune (missing index, read-only store) must degrade to "keep everything"
+ * rather than fail a write that already committed.
+ */
+export async function pruneOldest(
+  db: IDBDatabase,
+  maxBytes: number = TTS_CACHE_MAX_BYTES,
+): Promise<void> {
   const used = await totalBytes(db);
-  if (used <= TTS_CACHE_MAX_BYTES) return;
+  if (used <= maxBytes) return;
   await new Promise<void>((resolve) => {
     let tx: IDBTransaction;
     try {
@@ -154,16 +169,25 @@ async function pruneOldest(db: IDBDatabase): Promise<void> {
       return;
     }
     const store = tx.objectStore(STORE);
-    const cursorReq = store.index('lastUsedAt').openCursor();
+    let cursorReq: IDBRequest<IDBCursorWithValue | null>;
+    try {
+      cursorReq = store.index('lastUsedAt').openCursor();
+    } catch {
+      // No lastUsedAt index (a store written by an older schema, or a fixture
+      // built without one) means there is no defined eviction order. Keeping
+      // everything is the safe reading: the cache is disposable either way.
+      resolve();
+      return;
+    }
     let running = used;
     cursorReq.onsuccess = () => {
       const cursor = cursorReq.result;
-      if (!cursor || running <= TTS_CACHE_MAX_BYTES) return;
+      if (!cursor || running <= maxBytes) return;
       running -= (cursor.value as AudioRecord).byteLength ?? 0;
       cursor.delete();
       cursor.continue();
     };
-    cursorReq.onerror = () => undefined;
+    cursorReq.onerror = () => resolve();
     tx.oncomplete = () => resolve();
     tx.onabort = () => resolve();
     tx.onerror = () => resolve();
@@ -215,12 +239,19 @@ export async function writeCachedPcm(key: string, pcm: Uint8Array): Promise<void
     lastUsedAt: Date.now(),
   };
   const written = await run(db, 'readwrite', (s) => s.put(record));
-  if (written === null) {
-    // Most likely QuotaExceededError. Prune and retry once, then give up
-    // silently — the caller treats a missing cache entry as a normal miss.
+  if (written !== null) {
+    // Enforce the byte budget PROACTIVELY. Previously pruning only ran in
+    // reaction to a failed write, so an over-budget store could persist for as
+    // long as the origin stayed under quota — the ceiling was documented but
+    // never actually enforced. Costs one cursor scan per successful write, which
+    // at 189 records is far cheaper than re-fetching a sentence from Gemini.
     await pruneOldest(db);
-    await run(db, 'readwrite', (s) => s.put(record));
+    return;
   }
+  // Most likely QuotaExceededError. Prune and retry once, then give up
+  // silently — the caller treats a missing cache entry as a normal miss.
+  await pruneOldest(db);
+  await run(db, 'readwrite', (s) => s.put(record));
 }
 
 export async function clearTtsCacheForTests(): Promise<void> {
