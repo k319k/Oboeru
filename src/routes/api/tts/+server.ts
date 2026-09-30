@@ -6,10 +6,29 @@ import { parsePcmContentType, pcmToWav } from '$lib/pcm-wav';
 
 const MAX_TEXT_LENGTH = 400;
 
-/** Upstream budget. Kept under the client's 15s fetch timeout so the server
- *  never burns a paid generation the client has already given up on. */
+/** Per-attempt upstream timeout. An abort is terminal, so each attempt gets a
+ *  fresh timer rather than sharing one across the retry loop. */
 const UPSTREAM_TIMEOUT_MS = 10_000;
+
+/** Fallback wait before the next attempt, used only when the response carries
+ *  no usable `Retry-After`. A missing entry ends the loop, so `length` is the
+ *  retry budget: 1 + 2 seconds. */
 const BACKOFF_MS = [1000, 2000];
+
+/**
+ * Hard ceiling for one `_handleTtsPost` call, derived rather than hardcoded so
+ * the two budgets cannot drift apart: the last attempt can burn
+ * `UPSTREAM_TIMEOUT_MS` and the waits before it sum to `BACKOFF_MS`, so the
+ * worst case is 1 + 2 + 10 = 13s. Every wait and every attempt timer is clamped
+ * against this deadline — a flat cap on `Retry-After` is not enough, because
+ * two waits plus the final timeout still add up past the budget.
+ *
+ * The client must abort at or after this. `src/lib/tts.ts` still declares
+ * `FETCH_TIMEOUT_MS = 10_000`; it is raised to 15s in the client-side task, so
+ * until that lands the client can abandon a synthesis this server is still
+ * running. The budget is asserted by the `_handleTtsPost — time budget` tests.
+ */
+const TTS_BUDGET_MS = UPSTREAM_TIMEOUT_MS + BACKOFF_MS.reduce((a, b) => a + b, 0);
 
 /** Provider constants. The voice lives in `$lib/tts-voices` (the allowlist is
  *  the single source of truth). Change TTS_MODEL / TTS_STYLE together with the
@@ -30,11 +49,23 @@ export interface TtsRequestBody {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * `Retry-After` is either delta-seconds or an HTTP-date (RFC 9110 §10.2.3).
+ * Both forms are parsed here; bounding the result is the caller's job, because
+ * only the caller knows how much of `TTS_BUDGET_MS` is left.
+ */
 function retryAfterMs(headers: Headers, fallback: number): number {
   const raw = headers.get('Retry-After');
   if (!raw) return fallback;
   const seconds = Number(raw);
-  return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds * 1000, 5000) : fallback;
+  if (Number.isFinite(seconds)) return seconds > 0 ? seconds * 1000 : fallback;
+  // Not a number, so it can only be the HTTP-date form.
+  const at = Date.parse(raw);
+  if (Number.isFinite(at)) {
+    const delta = at - Date.now();
+    return delta > 0 ? delta : fallback;
+  }
+  return fallback;
 }
 
 /** `in_flight_budget` is transient; credits/key limits are not. */
@@ -63,9 +94,19 @@ async function callUpstream(body: TtsRequestBody, apiKey: string): Promise<Upstr
     provider: { options: { 'google-ai-studio': { speech_metadata: { style: TTS_STYLE } } } },
   };
 
+  const deadline = Date.now() + TTS_BUDGET_MS;
+
   for (let attempt = 0; ; attempt++) {
+    // Clamped as well as the wait below: a late attempt inherits whatever is
+    // left of the budget, so the total cannot drift past TTS_BUDGET_MS.
+    const attemptTimeout = Math.min(UPSTREAM_TIMEOUT_MS, deadline - Date.now());
+    if (attemptTimeout < UPSTREAM_TIMEOUT_MS) {
+      console.error(
+        `TTS upstream attempt ${attempt + 1} timeout cut to ${attemptTimeout}ms by the ${TTS_BUDGET_MS}ms budget`,
+      );
+    }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), attemptTimeout);
     let res: Response;
     try {
       res = await fetch(SPEECH_URL, {
@@ -111,7 +152,22 @@ async function callUpstream(body: TtsRequestBody, apiKey: string): Promise<Upstr
       console.error('TTS upstream HTTP', res.status, text.slice(0, 200));
       return { ok: false };
     }
-    await sleep(retryAfterMs(res.headers, backoff));
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      console.error('TTS upstream HTTP', res.status, 'budget exhausted, giving up');
+      return { ok: false };
+    }
+    // Honour the server's own wait, but never past the budget: `Retry-After` is
+    // server-chosen and a single value can otherwise exceed the whole ceiling.
+    const requested = retryAfterMs(res.headers, backoff);
+    const wait = Math.min(requested, remaining);
+    if (wait < requested) {
+      console.error(
+        `TTS upstream Retry-After ${requested}ms clamped to ${wait}ms by the ${TTS_BUDGET_MS}ms budget`,
+      );
+    }
+    await sleep(wait);
   }
 }
 
@@ -143,8 +199,9 @@ export async function _handleTtsPost(body: unknown, apiKey: string): Promise<Res
   }
 
   // `pcmToWav` is declared as `Uint8Array<ArrayBufferLike>`, which `BodyInit`
-  // rejects. Re-wrapping copies and, as a side effect, re-bases the view onto
-  // an `ArrayBuffer` it exactly spans.
+  // rejects. Re-wrapping yields the `ArrayBuffer`-backed view `BodyInit` wants.
+  // `pcmToWav` currently allocates exactly 44 + dataSize bytes, so the copy is
+  // not load-bearing today; it keeps this correct if that ever changes.
   const wav = new Uint8Array(pcmToWav(result.pcm, result.sampleRate ?? 24000, result.channels ?? 1));
   return new Response(wav, { headers: { 'Content-Type': 'audio/wav' } });
 }
@@ -155,6 +212,9 @@ export async function _handleTtsRequest(
   apiKey: string | undefined,
 ): Promise<Response> {
   if (!apiKey) {
+    // Task 7 removes the secret from wrangler/.env; without this line a
+    // misconfigured deploy returns 503 forever with nothing in the logs.
+    console.error('OPENROUTER_API_KEY is not set');
     return json({ error: 'TTS API キーが未設定です' }, { status: 503 });
   }
   let body: unknown;

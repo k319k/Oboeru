@@ -19,6 +19,74 @@ function pcmResponse(
   return new Response(body, { status, headers: { 'Content-Type': contentType } });
 }
 
+/** A retryable upstream error, optionally advertising how long to wait. */
+function retryAfterResponse(retryAfter?: string, status = 429): Response {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (retryAfter !== undefined) headers['Retry-After'] = retryAfter;
+  return new Response('{"error":{}}', { status, headers });
+}
+
+/** Never settles until its signal aborts — a hanging upstream. */
+function hangingFetch(): ReturnType<typeof vi.fn> {
+  const mock = vi.fn(
+    (_url: string, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')),
+        );
+      }),
+  );
+  vi.stubGlobal('fetch', mock);
+  return mock;
+}
+
+/** How many 429s before the mock starts hanging. */
+function throttleThenHang(throttles: number, retryAfter?: string): ReturnType<typeof vi.fn> {
+  let n = 0;
+  const mock = vi.fn((_url: string, init: RequestInit) => {
+    n++;
+    if (n <= throttles) return Promise.resolve(retryAfterResponse(retryAfter));
+    return new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () =>
+        reject(new DOMException('aborted', 'AbortError')),
+      );
+    });
+  });
+  vi.stubGlobal('fetch', mock);
+  return mock;
+}
+
+/** Valid request body, for tests that care about timing rather than input. */
+function timingBody(): Request {
+  return post({ text: 'a', lang: 'ja', voiceName: 'Ludo', speakingRate: 1 });
+}
+
+/** Sentinel for "the promise had not settled when the clock ran out". */
+const PENDING = Symbol('pending');
+
+/**
+ * A fake clock whose `elapsed` is measured from the moment it was created, so
+ * stepping it in several slices still reports the total virtual time the call
+ * consumed. Yields `PENDING` instead of hanging when the promise has not
+ * settled, so a deadline that regressed outward fails fast rather than burning
+ * the test timeout.
+ */
+function fakeClock() {
+  const started = Date.now();
+  return {
+    async step(
+      promise: Promise<Response>,
+      ms: number,
+    ): Promise<{ status: number | symbol; elapsed: number }> {
+      const raced = await Promise.race<number | symbol>([
+        promise.then((r) => r.status),
+        vi.advanceTimersByTimeAsync(ms).then(() => PENDING),
+      ]);
+      return { status: raced, elapsed: Date.now() - started };
+    },
+  };
+}
+
 function stubFetch(...responses: Response[]) {
   const mock = vi.fn();
   for (const r of responses) mock.mockResolvedValueOnce(r);
@@ -40,6 +108,17 @@ describe('_handleTtsRequest — validation', () => {
     const res = await _handleTtsRequest(post({ text: 'こんにちは' }), undefined);
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'TTS API キーが未設定です' });
+  });
+
+  it('logs the missing key, so a 503 is never silent', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await _handleTtsRequest(post({ text: 'こんにちは' }), undefined);
+      expect(res.status).toBe(503);
+      expect(spy).toHaveBeenCalledWith('OPENROUTER_API_KEY is not set');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('returns 400 for invalid JSON body', async () => {
@@ -218,16 +297,14 @@ describe('_handleTtsPost — upstream errors', () => {
     expect(mock).toHaveBeenCalledTimes(1);
   });
 
-  it('does not retry a 401 or 403', async () => {
-    for (const status of [401, 403, 404, 413]) {
-      const mock = stubFetch(pcmResponse('{"error":{}}', 'application/json', status));
-      const res = await _handleTtsRequest(
-        post({ text: 'a', lang: 'ja', voiceName: 'Ludo', speakingRate: 1 }),
-        'key',
-      );
-      expect(res.status).toBe(502);
-      expect(mock).toHaveBeenCalledTimes(1);
-    }
+  it.each([401, 403, 404, 413])('does not retry a %i', async (status) => {
+    const mock = stubFetch(pcmResponse('{"error":{}}', 'application/json', status));
+    const res = await _handleTtsRequest(
+      post({ text: 'a', lang: 'ja', voiceName: 'Ludo', speakingRate: 1 }),
+      'key',
+    );
+    expect(res.status).toBe(502);
+    expect(mock).toHaveBeenCalledTimes(1);
   });
 
   it('does not retry a 402 for credits or key limits', async () => {
@@ -284,19 +361,21 @@ describe('_handleTtsPost — upstream errors', () => {
     expect(mock.mock.calls.length).toBeLessThanOrEqual(3);
   });
 
-  it('returns 408 when the upstream times out', async () => {
+  it('returns 408 when the attempt hits the 10s upstream timeout', async () => {
     vi.useFakeTimers();
-    const abort = new DOMException('aborted', 'AbortError');
-    const mock = vi.fn().mockRejectedValue(abort);
-    vi.stubGlobal('fetch', mock);
-    const promise = _handleTtsRequest(
-      post({ text: 'a', lang: 'ja', voiceName: 'Ludo', speakingRate: 1 }),
-      'key',
-    );
-    await vi.advanceTimersByTimeAsync(10_000);
-    const res = await promise;
-    vi.useRealTimers();
-    expect(res.status).toBe(408);
+    try {
+      hangingFetch();
+      const clock = fakeClock();
+      const promise = _handleTtsRequest(timingBody(), 'key');
+      // Still running one tick before the deadline: the timer has to be the
+      // thing that ends this call, so a shorter timeout would settle earlier.
+      expect((await clock.step(promise, 9_999)).status).toBe(PENDING);
+      const done = await clock.step(promise, 1);
+      expect(done.status).toBe(408);
+      expect(done.elapsed).toBe(10_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns 502 when the upstream cannot be reached', async () => {
@@ -306,5 +385,127 @@ describe('_handleTtsPost — upstream errors', () => {
       'key',
     );
     expect(res.status).toBe(502);
+  });
+});
+
+/**
+ * `TTS_BUDGET_MS` is the contract with the client: the server has to be done
+ * before the client gives up, or it burns a paid generation nobody hears.
+ * These tests pin the whole ceiling, not each timeout in isolation — a flat cap
+ * on `Retry-After` still lets two waits plus the final timeout overrun it.
+ */
+describe('_handleTtsPost — time budget', () => {
+  it('finishes within 13s when Retry-After asks for 5s twice, then hangs', async () => {
+    vi.useFakeTimers();
+    try {
+      throttleThenHang(2, '5');
+      const clock = fakeClock();
+      const promise = _handleTtsRequest(timingBody(), 'key');
+      expect((await clock.step(promise, 12_999)).status).toBe(PENDING);
+      const done = await clock.step(promise, 1);
+      expect(done.status).toBe(408);
+      // 5s + 5s of honoured waits, then the last attempt is cut to the 3s that
+      // remain. 5 + 5 + 10 = 20s unclamped.
+      expect(done.elapsed).toBe(13_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('logs when a late attempt is cut short to the remaining budget', async () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      throttleThenHang(2, '5');
+      const clock = fakeClock();
+      const promise = _handleTtsRequest(timingBody(), 'key');
+      await clock.step(promise, 13_000);
+      const cuts = spy.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('cut to'));
+      // Attempts 2 and 3 both inherit less than the full 10s: 8s after the
+      // first honoured wait, then 3s after the second.
+      expect(cuts).toHaveLength(2);
+      expect(cuts[0]).toContain('attempt 2 timeout cut to 8000ms');
+      expect(cuts[1]).toContain('attempt 3 timeout cut to 3000ms');
+      expect(cuts[1]).toContain('13000ms budget');
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits the interval the server asked for, not the fallback', async () => {
+    vi.useFakeTimers();
+    try {
+      const mock = vi
+        .fn()
+        .mockResolvedValueOnce(retryAfterResponse('3'))
+        .mockResolvedValueOnce(pcmResponse());
+      vi.stubGlobal('fetch', mock);
+      const clock = fakeClock();
+      const promise = _handleTtsRequest(timingBody(), 'key');
+      expect((await clock.step(promise, 2_999)).status).toBe(PENDING);
+      expect(mock).toHaveBeenCalledTimes(1);
+      const done = await clock.step(promise, 1);
+      expect(done.status).toBe(200);
+      // 3000ms from Retry-After; the BACKOFF_MS fallback would have been 1000ms.
+      expect(done.elapsed).toBe(3_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads Retry-After given as an HTTP-date (RFC 9110 §10.2.3)', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const mock = vi
+        .fn()
+        .mockResolvedValueOnce(retryAfterResponse('Thu, 01 Jan 2026 00:00:04 GMT'))
+        .mockResolvedValueOnce(pcmResponse());
+      vi.stubGlobal('fetch', mock);
+      const clock = fakeClock();
+      const done = await clock.step(_handleTtsRequest(timingBody(), 'key'), 4_000);
+      expect(done.status).toBe(200);
+      expect(done.elapsed).toBe(4_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('falls back to BACKOFF_MS for an unparseable Retry-After', async () => {
+    vi.useFakeTimers();
+    try {
+      const mock = vi
+        .fn()
+        .mockResolvedValueOnce(retryAfterResponse('soon-ish'))
+        .mockResolvedValueOnce(pcmResponse());
+      vi.stubGlobal('fetch', mock);
+      const clock = fakeClock();
+      const done = await clock.step(_handleTtsRequest(timingBody(), 'key'), 1_000);
+      expect(done.status).toBe(200);
+      expect(done.elapsed).toBe(1_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('honours a Retry-After longer than the whole budget by cutting it', async () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => retryAfterResponse('30')));
+      const clock = fakeClock();
+      const done = await clock.step(_handleTtsRequest(timingBody(), 'key'), 13_000);
+      // The upstream throttled us and we ran out of budget before it could be
+      // honoured, so this is an upstream failure (502), not a timeout (408).
+      expect(done.status).toBe(502);
+      expect(done.elapsed).toBe(13_000);
+      expect(String(spy.mock.calls[0][0])).toContain(
+        'Retry-After 30000ms clamped to 13000ms by the 13000ms budget',
+      );
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
