@@ -173,6 +173,21 @@ async function mockJudge(page: Page, responses: JudgeResponse[]): Promise<JudgeM
  * test asserts on it — polling beats sleeping for an assumed duration, and a
  * miss (0) is also the value a broken cache reports, so the caller must assert
  * on "greater than 0", never on equality with a previous reading.
+ *
+ * `readonly` is deliberate: the default `readwrite` would serialise against the
+ * app's own write transactions, so a poll tick could land in the middle of the
+ * very `persistToIdb` write it is waiting on. `src/lib/tts-cache.test.ts` opens
+ * its counting helper the same way.
+ *
+ * The connection is closed explicitly. `expect.poll` calls this once per tick,
+ * and an open handle would accumulate for the life of the page — the same leak
+ * `clearTtsCacheForTests` has to work around when deleting the database.
+ *
+ * The DB and store names are hardcoded rather than imported: `src/lib/tts-cache.ts`
+ * keeps `DB_NAME`/`STORE` module-private, and the point here is to observe the
+ * store from *outside* the app the way a real reload would, so a rename inside
+ * the app must break this helper rather than silently follow it. Current values
+ * ('oboeru-tts' / 'audio') match tts-cache.ts:63 and :66.
  */
 async function idbAudioCount(page: Page): Promise<number> {
 	return page.evaluate(() => {
@@ -181,11 +196,19 @@ async function idbAudioCount(page: Page): Promise<number> {
 				const open = indexedDB.open('oboeru-tts');
 				open.onerror = () => resolve(0);
 				open.onsuccess = () => {
+					const db = open.result;
 					try {
-						const req = open.result.transaction('audio').objectStore('audio').count();
-						req.onsuccess = () => resolve(req.result);
-						req.onerror = () => resolve(0);
+						const req = db.transaction('audio', 'readonly').objectStore('audio').count();
+						req.onsuccess = () => {
+							db.close();
+							resolve(req.result);
+						};
+						req.onerror = () => {
+							db.close();
+							resolve(0);
+						};
 					} catch {
+						db.close();
 						resolve(0); // store missing (DB created but not upgraded yet)
 					}
 				};
@@ -535,8 +558,28 @@ test.describe('Practice — Manual controls', () => {
 		await page.getByTestId('skip-btn').click();
 		await expect(bar).toHaveAttribute('aria-valuenow', '2');
 	});
+});
 
+// ---------------------------------------------------------------------------
+// TTS cache (in-memory LRU + IndexedDB persistence)
+// ---------------------------------------------------------------------------
+
+test.describe('Practice — TTS cache', () => {
 	test('IndexedDB キャッシュはリロードを跨いで効く', async ({ page }) => {
+		// SEED SHAPE IS LOAD-BEARING — the call-count assertions below are only
+		// valid for this exact layout, and adding a sentence to EITHER chapter
+		// breaks them:
+		//
+		//   ch-ja-01: exactly 1 sentence  → the tts effect's next-sentence
+		//              prefetch (practice/+page.svelte:636-641) has nothing to
+		//              prefetch, so the first session makes exactly 1 call.
+		//   ch-ja-02: exactly 1 sentence  → it was never fetched or cached, so
+		//              starting it must make exactly 1 MORE call (the liveness
+		//              control below).
+		//
+		// A second sentence in ch-ja-01 would make the prefetch fire and push the
+		// first count to 2, breaking both `toBe(1)` assertions. A second sentence
+		// in ch-ja-02 would add a prefetch of its own, breaking `toBe(2)`.
 		await setupPractice(page, {
 			chapters: [
 				{ id: 'ch-ja-01', name: '日本語', parentId: null, order: 1 },
