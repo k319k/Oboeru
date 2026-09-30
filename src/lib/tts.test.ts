@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { speak, cancelSpeech, unlockAudio, prefetchTts, resetTtsCacheForTests } from './tts';
 import { CURATED_VOICES } from './tts-voices';
-import { cacheKeyOf, clearTtsCacheForTests, readCachedPcm } from './tts-cache';
+import { pcmToWav } from './pcm-wav';
+import { cacheKeyOf, clearTtsCacheForTests, readCachedPcm, writeCachedPcm } from './tts-cache';
 
 class FakeAudio {
   src = '';
@@ -213,6 +214,9 @@ describe('speak', () => {
     await p;
   });
 
+  // Guards the *default* only. Deleting the playbackRate assignment in tts.ts
+  // entirely still passes here, because FakeAudio initialises it to 1 — that
+  // case is covered by the test above, which asserts a non-default value.
   it('defaults playbackRate to 1', async () => {
     fetchMock.mockImplementation(() => okResponse());
     const p = speak('文2', 'ja');
@@ -458,11 +462,47 @@ describe('IndexedDB persistence', () => {
     for (let i = 0; i < 50 && lastAudio.play.mock.calls.length < count; i++) await flush();
   }
 
-  // Asserts the cost property only — that a reload does not re-bill. The byte
-  // layout of the rebuilt blob is deliberately NOT asserted: /api/tts returns a
-  // WAV, persistToIdb stores that whole WAV in a PCM-named slot, and
-  // loadFromIdb prepends a second RIFF header, so the rebuilt blob currently
-  // carries 44 bytes of header-as-audio. See task-5-report.md.
+  /** Every Blob handed to `URL.createObjectURL`; the last one reached playback. */
+  function captureBlobs(): Blob[] {
+    const blobs: Blob[] = [];
+    vi.mocked(URL.createObjectURL).mockImplementation((obj: Blob | MediaSource) => {
+      if (obj instanceof Blob) blobs.push(obj);
+      return 'blob:mock-tts';
+    });
+    return blobs;
+  }
+
+  const bytesOf = async (blob: Blob): Promise<Uint8Array> =>
+    new Uint8Array(await blob.arrayBuffer());
+
+  const hasRiffAt = (bytes: Uint8Array, offset: number): boolean =>
+    bytes.length >= offset + 4 &&
+    bytes[offset] === 0x52 &&
+    bytes[offset + 1] === 0x49 &&
+    bytes[offset + 2] === 0x46 &&
+    bytes[offset + 3] === 0x46;
+
+  /** Non-trivial payload: a zero-filled buffer would make byte-identity vacuous. */
+  const fakePcm = (length: number) => {
+    const pcm = new Uint8Array(length);
+    for (let i = 0; i < length; i++) pcm[i] = (i * 7 + (i >> 3)) % 256;
+    return pcm;
+  };
+
+  /**
+   * Mirrors what /api/tts returns: pcmToWav(pcm, sampleRate ?? 24000,
+   * channels ?? 1). No return-type annotation, for the same reason the server
+   * route has none — an explicit `Uint8Array` widens to `Uint8Array<ArrayBufferLike>`,
+   * which `BodyInit` rejects.
+   */
+  const serverWav = (pcm: Uint8Array, sampleRate = 24000, channels = 1) =>
+    new Uint8Array(pcmToWav(pcm, sampleRate, channels));
+
+  const wavResponse = (wav: Uint8Array<ArrayBuffer>): Response =>
+    new Response(wav, { status: 200, headers: { 'Content-Type': 'audio/wav' } });
+
+  // Costs, not bytes: okResponse() is not a WAV, so these only pin that a reload
+  // does not re-bill. The byte-level contract is pinned by the four tests below.
   it('serves the next request from IndexedDB without regenerating', async () => {
     fetchMock.mockImplementation(() => okResponse());
     const key = cacheKeyOf({ text: '永続', lang: 'ja' });
@@ -489,10 +529,122 @@ describe('IndexedDB persistence', () => {
     await awaitPlaybacks(1);
     lastAudio.onended?.();
     await p1;
-    await awaitPersisted(cacheKeyOf({ text: '再読', lang: 'ja' }));
+    expect(await awaitPersisted(cacheKeyOf({ text: '再読', lang: 'ja' }))).not.toBeNull();
 
     resetTtsCacheForTests();
     await prefetchTts('再読', 'ja');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // The whole point of the cache: a reload must be inaudible. A WAV header
+  // stored in the PCM slot used to be re-wrapped, so the rebuilt blob carried a
+  // nested "RIFF" at offset 44 whose ASCII decoded as 22 loud samples.
+  it('stores a server WAV as raw PCM and rebuilds it byte-identically', async () => {
+    const pcm = fakePcm(2000);
+    const wav = serverWav(pcm);
+    expect(wav.length).toBe(2044);
+    fetchMock.mockImplementation(() => wavResponse(wav));
+    const key = cacheKeyOf({ text: '透明', lang: 'ja' });
+
+    const p1 = speak('透明', 'ja');
+    await awaitPlaybacks(1);
+    lastAudio.onended?.();
+    await p1;
+
+    const persisted = await awaitPersisted(key);
+    expect(persisted).not.toBeNull();
+    expect(persisted?.length).toBe(2000); // header stripped, not stored
+    expect(hasRiffAt(persisted ?? new Uint8Array(0), 0)).toBe(false);
+    expect(persisted).toEqual(pcm);
+
+    resetTtsCacheForTests();
+    const blobs = captureBlobs();
+    const p2 = speak('透明', 'ja');
+    await awaitPlaybacks(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const rebuilt = await bytesOf(blobs[blobs.length - 1]);
+    expect(rebuilt.length).toBe(2044);
+    expect(hasRiffAt(rebuilt, 0)).toBe(true);
+    expect(hasRiffAt(rebuilt, 44)).toBe(false); // the bug this test exists for
+    expect(rebuilt).toEqual(wav);
+    lastAudio.onended?.();
+    await p2;
+  });
+
+  // Migration path: a record written before the strip holds a whole WAV. No
+  // schema bump can reach it — bumping TTS_CACHE_SCHEMA_VERSION only changes
+  // the KEY, and only a DB_VERSION bump runs the deleteObjectStore that actually
+  // drops records — so the read path has to accept it.
+  it('restores a record that already holds a whole WAV (no migration needed)', async () => {
+    const wav = serverWav(fakePcm(2000));
+    const key = cacheKeyOf({ text: '移行', lang: 'ja' });
+    await writeCachedPcm(key, wav);
+
+    const blobs = captureBlobs();
+    const p = speak('移行', 'ja');
+    await awaitPlaybacks(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const rebuilt = await bytesOf(blobs[blobs.length - 1]);
+    expect(rebuilt.length).toBe(2044);
+    expect(hasRiffAt(rebuilt, 44)).toBe(false);
+    expect(rebuilt).toEqual(wav);
+    lastAudio.onended?.();
+    await p;
+  });
+
+  // A non-default rate must survive the round trip, or the audio replays at the
+  // wrong speed forever: the stored bytes are all that is left of the format.
+  it('keeps a non-default sample rate intact instead of re-wrapping at 24kHz', async () => {
+    const pcm = fakePcm(2000);
+    const wav = serverWav(pcm, 16000, 1);
+    expect(wav.length).toBe(2044);
+    fetchMock.mockImplementation(() => wavResponse(wav));
+    const key = cacheKeyOf({ text: '16k', lang: 'ja' });
+
+    const p1 = speak('16k', 'ja');
+    await awaitPlaybacks(1);
+    lastAudio.onended?.();
+    await p1;
+
+    // Header kept whole, because a re-wrap could not reproduce its format.
+    const persisted = await awaitPersisted(key);
+    expect(persisted?.length).toBe(2044);
+    expect(hasRiffAt(persisted ?? new Uint8Array(0), 0)).toBe(true);
+
+    resetTtsCacheForTests();
+    const blobs = captureBlobs();
+    const p2 = speak('16k', 'ja');
+    await awaitPlaybacks(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const rebuilt = await bytesOf(blobs[blobs.length - 1]);
+    expect(rebuilt).toEqual(wav); // 16kHz header intact → no resampling on replay
+    lastAudio.onended?.();
+    await p2;
+  });
+
+  // Raw PCM in the slot is the format this version writes, so the header really
+  // does have to be rebuilt — and rebuilt correctly.
+  it('wraps a raw-PCM record into a valid WAV with the payload intact', async () => {
+    const pcm = fakePcm(2000);
+    const key = cacheKeyOf({ text: '生PCM', lang: 'ja' });
+    await writeCachedPcm(key, pcm);
+
+    const blobs = captureBlobs();
+    const p = speak('生PCM', 'ja');
+    await awaitPlaybacks(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const rebuilt = await bytesOf(blobs[blobs.length - 1]);
+    expect(rebuilt.length).toBe(2044);
+    expect(hasRiffAt(rebuilt, 0)).toBe(true);
+    expect(hasRiffAt(rebuilt, 44)).toBe(false);
+    // data chunk size must describe the payload, or players see a short file.
+    expect(new DataView(rebuilt.buffer, rebuilt.byteOffset).getUint32(40, true)).toBe(2000);
+    expect(rebuilt.subarray(44)).toEqual(pcm);
+    lastAudio.onended?.();
+    await p;
   });
 });

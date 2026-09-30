@@ -7,7 +7,7 @@
  */
 
 import { resolveVoice } from './tts-voices';
-import { pcmToWav } from './pcm-wav';
+import { pcmToWav, DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS } from './pcm-wav';
 import {
   cacheKeyOf,
   isTtsCacheAvailable,
@@ -89,15 +89,71 @@ async function fetchTtsWav(text: string, lang: string, voiceName?: string | null
   }
 }
 
+/** The canonical 44-byte header `pcmToWav` writes, and the only one we accept. */
+const WAV_HEADER_BYTES = 44;
+
+const RIFF_MAGIC = 0x46464952; // 'RIFF', little-endian
+const WAVE_MAGIC = 0x45564157; // 'WAVE'
+const FMT_MAGIC = 0x20746d66; // 'fmt '
+const AUDIO_FORMAT_PCM = 1;
+
+interface WavHeader {
+  sampleRate: number;
+  channels: number;
+}
+
+/**
+ * Read the canonical RIFF/WAVE header, or return null when these bytes are not
+ * one — raw PCM, a truncated blob, or a compressed format we never produce.
+ *
+ * Local to this module on purpose: `pcm-wav.ts` is the "headerless PCM in, WAV
+ * out" codec, and teaching it to *parse* WAV would also mean editing its test
+ * file, which is outside this task's file scope. The asymmetry this resolves
+ * exists only here, where a server WAV meets a PCM-shaped record.
+ */
+function readWavHeader(bytes: Uint8Array): WavHeader | null {
+  if (bytes.length < WAV_HEADER_BYTES) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(0, true) !== RIFF_MAGIC) return null;
+  if (view.getUint32(8, true) !== WAVE_MAGIC) return null;
+  if (view.getUint32(12, true) !== FMT_MAGIC) return null;
+  if (view.getUint16(20, true) !== AUDIO_FORMAT_PCM) return null;
+  // A data chunk that overruns the buffer is a truncated write, not a WAV we can
+  // trust; treating it as PCM would emit a header claiming more audio than
+  // exists, which plays as a truncated file rather than as a clean miss.
+  if (view.getUint32(40, true) + WAV_HEADER_BYTES > bytes.length) return null;
+  return { sampleRate: view.getUint32(24, true), channels: view.getUint16(22, true) };
+}
+
+/**
+ * Normalise a fetched blob into the raw PCM the record is documented to hold.
+ *
+ * A header is stripped only when it declares the format `loadFromIdb` would
+ * rebuild, so the round trip is byte-identical. If the upstream ever answers with
+ * a rate or channel count other than the default, the header is kept instead:
+ * the format then lives nowhere else — `readCachedPcm` returns bare bytes with
+ * no sidecar — so discarding it would replay the audio at the wrong speed
+ * forever. `loadFromIdb` plays such a record verbatim.
+ */
+function toStoredPcm(bytes: Uint8Array): Uint8Array {
+  const header = readWavHeader(bytes);
+  if (header === null) return bytes;
+  if (header.sampleRate === DEFAULT_SAMPLE_RATE && header.channels === DEFAULT_CHANNELS) {
+    return bytes.subarray(WAV_HEADER_BYTES);
+  }
+  return bytes;
+}
+
 /**
  * Persist the generated audio for reuse across reloads. /api/tts returns a WAV
- * blob; we stash it whole. The PCM layout is recoverable from the header if a
- * future change makes the split worthwhile.
+ * blob, while the IndexedDB record is raw PCM (`tts-cache` names the field
+ * `pcm`), so the header is stripped here — see `toStoredPcm`.
  */
 async function persistToIdb(key: string, blob: Blob): Promise<void> {
   if (!isTtsCacheAvailable()) return;
   try {
-    await writeCachedPcm(key, new Uint8Array(await blob.arrayBuffer()));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    await writeCachedPcm(key, toStoredPcm(bytes));
   } catch {
     // Transparent optimisation — a failed write only costs a regeneration.
   }
@@ -106,12 +162,23 @@ async function persistToIdb(key: string, blob: Blob): Promise<void> {
 async function loadFromIdb(key: string): Promise<Blob | null> {
   if (!isTtsCacheAvailable()) return null;
   try {
-    const pcm = await readCachedPcm(key);
-    if (!pcm || pcm.length === 0) return null;
-    // `pcmToWav` returns `Uint8Array<ArrayBufferLike>`, which `BlobPart`
-    // rejects; the re-wrap yields the `ArrayBuffer`-backed view. Same fix as
+    const stored = await readCachedPcm(key);
+    if (!stored || stored.length === 0) return null;
+    if (readWavHeader(stored) !== null) {
+      // A whole WAV: either written before the strip, or kept whole because its
+      // rate is not the default. Its header already carries the real format, so
+      // it is played verbatim. Prepending a second one is not cosmetic — the
+      // "RIFF"/"WAVE"/"fmt " bytes decode as 22 samples at ~85% full scale, i.e.
+      // a click on the first sample of every cached replay.
+      return new Blob([new Uint8Array(stored)], { type: 'audio/wav' });
+    }
+    // Raw PCM: rebuild the header. `pcmToWav` returns
+    // `Uint8Array<ArrayBufferLike>`, which `BlobPart` rejects, so the re-wrap
+    // yields the `ArrayBuffer`-backed view — same fix as
     // src/routes/api/tts/+server.ts.
-    return new Blob([new Uint8Array(pcmToWav(pcm, 24000, 1))], { type: 'audio/wav' });
+    return new Blob([new Uint8Array(pcmToWav(stored, DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS))], {
+      type: 'audio/wav',
+    });
   } catch {
     return null;
   }
@@ -123,8 +190,11 @@ async function obtainTtsBlob(
   voiceName?: string | null,
 ): Promise<Blob> {
   // The key deliberately omits voiceName: there is exactly one voice, so it
-  // carries no discriminating information. Threading it into the fetch keeps
-  // the preference path working if a second voice is ever added.
+  // carries no discriminating information. Adding a second voice therefore
+  // requires extending the versioned prefix inside `cacheKeyOf` and bumping
+  // `TTS_CACHE_SCHEMA_VERSION` (see tts-cache.ts) — merely passing the name
+  // through to the fetch, as we do, is not enough: the key does not include it,
+  // so the previous voice's audio would keep being served.
   const key = cacheKeyOfRequest(text, lang);
   const hit = cachedBlob(key);
   if (hit) return hit;
@@ -138,6 +208,11 @@ async function obtainTtsBlob(
     const fromIdb = await loadFromIdb(key);
     const blob = fromIdb ?? (await fetchTtsWav(text, lang, voiceName));
     storeBlob(key, blob);
+    // Only network results are written back. Re-writing an IndexedDB hit would
+    // loop for no gain, and — since reads now normalise legacy whole-WAV
+    // records on the fly (`readWavHeader`) — a bad record cannot become
+    // permanently stuck: it plays correctly, and the next network fetch
+    // overwrites it with canonical raw PCM.
     if (!fromIdb) void persistToIdb(key, blob);
     return blob;
   })().finally(() => {
