@@ -1,5 +1,14 @@
 # Google Cloud TTS への移行設計
 
+> **本書は履歴文書で、現在の読み上げ実装とは一致しない。**
+> 2026-09-29 に Gemini TTS (OpenRouter 経由 / キー `OPENROUTER_API_KEY` / ボイス 1 種 `Ludo`) へ移行済み。
+> **`GOOGLE_TTS_API_KEY` を使う手順は実行しないこと** — このキーを読むコードは残っていないので、
+> `npx wrangler secret put GOOGLE_TTS_API_KEY` を実行してもデプロイの挙動は変わらない。
+> wrangler には以前この secret を登録したまま残っているが読み込まれない (削除は
+> `npx wrangler secret delete GOOGLE_TTS_API_KEY`、2026-09-30 時点で**未実行**)。
+> 現在の仕様は `docs/superpowers/specs/2026-09-29-gemini-tts-migration-design.md`、
+> 決定の訂正は `docs/superpowers/specs/2026-09-22-tts-freeze-fix.md` の付録を参照。
+
 - 日付: 2026-09-11
 - ステータス: 承認済み(2026-09-11、ユーザー承認)
 

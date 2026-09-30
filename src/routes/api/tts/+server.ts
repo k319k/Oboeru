@@ -23,10 +23,12 @@ const BACKOFF_MS = [1000, 2000];
  * against this deadline — a flat cap on `Retry-After` is not enough, because
  * two waits plus the final timeout still add up past the budget.
  *
- * The client must abort at or after this. `src/lib/tts.ts` still declares
- * `FETCH_TIMEOUT_MS = 10_000`; it is raised to 15s in the client-side task, so
- * until that lands the client can abandon a synthesis this server is still
- * running. The budget is asserted by the `_handleTtsPost — time budget` tests.
+ * The client must abort at or after this, and it does: `src/lib/tts.ts` declares
+ * `FETCH_TIMEOUT_MS = 15_000`, comfortably above the 13s ceiling. The ordering
+ * matters — if the client were the faster of the two it would abandon a
+ * synthesis this server is still running, and the paid upstream call would
+ * finish with nobody listening. The budget is asserted by the
+ * `_handleTtsPost — time budget` tests.
  */
 const TTS_BUDGET_MS = UPSTREAM_TIMEOUT_MS + BACKOFF_MS.reduce((a, b) => a + b, 0);
 

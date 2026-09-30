@@ -180,5 +180,6 @@ JS配列への全量蓄積が消え、ピークメモリが約半減。
     実測の内訳と 2027 年の値上げ影響の詳細は `docs/research/2026-09-28-gemini-tts-cost-optimization.md`
   - **未確認のまま残すもの**: 話速の最適値 (実装の既定は 1.0 = `src/lib/settings.ts` の
     `DEFAULTS.ttsRate`。試聴は 1 文のみで 0.9 案は未検証)、Vertex AI 版の有無、
+    3.8 系のレート制限 (Google 直叩きの Free Tier 天井は旧 spike で実測済み = 3 req/分・10 req/日、paid tier は支出ベース。**本番経路である OpenRouter 経由の制限は未実測**)、
     生成音声の再配信ライセンス条項、iOS ITP の 7 日ルールで 8 日以上開かなかった場合の
     IndexedDB 生存 (PWA 化 = ロードマップ⑤ で解消)

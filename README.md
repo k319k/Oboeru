@@ -32,7 +32,7 @@ cp .env.example .env
 読み上げ（TTS）と採点の Jev 意味一致判定は **OpenRouter の同じキー** を使います（Groq のキーとは別物です）。TTS には Gemini の音声モデル（`google/gemini-3.8-flash-lite-tts`）を、Jev には `typesafe/jev-1.13` を指定します。
 
 1. [OpenRouter](https://openrouter.ai/) にアクセスし、アカウントを作成（またはログイン）します。
-2. **Credits** で入金します。TTS は従量課金（`google/gemini-3.8-flash-lite-tts` の Standard tier は **10 秒あたり $0.0015**、1 文あたりおよそ **$0.002〜0.005**）で、入金残高や使用制限に引っかかると読み上げは失敗します（OpenRouter が返す 401 / 402 / 403 はサーバーが 502「音声合成に失敗しました」に畳んで返し、自動リトライもしません）。
+2. **Credits** で入金します。TTS は従量課金（`google/gemini-3.8-flash-lite-tts` の Standard tier は **10 秒あたり $0.0015**、1 文あたりおよそ **$0.002〜0.005**）で、入金残高や使用制限に引っかかると読み上げは失敗します（OpenRouter が返す 401 / 402 / 403 は通常サーバーが 502「音声合成に失敗しました」に畳んで返し、自動リトライしません。ただし `402` で `limit_source` が `openrouter_in_flight_budget` のものだけは一時的な混雑とみなして自動リトライします）。
 3. キーの管理ページで API キーを作成し、表示された値をコピーします。
 4. プロジェクト直下の `.env` ファイルに貼り付けます:
 
@@ -48,7 +48,7 @@ npx wrangler secret put OPENROUTER_API_KEY
 
 **同じ文をもう一度練習しても請求は発生しません。** 生成済みの音声 PCM はブラウザの IndexedDB（`oboeru-tts` / 64 MiB 上限・LRU）にキャッシュされ、リロードを跨いでも再生時に使われます。キャッシュが外れるのは容量超過で古い項目から削除された場合か、ブラウザがサイトデータを削除した場合だけです（プライベートモードなど IndexedDB 不可の環境では保存できず、都度生成されます）。
 
-キーが未設定のまま `/api/tts` を呼び出すと 503 が返り、練習ページの採点結果は「TTS エラー: TTS API キーが未設定です」になります。録音練習自体は引き続き利用可能です。
+キーが未設定のまま `/api/tts` を呼び出すと 503 が返り、練習ページに「TTS エラー: TTS API キーが未設定です」と表示されて **「もう一度再生」** ボタン（読み上げのやり直し）が出ます。このときはスコアは付かないので、**スキップ** で次の文へ進めて練習を続けられます。録音練習自体はキーが無くても利用できます。
 
 ## 起動とコマンド
 
@@ -71,10 +71,11 @@ npx wrangler secret put OPENROUTER_API_KEY
    npx wrangler login
    ```
 
-2. `GROQ_API_KEY` を Workers のシークレットとして登録します（値は対話的に入力します）:
+2. 2 本のシークレットを Workers に登録します（値は対話的に入力します）:
 
    ```bash
-   npx wrangler secret put GROQ_API_KEY
+   npx wrangler secret put GROQ_API_KEY        # 文字起こし
+   npx wrangler secret put OPENROUTER_API_KEY  # 読み上げ (TTS) と Jev 判定で共有
    ```
 
 3. プロダクションビルドを実行します:
@@ -89,7 +90,7 @@ npx wrangler secret put OPENROUTER_API_KEY
    npx wrangler deploy
    ```
 
-`GROQ_API_KEY` はビルド時に埋め込まれず、実行時に Workers のシークレットから読み込まれます。キーが未設定のまま `/api/transcribe` を呼び出すと 503 が返ります。
+いずれのキーもビルド時に埋め込まれず、実行時に Workers のシークレットから読み込まれます。キーが無いときの挙動は API ごとに違います — `GROQ_API_KEY` が無いと `/api/transcribe` は 503、`OPENROUTER_API_KEY` が無いと `/api/tts`（読み上げ）は 503 ですが、`/api/judge`（Jev 判定）は 200 を返して `{available:false}` を返すので採点は類似度のみで継続します。
 
 ## 使い方
 

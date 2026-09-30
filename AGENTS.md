@@ -34,7 +34,7 @@ npm install
 - `src/lib/similarity.ts` — 上記正規化を内蔵した Levenshtein 類似度 (0-100)
 - `src/lib/jev.ts` — `buildJudgeRequest` / `parseJudgeResponse` 純関数
 - `src/lib/alignment.ts` — 差分トークン (feedback の色分け)
-- `src/lib/pcm-wav.ts` — PCM→WAV の純関数 (`pcmToWav` / `parsePcmContentType` / `DEFAULT_SAMPLE_RATE=24000` / `DEFAULT_CHANNELS=1`)。**`Buffer` 禁止** — `DataView` + `Uint8Array` のみ。`+layout.svelte` → `tts.ts` → `tts-cache.ts` を経由してブラウザ bundle に入るので Node 前提の API を足さない
+- `src/lib/pcm-wav.ts` — PCM→WAV の純関数 (`pcmToWav` / `parsePcmContentType` / `DEFAULT_SAMPLE_RATE=24000` / `DEFAULT_CHANNELS=1`)。**`Buffer` 禁止** — `DataView` + `Uint8Array` のみ。`src/routes/+layout.svelte` → `src/lib/tts.ts` が**直接 import** するのでブラウザ bundle に入る (`tts-cache.ts` とは独立で、`tts-cache.ts` はこのモジュールを import しない。ヘッダ付けはサーバ `api/tts` と再生時 `tts.ts` の責務)
 - `src/lib/tts-cache.ts` — IndexedDB 永存キャッシュ (`cacheKeyOf` / `readCachedPcm` / `writeCachedPcm` / `pruneOldest`、64MiB 上限の自前 LRU)。**透過的最適化** — 全操作が自前のエラーを握り潰して「キャッシュミス」に縮退する (IndexedDB 不可のプライベートモードでも練習は動く)。DB は初回 read/write で lazy open、`indexedDB` をモジュール先頭で触らない、`$app/environment` を import しない (vitest の node 環境で `browser` が false になりテスト不能になる)
 - `src/lib/practice-progress.ts` — セッション途中再開の永続化 (sessionStorage `oboeru:progress:v1`、30分 TTL)。**`chapterId` フィールドには章ではなくセッションのノード id (章 or トラック) が入る** (トラックの概念導入以前の名残。復元の一致判定はその id で行う)
 - `src/routes/+page.svelte` — トップページ (章を根とする1本の木。章行はサブツリー合計、トラック行は直属のみ、`/practice?node=` へのリンク)。**文数・言語バッジ・`練習` ボタンの判定はすべて `getNodeSentences` の 1 系統** — `$derived.by` の `sentencesByNode` (ノード id → 文配列) を 1 度だけ作って全ての行が参照する。別の subset で数えると「`0文` なのに `練習` ボタン」等の矛盾が壊れた `trackId` の章で起きる。トラック行の「直属のみ」は自ノードの結果を `s.trackId === trackId` で抜く
@@ -94,6 +94,7 @@ npm install
 - `noul` に confidence は無い。`P(noul)` と否定形の和は 1 にならない → **否定形マジョリティ投票は禁止**
 - CJK は「英語同等ではない」(公式docs) → 実コンテンツでテストし confidence を見てルーティング
 - キー `OPENROUTER_API_KEY` は wrangler secret + .env のみ。コミット禁止・クライアントコードから直接呼ばない
+- **Jev と TTS は同じキーを共有する** (個人利用でキーを分ける価値がないという Spec §Gap の決定)。共有には副作用がある: **TTS の大量消費が Jev の利用枠 / クレジットを無言で奪う**。どちらかが使用量上限や 429 / 402 に当たると、judge 側は `{available:false}` (= 類似度のみのフォールバック採点) に**ユーザーへ何も知らせずに**落ちる。TTS 側で 429 やリトライが出始めたら、Jev も同じ使い捨てになっている可能性として疑うこと。鍵を分けない判断 (`ENV_OPENROUTER_API_KEY` を judge と tts で分ける等) が出る段階では、先に 2 つのエンドポイントが出す同一文言の `OPENROUTER_API_KEY is not set` (`api/judge` と `api/tts` の stderr) の出所を見分ける
 
 ## TTS (Gemini via OpenRouter) 規約
 

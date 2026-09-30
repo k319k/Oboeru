@@ -3,8 +3,10 @@
  * `audio/pcm;rate=…;channels=…` response header.
  *
  * Browser-safe by contract: `DataView` + `Uint8Array` only, no `Buffer`.
- * This module reaches the browser bundle through
- * `src/routes/+layout.svelte` → `src/lib/tts.ts` → `src/lib/tts-cache.ts`.
+ * `src/lib/tts.ts` imports this module directly, and `src/routes/+layout.svelte`
+ * imports `src/lib/tts.ts`, so this reaches the browser bundle. `tts-cache.ts`
+ * does NOT import it — the two are independent; the header is added on the
+ * server (`api/tts`) and on playback (`tts.ts`), never in the cache.
  */
 
 export const DEFAULT_SAMPLE_RATE = 24000;
