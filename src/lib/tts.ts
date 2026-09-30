@@ -1,31 +1,34 @@
 /**
- * TTS client backed by the /api/tts endpoint (Google Cloud TTS).
+ * TTS client backed by the /api/tts endpoint (OpenRouter → Gemini TTS).
  *
- * No Web Speech API usage. Browser globals (Audio, URL) are only touched at
- * call time so that importing this module in Node (e.g. vitest) never throws.
+ * No Web Speech API usage. Browser globals (Audio, URL, indexedDB) are only
+ * touched at call time so that importing this module in Node (e.g. vitest)
+ * never throws.
  */
 
-import { resolveVoice, type TtsLang } from './tts-voices';
+import { resolveVoice } from './tts-voices';
+import { pcmToWav } from './pcm-wav';
+import {
+  cacheKeyOf,
+  isTtsCacheAvailable,
+  readCachedPcm,
+  writeCachedPcm,
+} from './tts-cache';
 
 export interface SpeakOptions {
-  /** Playback/synthesis rate (default 1.0). */
+  /** Playback rate. Applied at playback time, not synthesis time: Gemini has
+   *  no numeric rate parameter, so changing this must not trigger a
+   *  regeneration (and a charge). */
   rate?: number;
-  /** Google voice name (e.g. 'ja-JP-Neural2-B'); falls back to the language default. */
-  voiceURI?: string | null;
+  /** Stored voice preference; anything outside the allowlist falls back. */
+  voiceName?: string | null;
 }
 
-const FETCH_TIMEOUT_MS = 10_000;
+const FETCH_TIMEOUT_MS = 15_000;
 const PLAYBACK_TIMEOUT_MS = 30_000;
 const CACHE_LIMIT = 50;
 
 let activeAudio: HTMLAudioElement | null = null;
-
-interface TtsRequest {
-  text: string;
-  lang: string;
-  voiceName: string;
-  speakingRate: number;
-}
 
 interface CacheEntry {
   blobUrl: string;
@@ -35,8 +38,10 @@ interface CacheEntry {
 const blobCache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<Blob>>();
 
-function cacheKeyOf(req: TtsRequest): string {
-  return `${req.text}|${req.lang}|${req.voiceName}|${req.speakingRate}`;
+/** Cache identity: schema version + provider + lang + text. No speakingRate —
+ *  see SpeakOptions.rate. */
+function cacheKeyOfRequest(text: string, lang: string): string {
+  return cacheKeyOf({ text, lang });
 }
 
 /** Returns the cached blob, refreshing its LRU recency. */
@@ -58,23 +63,22 @@ function storeBlob(key: string, blob: Blob): void {
   }
 }
 
-async function fetchTtsBlob(key: string, req: TtsRequest): Promise<Blob> {
+async function fetchTtsWav(text: string, lang: string, voiceName?: string | null): Promise<Blob> {
+  const voice = resolveVoice(voiceName ?? null);
   const fetchController = new AbortController();
   const fetchTimer = setTimeout(() => fetchController.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req),
+      body: JSON.stringify({ text, lang, voiceName: voice.name, speakingRate: 1 }),
       signal: fetchController.signal,
     });
     if (!res.ok) {
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
       throw new Error(data?.error ?? `TTS エラー (${res.status})`);
     }
-    const blob = await res.blob();
-    storeBlob(key, blob);
-    return blob;
+    return await res.blob();
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
       throw new Error('TTS に接続できませんでした (タイムアウト)');
@@ -85,22 +89,63 @@ async function fetchTtsBlob(key: string, req: TtsRequest): Promise<Blob> {
   }
 }
 
-function obtainTtsBlob(req: TtsRequest): Promise<Blob> {
-  const key = cacheKeyOf(req);
-  const hit = cachedBlob(key);
-  if (hit) return Promise.resolve(hit);
-  const pending = inFlight.get(key);
-  if (pending) return pending;
-  const request = fetchTtsBlob(key, req).finally(() => {
-    inFlight.delete(key);
-  });
-  inFlight.set(key, request);
-  return request;
+/**
+ * Persist the generated audio for reuse across reloads. /api/tts returns a WAV
+ * blob; we stash it whole. The PCM layout is recoverable from the header if a
+ * future change makes the split worthwhile.
+ */
+async function persistToIdb(key: string, blob: Blob): Promise<void> {
+  if (!isTtsCacheAvailable()) return;
+  try {
+    await writeCachedPcm(key, new Uint8Array(await blob.arrayBuffer()));
+  } catch {
+    // Transparent optimisation — a failed write only costs a regeneration.
+  }
 }
 
-function buildTtsRequest(text: string, lang: string, options?: SpeakOptions): TtsRequest {
-  const voice = resolveVoice(lang as TtsLang, options?.voiceURI);
-  return { text, lang, voiceName: voice.name, speakingRate: options?.rate ?? 1 };
+async function loadFromIdb(key: string): Promise<Blob | null> {
+  if (!isTtsCacheAvailable()) return null;
+  try {
+    const pcm = await readCachedPcm(key);
+    if (!pcm || pcm.length === 0) return null;
+    // `pcmToWav` returns `Uint8Array<ArrayBufferLike>`, which `BlobPart`
+    // rejects; the re-wrap yields the `ArrayBuffer`-backed view. Same fix as
+    // src/routes/api/tts/+server.ts.
+    return new Blob([new Uint8Array(pcmToWav(pcm, 24000, 1))], { type: 'audio/wav' });
+  } catch {
+    return null;
+  }
+}
+
+async function obtainTtsBlob(
+  text: string,
+  lang: string,
+  voiceName?: string | null,
+): Promise<Blob> {
+  // The key deliberately omits voiceName: there is exactly one voice, so it
+  // carries no discriminating information. Threading it into the fetch keeps
+  // the preference path working if a second voice is ever added.
+  const key = cacheKeyOfRequest(text, lang);
+  const hit = cachedBlob(key);
+  if (hit) return hit;
+
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+
+  const request = (async () => {
+    // IndexedDB survives reloads, which the in-memory LRU cannot. It is a
+    // transparent optimisation, so any failure falls through to the network.
+    const fromIdb = await loadFromIdb(key);
+    const blob = fromIdb ?? (await fetchTtsWav(text, lang, voiceName));
+    storeBlob(key, blob);
+    if (!fromIdb) void persistToIdb(key, blob);
+    return blob;
+  })().finally(() => {
+    inFlight.delete(key);
+  });
+
+  inFlight.set(key, request);
+  return request;
 }
 
 const AUTOPLAY_BLOCKED_MESSAGE =
@@ -141,15 +186,15 @@ export function cancelSpeech(): void {
 
 /**
  * Speak via POST /api/tts → HTMLAudioElement playback.
- * Reuses the session cache on hit (no fetch). Resolves when playback ends;
- * rejects on fetch/upstream/playback errors.
+ * Reuses the in-memory LRU, then IndexedDB, then the network. Resolves when
+ * playback ends; rejects on fetch/upstream/playback errors.
  */
 export async function speak(
   text: string,
   lang: string,
   options?: SpeakOptions,
 ): Promise<void> {
-  const blob = await obtainTtsBlob(buildTtsRequest(text, lang, options));
+  const blob = await obtainTtsBlob(text, lang, options?.voiceName);
 
   const url = URL.createObjectURL(blob);
   const audio = new Audio(url);
@@ -173,6 +218,10 @@ export async function speak(
       // Muted autoplay is never blocked by the autoplay policy; unmute once
       // playback has actually started.
       audio.muted = true;
+      // Pitch preservation is not cosmetic here: at 0.5x a shifted pitch stops
+      // being recognisable Japanese, which defeats the whole exercise.
+      audio.preservesPitch = true;
+      audio.playbackRate = options?.rate ?? 1;
       void audio.play()
         .then(() => {
           audio.muted = false;
@@ -197,7 +246,7 @@ export async function prefetchTts(
   lang: string,
   options?: SpeakOptions,
 ): Promise<void> {
-  await obtainTtsBlob(buildTtsRequest(text, lang, options));
+  await obtainTtsBlob(text, lang, options?.voiceName);
 }
 
 /** Test-only: drop every cached entry and in-flight request (no revoke). */
