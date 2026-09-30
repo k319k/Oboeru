@@ -10,8 +10,6 @@ import {
   writeCachedPcm,
   clearTtsCacheForTests,
   pruneOldest,
-  setPruneScanThresholdForTests,
-  getPruneScanCountForTests,
 } from './tts-cache';
 
 const DB_NAME = 'oboeru-tts';
@@ -63,6 +61,23 @@ async function stampOf(db: IDBDatabase, key: string): Promise<number> {
     db.transaction(STORE, 'readonly').objectStore(STORE).get(key),
   );
   return record?.lastUsedAt ?? -1;
+}
+
+/** Sums the stored byteLength of every record, the same way pruneOldest does. */
+async function totalBytesOf(db: IDBDatabase): Promise<number> {
+  return new Promise<number>((resolve) => {
+    let sum = 0;
+    const req = db.transaction(STORE, 'readonly').objectStore(STORE).openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve(sum);
+        return;
+      }
+      sum += (cursor.value as { byteLength: number }).byteLength ?? 0;
+      cursor.continue();
+    };
+  });
 }
 
 /** Polls until `probe` is truthy. Needed for the fire-and-forget lastUsedAt touch. */
@@ -243,62 +258,54 @@ describe('pruneOldest', () => {
   });
 });
 
-describe('scan scheduling', () => {
-  it('does not scan on every write, and scans once the counter crosses the threshold', async () => {
-    // This is the quadratic-blowup guard. A scan is a full cursor pass, so a
-    // scan-per-write cold start measured 1.71 s for 189 x 250 KB. Counting is
-    // what makes the write path O(1); the threshold is what makes the ceiling
-    // still hold.
-    const scansBefore = getPruneScanCountForTests();
-    setPruneScanThresholdForTests(4096);
-    try {
-      // 3 KiB written: below the 4 KiB threshold, so still no scan.
-      for (let i = 0; i < 3; i++) await writeCachedPcm(`sched-${i}`, new Uint8Array(1024));
-      expect(getPruneScanCountForTests()).toBe(scansBefore);
-      // The 4th write crosses it.
-      await writeCachedPcm('sched-3', new Uint8Array(1024));
-      expect(getPruneScanCountForTests()).toBe(scansBefore + 1);
-      // The 5th starts a fresh budget, so it must not scan again.
-      await writeCachedPcm('sched-4', new Uint8Array(1024));
-      expect(getPruneScanCountForTests()).toBe(scansBefore + 1);
-    } finally {
-      setPruneScanThresholdForTests(null);
-    }
-  });
+describe('byte-budget enforcement on the write path', () => {
+  it('holds the store at the real ceiling, tripping only when the counter says so', async () => {
+    // No injected threshold and no test-only seam: this drives the production
+    // TTS_CACHE_MAX_BYTES and the counter's own trip point, writing ~72 MiB.
+    // Slow-ish (~0.3 s) but it is the only assertion that the ceiling and the
+    // counter agree in the configuration that actually ships.
+    //
+    // It is also the guard against the quadratic cold start: scanning on every
+    // write measured 2091 ms for 189 x 250 KB versus 70 ms once counted. The
+    // timing is not asserted (too flaky to pin), but a scan-per-write
+    // implementation would prune as soon as the ceiling was crossed, which the
+    // recordsAtFirstPrune assertions below rule out behaviourally.
+    const recordBytes = 256 * 1024;
+    const payload = new Uint8Array(recordBytes);
+    await writeCachedPcm('ceiling-0', payload);
+    const db = await openTestDb();
 
-  it('counts an overwrite as a full payload, so a rewrite cannot dodge a scan', async () => {
-    const scansBefore = getPruneScanCountForTests();
-    setPruneScanThresholdForTests(4096);
-    try {
-      // The same 1 KiB key rewritten five times adds up to 5 KiB of counted
-      // bytes even though the store only ever holds 1 KiB. Over-counting is
-      // deliberate: the alternative is under-counting, which would let a
-      // hot-key rewrite loop skip the ceiling check entirely.
-      for (let i = 0; i < 5; i++) await writeCachedPcm('hot', new Uint8Array(1024));
-      expect(getPruneScanCountForTests()).toBe(scansBefore + 1);
-    } finally {
-      setPruneScanThresholdForTests(null);
+    let stored = await countEntries(db);
+    let recordsAtFirstPrune = -1;
+    // Cap the loop well past the expected trip so a regression that never
+    // prunes fails on the assertion rather than hanging.
+    for (let i = 1; i < 400 && recordsAtFirstPrune < 0; i++) {
+      await writeCachedPcm(`ceiling-${i}`, payload);
+      const after = await countEntries(db);
+      if (after <= stored) recordsAtFirstPrune = stored;
+      stored = after;
     }
-  });
-  it('starts from a zeroed counter after clearTtsCacheForTests', async () => {
-    // The scan assertions above are only deterministic because the counter is
-    // module state that outlives the database. Without the reset inside
-    // clearTtsCacheForTests, a byte count leaked from one test would make the
-    // next one scan early or late purely by run order.
-    // Bank 3 KiB of counted bytes with the threshold parked out of reach, so
-    // nothing resets the counter along the way.
-    setPruneScanThresholdForTests(Number.MAX_SAFE_INTEGER);
-    for (let i = 0; i < 3; i++) await writeCachedPcm(`leak-${i}`, new Uint8Array(1024));
-    setPruneScanThresholdForTests(4096);
-    await clearTtsCacheForTests();
-    setPruneScanThresholdForTests(4096);
 
-    const scansBefore = getPruneScanCountForTests();
-    // One 1 KiB write is comfortably under a 4 KiB threshold counting from zero,
-    // so this must not scan. Carried-over 3 KiB would push it over.
-    await writeCachedPcm('after-clear', new Uint8Array(1024));
-    expect(getPruneScanCountForTests()).toBe(scansBefore);
-  });
+    // The store must not prune just because the ceiling was crossed: a
+    // scan-on-every-write implementation first prunes at 257 records (64.25 MiB,
+    // the first record past the ceiling). The counter defers it by a threshold,
+    // so require at least half a threshold of slack before any pruning. The
+    // floor is expressed in half-thresholds so a *larger* threshold (a smaller
+    // divisor) still passes; only a smaller slack than that would be a defect.
+    const halfThresholdRecords = Math.ceil(
+      (TTS_CACHE_MAX_BYTES + TTS_CACHE_MAX_BYTES / 16) / recordBytes,
+    );
+    const fullThresholdRecords = Math.ceil(
+      (TTS_CACHE_MAX_BYTES + TTS_CACHE_MAX_BYTES / 8) / recordBytes,
+    );
+    expect(recordsAtFirstPrune).toBeGreaterThanOrEqual(halfThresholdRecords);
+    // The documented overshoot bound is ceiling + one full threshold, so a trip
+    // much later than that means the ceiling is no longer being enforced.
+    expect(recordsAtFirstPrune).toBeLessThanOrEqual(fullThresholdRecords + 4);
+    // And once it does prune, it lands back on the ceiling, not near it.
+    expect(await totalBytesOf(db)).toBeLessThanOrEqual(TTS_CACHE_MAX_BYTES);
+    db.close();
+  }, 30000);
 });
 
 describe('TTS_CACHE_MAX_BYTES', () => {

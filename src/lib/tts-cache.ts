@@ -30,18 +30,28 @@ export const TTS_CACHE_MAX_BYTES = 64 * 1024 * 1024;
  * but scanning, and that latency lands directly in Task 5's "miss -> generate ->
  * store -> play" path. Counting bytes is O(1) instead.
  *
- * OVERSHOOT BOUND — the store can never exceed
+ * OVERSHOOT BOUND — assuming writes are serialised (see below), the store never
+ * exceeds
  *   TTS_CACHE_MAX_BYTES + PRUNE_SCAN_THRESHOLD_BYTES + (one record)
  * = 64 MiB + 8 MiB + one record, i.e. about 1.13x the ceiling. Right after a
  * scan the store is at or below TTS_CACHE_MAX_BYTES; until the next scan at
  * most PRUNE_SCAN_THRESHOLD_BYTES can be written, plus the single record whose
  * write crossed the threshold. That record is then inside the scan, so the
  * store returns under the ceiling on that same scan.
+ *
+ * The bound assumes writes are SERIALISED. Two overlapping writeCachedPcm calls
+ * can both pass the threshold check, so two scans can overlap; the later reset
+ * then cancels the bytes counted during the earlier scan's window and the store
+ * can transiently reach roughly 2x the threshold above the ceiling. Each scan
+ * still ends at or below the ceiling, so the resting state is safe — only the
+ * transient peak is wider. Task 5 awaits every write, so this is unreachable
+ * from the practice flow; a caller that fires writes concurrently should
+ * serialise them if it cares about the peak.
  */
 const PRUNE_SCAN_THRESHOLD_BYTES = TTS_CACHE_MAX_BYTES / 8;
 
 /**
- * Bytes written since the last completed scan, and the live scan threshold.
+ * Bytes written since the last completed scan.
  *
  * This is an in-memory hint, so a page reload resets it. That is safe: a reload
  * only delays the first scan by PRUNE_SCAN_THRESHOLD_BYTES, which is already
@@ -49,33 +59,10 @@ const PRUNE_SCAN_THRESHOLD_BYTES = TTS_CACHE_MAX_BYTES / 8;
  * this surviving navigation.
  */
 let bytesSinceLastScan = 0;
-let scanThresholdBytes = PRUNE_SCAN_THRESHOLD_BYTES;
-let scanCount = 0;
-
-/**
- * Test seam. The threshold has to be shrinkable or a test would have to write
- * 8 MiB to trip it, and the one alternative — exporting the production
- * threshold as `let` so a test can reassign it — is explicitly out of bounds.
- * Pass `null` to restore the production value. Returns the previous value.
- * Production code never calls this.
- */
-export function setPruneScanThresholdForTests(bytes: number | null): number {
-  const previous = scanThresholdBytes;
-  scanThresholdBytes = bytes ?? PRUNE_SCAN_THRESHOLD_BYTES;
-  return previous;
-}
-
-/**
- * Test seam: how many full scans have run. The write path's scan is otherwise
- * unobservable, since a scan that finds the store under budget prunes nothing
- * and leaves no trace. Production code never calls this.
- */
-export function getPruneScanCountForTests(): number {
-  return scanCount;
-}
 
 const DB_NAME = 'oboeru-tts';
 const DB_VERSION = 1;
+
 const STORE = 'audio';
 
 export interface TtsCacheKeyParts {
@@ -215,7 +202,6 @@ export async function pruneOldest(
   // pruning frees bytes that were never counted, so the counter is a measure of
   // work since the last measurement, not of the store's size.
   bytesSinceLastScan = 0;
-  scanCount += 1;
   if (used <= maxBytes) return;
   await new Promise<void>((resolve) => {
     let tx: IDBTransaction;
@@ -317,7 +303,7 @@ export async function writeCachedPcm(key: string, pcm: Uint8Array): Promise<void
     // failed write, so the ceiling was documented but never enforced at all;
     // running it on every write fixed that but made a cold start quadratic.
     noteBytesWritten(pcm.length);
-    if (bytesSinceLastScan >= scanThresholdBytes) await pruneOldest(db);
+    if (bytesSinceLastScan >= PRUNE_SCAN_THRESHOLD_BYTES) await pruneOldest(db);
     return;
   }
   // Most likely QuotaExceededError. Prune and retry once, then give up
@@ -332,8 +318,6 @@ export async function clearTtsCacheForTests(): Promise<void> {
   // The counters outlive the database, so they have to be reset with it —
   // otherwise a stale byte count could suppress the next test's scan entirely.
   bytesSinceLastScan = 0;
-  scanCount = 0;
-  scanThresholdBytes = PRUNE_SCAN_THRESHOLD_BYTES;
   if (!isTtsCacheAvailable()) return;
   // Close our own connection before deleting. An open connection blocks
   // deleteDatabase indefinitely: the delete never completes, so the "cleared"
