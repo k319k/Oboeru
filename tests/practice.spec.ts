@@ -32,6 +32,8 @@ interface SeedTrack {
 interface SeedOptions {
 	tracks?: SeedTrack[];
 	sentences?: SeedSentence[];
+	/** Override the chapter list. Defaults to the single 日本語 chapter. */
+	chapters?: { id: string; name: string; parentId: string | null; order: number }[];
 	settings?: {
 		threshold?: number;
 		ttsRate?: number;
@@ -42,7 +44,9 @@ interface SeedOptions {
 
 /** Seed localStorage with chapters + sentences + settings before navigating. */
 async function seedPractice(page: Page, opts: SeedOptions = {}) {
-	const chapters = [{ id: 'ch-ja-01', name: '日本語', parentId: null, order: 1 }];
+	const chapters = opts.chapters ?? [
+		{ id: 'ch-ja-01', name: '日本語', parentId: null, order: 1 }
+	];
 	const sentences = opts.sentences ?? [
 		{
 			id: 'ja-01',
@@ -161,6 +165,35 @@ async function mockJudge(page: Page, responses: JudgeResponse[]): Promise<JudgeM
 		});
 	});
 	return { count: () => call };
+}
+
+/**
+ * Number of records in the persistent TTS cache, or 0 when the store cannot be
+ * read. Used to wait for a fire-and-forget `persistToIdb` to land before the
+ * test asserts on it — polling beats sleeping for an assumed duration, and a
+ * miss (0) is also the value a broken cache reports, so the caller must assert
+ * on "greater than 0", never on equality with a previous reading.
+ */
+async function idbAudioCount(page: Page): Promise<number> {
+	return page.evaluate(() => {
+		return new Promise<number>((resolve) => {
+			try {
+				const open = indexedDB.open('oboeru-tts');
+				open.onerror = () => resolve(0);
+				open.onsuccess = () => {
+					try {
+						const req = open.result.transaction('audio').objectStore('audio').count();
+						req.onsuccess = () => resolve(req.result);
+						req.onerror = () => resolve(0);
+					} catch {
+						resolve(0); // store missing (DB created but not upgraded yet)
+					}
+				};
+			} catch {
+				resolve(0);
+			}
+		});
+	});
 }
 
 /** Seed + mock TTS + (optionally) mock transcribe, then navigate. */
@@ -501,6 +534,68 @@ test.describe('Practice — Manual controls', () => {
 
 		await page.getByTestId('skip-btn').click();
 		await expect(bar).toHaveAttribute('aria-valuenow', '2');
+	});
+
+	test('IndexedDB キャッシュはリロードを跨いで効く', async ({ page }) => {
+		await setupPractice(page, {
+			chapters: [
+				{ id: 'ch-ja-01', name: '日本語', parentId: null, order: 1 },
+				{ id: 'ch-ja-02', name: '別章', parentId: null, order: 2 }
+			],
+			sentences: [
+				{
+					id: 'ja-01',
+					chapterId: 'ch-ja-01',
+					text: 'おはようございます。',
+					language: 'ja' as const,
+					order: 1
+				},
+				{
+					id: 'ja-02',
+					chapterId: 'ch-ja-02',
+					text: 'こんばんは。',
+					language: 'ja' as const,
+					order: 1
+				}
+			]
+		});
+
+		// First show phase: the audio comes off the network, exactly once.
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		await expect.poll(() => ttsCallCount()).toBe(1);
+
+		// Wait for the audio to actually land in IndexedDB. persistToIdb is
+		// fire-and-forget, so reloading the instant record-ready appears could
+		// race the write and turn this into a coin flip; polling the store keeps
+		// the test deterministic without sleeping for an assumed duration.
+		await expect.poll(() => idbAudioCount(page)).toBe(1);
+
+		// Reload drops the in-memory LRU (fresh JS context) but IndexedDB and
+		// the Playwright route closure survive. No restore dialog appears: the
+		// progress snapshot is still 0/0/0, and the session only offers to resume
+		// once something has been completed or skipped.
+		await page.reload();
+
+		// `record-ready` renders only in the `hidden` phase, and from a fresh load
+		// the only route into `hidden` is the tts effect's `speak().then()` — a
+		// resolved playback. Its visibility therefore means the second session's
+		// TTS demand has already settled, so an IndexedDB miss would have been
+		// counted before this line. That is what keeps the assertion below
+		// falsifiable instead of a snapshot taken while a request is in flight.
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+
+		// Still one call: the second session regenerated nothing. Playback having
+		// completed also proves the stored record is readable, not merely present.
+		expect(await ttsCallCount()).toBe(1);
+
+		// Liveness control, in a fresh session on a different node so the tts
+		// effect's next-sentence prefetch cannot perturb the count. Its sentence
+		// was never fetched or cached, so it MUST hit the network. Without this,
+		// a mock that had silently stopped counting would satisfy the assertion
+		// above and the test would pass while verifying nothing.
+		await page.goto('/practice?node=ch-ja-02');
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 5000 });
+		expect(await ttsCallCount()).toBe(2);
 	});
 });
 

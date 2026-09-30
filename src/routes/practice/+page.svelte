@@ -104,7 +104,7 @@
 	// Settings snapshot (loaded once when the session starts)
 	let threshold: number = $state(80);
 	let ttsRate: number = $state(1.0);
-	let voiceURI: string | null = $state(null);
+	let voiceName: string | null = $state(null);
 	let retryFrom: 'tts' | 'rerecord' = $state('tts');
 
 	// Breadcrumb of the node the session started from (chapter → ancestors → self).
@@ -294,7 +294,7 @@
 			return;
 		}
 		// feedback phase: replay the sentence; the user decides when to move on.
-		void speak(s.text, s.language, { rate: ttsRate, voiceURI }).catch((err: unknown) => {
+		void speak(s.text, s.language, { rate: ttsRate, voiceName }).catch((err: unknown) => {
 			toast.error(
 				`音声再生に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`
 			);
@@ -616,7 +616,7 @@
 
 		// Fire-and-forget prefetch (T3 cache). Prefetch rejects on failure —
 		// swallow here; the tts effect's speak() reports the real error.
-		void prefetchTts(s.text, s.language, { rate: ttsRate, voiceURI }).catch(() => {
+		void prefetchTts(s.text, s.language, { rate: ttsRate, voiceName }).catch(() => {
 			// Non-fatal — speak() surfaces the failure to the user.
 		});
 
@@ -635,12 +635,12 @@
 
 		const next = sentences[currentIndex + 1];
 		if (next) {
-			void prefetchTts(next.text, next.language, { rate: ttsRate, voiceURI }).catch(() => {
+			void prefetchTts(next.text, next.language, { rate: ttsRate, voiceName }).catch(() => {
 				// Non-fatal — the next sentence's speak() reports the failure.
 			});
 		}
 
-		speak(s.text, s.language, { rate: ttsRate, voiceURI })
+		speak(s.text, s.language, { rate: ttsRate, voiceName })
 			.then(() => {
 				if (phase === 'tts') phase = 'hidden';
 			})
@@ -855,7 +855,7 @@
 		const settings = loadSettings();
 		threshold = settings.threshold;
 		ttsRate = settings.ttsRate;
-		voiceURI = settings.voiceURI;
+		voiceName = settings.voiceURI;
 		retryFrom = settings.retryFrom;
 
 		const rawNodeId = page.url.searchParams.get('node');

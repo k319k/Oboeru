@@ -314,7 +314,10 @@
 	function voiceLabel(voiceURI: string | null): string {
 		if (!voiceURI) return 'デフォルト (言語に応じて自動)';
 		const voice = CURATED_VOICES.find((v) => v.name === voiceURI);
-		return voice ? `${voice.label} (${voice.languageCode})` : voiceURI;
+		// Retired Google names (ja-JP-Neural2-*) fail the allowlist. Showing the
+		// raw string would render a value with no matching Select.Item, i.e. an
+		// unselectable ghost, so fall back to the default label.
+		return voice ? voice.label : 'デフォルト (言語に応じて自動)';
 	}
 
 	// Load data on mount
@@ -1868,13 +1871,7 @@
 					</Select.Trigger>
 					<Select.Content>
 						<Select.Item value="">デフォルト (言語に応じて自動)</Select.Item>
-						<Select.Label>日本語</Select.Label>
-						{#each CURATED_VOICES.filter((v) => v.lang === 'ja') as voice (voice.name)}
-							<Select.Item value={voice.name}>{voice.label}</Select.Item>
-						{/each}
-						<Select.Separator />
-						<Select.Label>English</Select.Label>
-						{#each CURATED_VOICES.filter((v) => v.lang === 'en') as voice (voice.name)}
+						{#each CURATED_VOICES as voice (voice.name)}
 							<Select.Item value={voice.name}>{voice.label}</Select.Item>
 						{/each}
 					</Select.Content>
