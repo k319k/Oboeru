@@ -10,6 +10,8 @@ import {
   writeCachedPcm,
   clearTtsCacheForTests,
   pruneOldest,
+  setPruneScanThresholdForTests,
+  getPruneScanCountForTests,
 } from './tts-cache';
 
 const DB_NAME = 'oboeru-tts';
@@ -238,6 +240,64 @@ describe('pruneOldest', () => {
     await expect(pruneOldest(db, 1024)).resolves.toBeUndefined();
     expect(await countEntries(db)).toBe(4);
     db.close();
+  });
+});
+
+describe('scan scheduling', () => {
+  it('does not scan on every write, and scans once the counter crosses the threshold', async () => {
+    // This is the quadratic-blowup guard. A scan is a full cursor pass, so a
+    // scan-per-write cold start measured 1.71 s for 189 x 250 KB. Counting is
+    // what makes the write path O(1); the threshold is what makes the ceiling
+    // still hold.
+    const scansBefore = getPruneScanCountForTests();
+    setPruneScanThresholdForTests(4096);
+    try {
+      // 3 KiB written: below the 4 KiB threshold, so still no scan.
+      for (let i = 0; i < 3; i++) await writeCachedPcm(`sched-${i}`, new Uint8Array(1024));
+      expect(getPruneScanCountForTests()).toBe(scansBefore);
+      // The 4th write crosses it.
+      await writeCachedPcm('sched-3', new Uint8Array(1024));
+      expect(getPruneScanCountForTests()).toBe(scansBefore + 1);
+      // The 5th starts a fresh budget, so it must not scan again.
+      await writeCachedPcm('sched-4', new Uint8Array(1024));
+      expect(getPruneScanCountForTests()).toBe(scansBefore + 1);
+    } finally {
+      setPruneScanThresholdForTests(null);
+    }
+  });
+
+  it('counts an overwrite as a full payload, so a rewrite cannot dodge a scan', async () => {
+    const scansBefore = getPruneScanCountForTests();
+    setPruneScanThresholdForTests(4096);
+    try {
+      // The same 1 KiB key rewritten five times adds up to 5 KiB of counted
+      // bytes even though the store only ever holds 1 KiB. Over-counting is
+      // deliberate: the alternative is under-counting, which would let a
+      // hot-key rewrite loop skip the ceiling check entirely.
+      for (let i = 0; i < 5; i++) await writeCachedPcm('hot', new Uint8Array(1024));
+      expect(getPruneScanCountForTests()).toBe(scansBefore + 1);
+    } finally {
+      setPruneScanThresholdForTests(null);
+    }
+  });
+  it('starts from a zeroed counter after clearTtsCacheForTests', async () => {
+    // The scan assertions above are only deterministic because the counter is
+    // module state that outlives the database. Without the reset inside
+    // clearTtsCacheForTests, a byte count leaked from one test would make the
+    // next one scan early or late purely by run order.
+    // Bank 3 KiB of counted bytes with the threshold parked out of reach, so
+    // nothing resets the counter along the way.
+    setPruneScanThresholdForTests(Number.MAX_SAFE_INTEGER);
+    for (let i = 0; i < 3; i++) await writeCachedPcm(`leak-${i}`, new Uint8Array(1024));
+    setPruneScanThresholdForTests(4096);
+    await clearTtsCacheForTests();
+    setPruneScanThresholdForTests(4096);
+
+    const scansBefore = getPruneScanCountForTests();
+    // One 1 KiB write is comfortably under a 4 KiB threshold counting from zero,
+    // so this must not scan. Carried-over 3 KiB would push it over.
+    await writeCachedPcm('after-clear', new Uint8Array(1024));
+    expect(getPruneScanCountForTests()).toBe(scansBefore);
   });
 });
 

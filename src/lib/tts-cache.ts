@@ -22,6 +22,58 @@ export const TTS_CACHE_SCHEMA_VERSION = 1;
  */
 export const TTS_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
+/**
+ * How many bytes may be written after a scan before the next one is forced.
+ *
+ * A scan is a full cursor pass over every record, so running one per write makes
+ * a cold start quadratic: 189 sentences at ~250 KB measured 2091 ms of nothing
+ * but scanning, and that latency lands directly in Task 5's "miss -> generate ->
+ * store -> play" path. Counting bytes is O(1) instead.
+ *
+ * OVERSHOOT BOUND — the store can never exceed
+ *   TTS_CACHE_MAX_BYTES + PRUNE_SCAN_THRESHOLD_BYTES + (one record)
+ * = 64 MiB + 8 MiB + one record, i.e. about 1.13x the ceiling. Right after a
+ * scan the store is at or below TTS_CACHE_MAX_BYTES; until the next scan at
+ * most PRUNE_SCAN_THRESHOLD_BYTES can be written, plus the single record whose
+ * write crossed the threshold. That record is then inside the scan, so the
+ * store returns under the ceiling on that same scan.
+ */
+const PRUNE_SCAN_THRESHOLD_BYTES = TTS_CACHE_MAX_BYTES / 8;
+
+/**
+ * Bytes written since the last completed scan, and the live scan threshold.
+ *
+ * This is an in-memory hint, so a page reload resets it. That is safe: a reload
+ * only delays the first scan by PRUNE_SCAN_THRESHOLD_BYTES, which is already
+ * inside the overshoot bound above, so the ceiling guarantee does not depend on
+ * this surviving navigation.
+ */
+let bytesSinceLastScan = 0;
+let scanThresholdBytes = PRUNE_SCAN_THRESHOLD_BYTES;
+let scanCount = 0;
+
+/**
+ * Test seam. The threshold has to be shrinkable or a test would have to write
+ * 8 MiB to trip it, and the one alternative — exporting the production
+ * threshold as `let` so a test can reassign it — is explicitly out of bounds.
+ * Pass `null` to restore the production value. Returns the previous value.
+ * Production code never calls this.
+ */
+export function setPruneScanThresholdForTests(bytes: number | null): number {
+  const previous = scanThresholdBytes;
+  scanThresholdBytes = bytes ?? PRUNE_SCAN_THRESHOLD_BYTES;
+  return previous;
+}
+
+/**
+ * Test seam: how many full scans have run. The write path's scan is otherwise
+ * unobservable, since a scan that finds the store under budget prunes nothing
+ * and leaves no trace. Production code never calls this.
+ */
+export function getPruneScanCountForTests(): number {
+  return scanCount;
+}
+
 const DB_NAME = 'oboeru-tts';
 const DB_VERSION = 1;
 const STORE = 'audio';
@@ -159,6 +211,11 @@ export async function pruneOldest(
   maxBytes: number = TTS_CACHE_MAX_BYTES,
 ): Promise<void> {
   const used = await totalBytes(db);
+  // Zero the counter here rather than recomputing it from what survives:
+  // pruning frees bytes that were never counted, so the counter is a measure of
+  // work since the last measurement, not of the store's size.
+  bytesSinceLastScan = 0;
+  scanCount += 1;
   if (used <= maxBytes) return;
   await new Promise<void>((resolve) => {
     let tx: IDBTransaction;
@@ -228,6 +285,20 @@ function writeLastUsed(db: IDBDatabase, key: string): Promise<unknown> {
   });
 }
 
+/**
+ * Count freshly written bytes toward the next forced scan.
+ *
+ * An overwrite deliberately OVER-counts: the new payload's length is added
+ * without subtracting the record it replaced. Over-counting only buys an extra
+ * scan, whereas under-counting could let the store grow past the overshoot
+ * bound without anyone noticing. The accurate alternative — reading the old
+ * record to subtract its size — costs a `get` round trip on every write to buy
+ * precision the ceiling does not need.
+ */
+function noteBytesWritten(byteLength: number): void {
+  bytesSinceLastScan += byteLength;
+}
+
 export async function writeCachedPcm(key: string, pcm: Uint8Array): Promise<void> {
   const db = await openDb();
   if (!db) return;
@@ -240,12 +311,13 @@ export async function writeCachedPcm(key: string, pcm: Uint8Array): Promise<void
   };
   const written = await run(db, 'readwrite', (s) => s.put(record));
   if (written !== null) {
-    // Enforce the byte budget PROACTIVELY. Previously pruning only ran in
-    // reaction to a failed write, so an over-budget store could persist for as
-    // long as the origin stayed under quota — the ceiling was documented but
-    // never actually enforced. Costs one cursor scan per successful write, which
-    // at 189 records is far cheaper than re-fetching a sentence from Gemini.
-    await pruneOldest(db);
+    // Enforce the byte budget, but only pay for a full scan once enough has
+    // been written to be worth it — see PRUNE_SCAN_THRESHOLD_BYTES for the
+    // resulting overshoot bound. Previously pruning only ran in reaction to a
+    // failed write, so the ceiling was documented but never enforced at all;
+    // running it on every write fixed that but made a cold start quadratic.
+    noteBytesWritten(pcm.length);
+    if (bytesSinceLastScan >= scanThresholdBytes) await pruneOldest(db);
     return;
   }
   // Most likely QuotaExceededError. Prune and retry once, then give up
@@ -255,8 +327,20 @@ export async function writeCachedPcm(key: string, pcm: Uint8Array): Promise<void
 }
 
 export async function clearTtsCacheForTests(): Promise<void> {
+  const pending = dbPromise;
   dbPromise = null;
+  // The counters outlive the database, so they have to be reset with it —
+  // otherwise a stale byte count could suppress the next test's scan entirely.
+  bytesSinceLastScan = 0;
+  scanCount = 0;
+  scanThresholdBytes = PRUNE_SCAN_THRESHOLD_BYTES;
   if (!isTtsCacheAvailable()) return;
+  // Close our own connection before deleting. An open connection blocks
+  // deleteDatabase indefinitely: the delete never completes, so the "cleared"
+  // data survives, and every later open() queues behind a delete that can
+  // never finish.
+  const db = await pending;
+  db?.close();
   await new Promise<void>((resolve) => {
     const req = indexedDB.deleteDatabase(DB_NAME);
     req.onsuccess = () => resolve();
