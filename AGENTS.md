@@ -10,8 +10,7 @@ npm install
 
 `.env` (作成、コミット禁止):
 - `GROQ_API_KEY` — 文字起こし (無いと採点不可)
-- `GOOGLE_TTS_API_KEY` — 読み上げ (無いとTTS 503、録音練習は可能)
-- `OPENROUTER_API_KEY` — Jev判定 (無いと類似度のみのフォールバック採点)
+- `OPENROUTER_API_KEY` — **Jev 判定と読み上げ (TTS) で共有する 1 本のキー**。Jev 判定が無いと類似度のみのフォールバック採点、TTS が無いと `/api/tts` が 503 (練習ページは「TTS エラー: TTS API キーが未設定です」) で読み上げが失敗する。どちらかが使用寿命|Consumed になると他方が黙って落ちるが、個人利用ではキーを分ける価値がないため共有している (Spec §Gap の決定)
 
 ## コマンド
 
@@ -35,6 +34,8 @@ npm install
 - `src/lib/similarity.ts` — 上記正規化を内蔵した Levenshtein 類似度 (0-100)
 - `src/lib/jev.ts` — `buildJudgeRequest` / `parseJudgeResponse` 純関数
 - `src/lib/alignment.ts` — 差分トークン (feedback の色分け)
+- `src/lib/pcm-wav.ts` — PCM→WAV の純関数 (`pcmToWav` / `parsePcmContentType` / `DEFAULT_SAMPLE_RATE=24000` / `DEFAULT_CHANNELS=1`)。**`Buffer` 禁止** — `DataView` + `Uint8Array` のみ。`+layout.svelte` → `tts.ts` → `tts-cache.ts` を経由してブラウザ bundle に入るので Node 前提の API を足さない
+- `src/lib/tts-cache.ts` — IndexedDB 永存キャッシュ (`cacheKeyOf` / `readCachedPcm` / `writeCachedPcm` / `pruneOldest`、64MiB 上限の自前 LRU)。**透過的最適化** — 全操作が自前のエラーを握り潰して「キャッシュミス」に縮退する (IndexedDB 不可のプライベートモードでも練習は動く)。DB は初回 read/write で lazy open、`indexedDB` をモジュール先頭で触らない、`$app/environment` を import しない (vitest の node 環境で `browser` が false になりテスト不能になる)
 - `src/lib/practice-progress.ts` — セッション途中再開の永続化 (sessionStorage `oboeru:progress:v1`、30分 TTL)。**`chapterId` フィールドには章ではなくセッションのノード id (章 or トラック) が入る** (トラックの概念導入以前の名残。復元の一致判定はその id で行う)
 - `src/routes/+page.svelte` — トップページ (章を根とする1本の木。章行はサブツリー合計、トラック行は直属のみ、`/practice?node=` へのリンク)。**文数・言語バッジ・`練習` ボタンの判定はすべて `getNodeSentences` の 1 系統** — `$derived.by` の `sentencesByNode` (ノード id → 文配列) を 1 度だけ作って全ての行が参照する。別の subset で数えると「`0文` なのに `練習` ボタン」等の矛盾が壊れた `trackId` の章で起きる。トラック行の「直属のみ」は自ノードの結果を `s.trackId === trackId` で抜く
 - `src/routes/practice/+page.svelte` — 練習画面 (`?node=<章id|トラックid>` が唯一の入口。ヘッダはパンくず固定、7フェーズstate machine、T13プッシュトゥトーク、doTranscribe 採点+Jev統合)
@@ -94,6 +95,19 @@ npm install
 - CJK は「英語同等ではない」(公式docs) → 実コンテンツでテストし confidence を見てルーティング
 - キー `OPENROUTER_API_KEY` は wrangler secret + .env のみ。コミット禁止・クライアントコードから直接呼ばない
 
+## TTS (Gemini via OpenRouter) 規約
+
+- エンドポイント: `POST https://openrouter.ai/api/v1/audio/speech`、モデルは **`google/gemini-3.8-flash-lite-tts` にピン留め**。キーは Jev と **同じ `OPENROUTER_API_KEY`** (Groq キーでも別キーでもない)。`response_format: 'pcm'` を要求し、返ってきた `audio/pcm;rate=…;channels=…` を `pcm-wav.ts` で RIFF/WAV にして 200 で返す
+- **`speech_metadata` は必ず `provider.options['google-ai-studio']` 配下**。top-level の `instructions` は **HTTP 200 を返してから黙って捨てられる** (スタイル指定が効かない)。Gemini は `input` をそのまま読むので、地の文への演出指示はテキストではなく `speech_metadata` に入れる
+- **話速は生成ではない。** 話速はクライアントの `HTMLAudioElement.playbackRate` + `preservesPitch = true` で、`speak()` の `options.rate` 経由。生成キー (`cacheKeyOf`) に `speakingRate` を含めない (話速ごとに同じ文を生成し直し、課金と容量を二重に払う)。`speakingRate` はリクエスト互換のため受け付けるが値は無視する
+- **1 文 = 1 リクエスト。** Gemini TTS の応答にタイムスタンプが無く、前後の継ぎ目が分かる形で分割できないため、複数文をまとめて生成して結合する実装はしない
+- ボイスは 1 種 (`Ludo`) のみ。許可リストは `$lib/tts-voices` の `CURATED_VOICES` が正で、`/api/tts` は `isAllowedVoiceName` で弾く。`languageCode` / `gender` / 言語別のボイス表は Google Cloud TTS の概念で廃止済み。設定に残った旧 Google 声名は `resolveVoice` が黙って既定へ落とす
+- リトライ: 429 / 500 / 502 / 503 / 529 と **`402` のうち `limit_source` が `openrouter_in_flight_budget` のものだけ**。待ち時間は `Retry-After` (delta-seconds と HTTP-date の両形式) を優先し、無いときだけ `BACKOFF_MS`。`Retry-After` も試行タイムアウトも `TTS_BUDGET_MS` (= 10s + 1s + 2s = 13s) でクランプする。**401/403/402 の credit 枯渇はリトライしない** (無意味に 13 秒もユーザーの時間を奪う)
+- クライアントの `FETCH_TIMEOUT_MS = 15_000` はサーバの `TTS_BUDGET_MS = 13_000` より長い。ここ反过来ればクライアントが打ち切ってサーバだけがفاقする
+- 音声は **R2 ではなくクライアントの IndexedDB** に保存する (R2 案は棄却)。`/api/tts` が WAV を返し、`tts.ts` がヘッダ 44 バイトを落として生 PCM として `writeCachedPcm` する。再生時は `readWavHeader` で生 PCM と WAV を見分け、前者にだけ `pcmToWav` でヘッダを付け直す (両方に付けると再生時の最初の 1 サンプルのクリックノイズになる)
+- キャッシュは**保存出来なくてもよい**。`isTtsCacheAvailable()` が false / IndexedDB が壊れている / write が reject された — 全て「ネットワークへフォールバック」に縮退する
+- `TTS_MODEL` / `TTS_STYLE` は `$routes/api/tts` と `$lib/tts-cache` のキー prefix に**二重定義**されている ( 片方を変えると静かに古い音声が再生される )。共通化はしない — `tts-cache.ts` はブラウザ側なので route モジュールを import できない。**コメントでのみ結合を注記する**
+
 ## E2E テスト規約 (重要な経験則 — 違反すると原因不明の赤になる)
 
 1. キーボードでプッシュトゥトークを駆動するテストは、**最初の Space keydown の前に必ず `record-ready` の可視待ち**を入れる。hydration 前に発火した keydown はワンショットで消失する (practice.spec.ts がパスパターン)
@@ -126,4 +140,4 @@ npm install
 - 練習中はグローバルナビを隠す。テーマは既定で端末同期・上書きは管理 › 設定の「表示テーマ」fieldset の 3 択 (`端末に合わせる` / `ライト` / `ダーク`) のみ。ナビに切替ボタンを置かない。`src/lib/theme.ts` の `toggleTheme()` は削除済み (押すと `system` を脱して端末変更を追従しなくなるのが原因)。`/practice` からテーマを一切変えられない (端末設定に従う)
 - 実機チェック残務 (ユーザー承認ゲート): Firefox デスクトップ / Android Chrome でのマイク許可
 - 2026-09-27: ロードマップ ③ トラック階層統合を実装 (子チャプターを廃止し `Track.parentId` の木に統一。練習は `/practice?node=` で章/トラックどちらからでも開始、トップページと管理 › チャプターは同じ木を表示)。spec は `docs/superpowers/specs/2026-09-27-track-hierarchy-integration-design.md`、計画は `docs/superpowers/plans/2026-09-27-track-hierarchy-integration.md`。自動検証 (`npm run check` / `npm test` / `npx playwright test --workers=1`) は全緑、**実機ゲートは未実施** — 子チャプターを含む既存データの移行結果、3 段ネストの並び順、管理タブのインライン編集の実 IME をユーザー確認するまで「実機ゲート込み」で完了とみなさない
-- ロードマップ順 (2026-09-27 見直し) は ①フリーズ → ②UI強化 (済) → ③トラック階層統合 (済) → ④AI TTS (Gemini `gemini-3.8-flash-tts`) → ⑤PWA (Android) → ⑥クラウド同期。理由は付録 `docs/superpowers/specs/2026-09-22-tts-freeze-fix.md` 参照
+- ロードマップ順 (2026-09-27 見直し) は ①フリーズ → ②UI強化 (済) → ③トラック階層統合 (済) → ④AI TTS (**済、2026-09-29**。Gemini `google/gemini-3.8-flash-lite-tts` を **OpenRouter 経由**で使用。R2 での事前生成配信は棄却し、音声はクライアント IndexedDB のキャッシュに保持) → ⑤PWA (Android) → ⑥クラウド同期。理由は付録 `docs/superpowers/specs/2026-09-22-tts-freeze-fix.md` 参照
