@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { _handleTtsRequest, TTS_MODEL, TTS_STYLE } from './+server';
+import { _handleTtsRequest, _TTS_MODEL, _TTS_STYLE } from './+server';
 
 const PCM = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
 
@@ -181,11 +181,11 @@ describe('_handleTtsPost — upstream request shape', () => {
     );
     const body = upstreamBody(mock);
     expect(body).toEqual({
-      model: TTS_MODEL,
+      model: _TTS_MODEL,
       input: 'こんにちは',
       voice: 'Ludo',
       response_format: 'pcm',
-      provider: { options: { 'google-ai-studio': { speech_metadata: { style: TTS_STYLE } } } },
+      provider: { options: { 'google-ai-studio': { speech_metadata: { style: _TTS_STYLE } } } },
     });
     // Regression guard: top-level `instructions` returns HTTP 200 but is
     // silently dropped upstream, so the style would never take effect.

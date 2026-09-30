@@ -35,8 +35,11 @@ const TTS_BUDGET_MS = UPSTREAM_TIMEOUT_MS + BACKOFF_MS.reduce((a, b) => a + b, 0
 /** Provider constants. The voice lives in `$lib/tts-voices` (the allowlist is
  *  the single source of truth). Change TTS_MODEL / TTS_STYLE together with the
  *  literals in `$lib/tts-cache` — they form one versioned cache prefix. */
-export const TTS_MODEL = 'google/gemini-3.8-flash-lite-tts';
-export const TTS_STYLE = 'Narration';
+// SvelteKit rejects bare named exports from +server.ts; only the HTTP verbs
+// and underscore-prefixed names are allowed. `npm run check` and vitest do not
+// validate this — only `npm run build` does.
+export const _TTS_MODEL = 'google/gemini-3.8-flash-lite-tts';
+export const _TTS_STYLE = 'Narration';
 
 const SPEECH_URL = 'https://openrouter.ai/api/v1/audio/speech';
 
@@ -85,7 +88,7 @@ interface UpstreamResult {
 
 async function callUpstream(body: TtsRequestBody, apiKey: string): Promise<UpstreamResult> {
   const payload = {
-    model: TTS_MODEL,
+    model: _TTS_MODEL,
     input: body.text,
     voice: body.voiceName,
     response_format: 'pcm',
@@ -93,7 +96,7 @@ async function callUpstream(body: TtsRequestBody, apiKey: string): Promise<Upstr
     // accepted with HTTP 200 and then silently dropped, so the style would
     // never take effect. Gemini reads `input` verbatim, which is why delivery
     // directions go in speech_metadata instead of the text.
-    provider: { options: { 'google-ai-studio': { speech_metadata: { style: TTS_STYLE } } } },
+    provider: { options: { 'google-ai-studio': { speech_metadata: { style: _TTS_STYLE } } } },
   };
 
   const deadline = Date.now() + TTS_BUDGET_MS;
