@@ -13,7 +13,9 @@ describe('CURATED_VOICES', () => {
     }
   });
 
-  it('has a Japanese display label', () => {
+  // Named for what it asserts, not for the value: `label` is currently the
+  // latin 'Ludo', so a name claiming a Japanese label would overstate the test.
+  it('has a non-empty display label', () => {
     expect(CURATED_VOICES[0].label.length).toBeGreaterThan(0);
   });
 });

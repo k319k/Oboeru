@@ -43,7 +43,12 @@ format:    response_format = "pcm"  →  サーバ側で 44-byte RIFF ヘッダ�
 | `playbackRate` は `settings.ttsRate` をそのまま使う | Gemini には話速の数値指定が無い（`speech_metadata` の自然言語のみ、しかも非決定的）。変速はクライアント側に移す。既定値は 1.0 のまま（試聴で 0.9 が最適という所見があったが、既存設定値には効かないため別件で扱う） |
 | IndexedDB | サーバ側キャッシュは効かない（下記）。R2 を足す理由が無い |
 
-## 現状の実装
+## 移行前の現状（2026-09-29 時点）
+
+> **注意** — この節は **移行前** の状態を記録したものであり、現行の仕様ではない。
+> Google Cloud TTS / `audio/mpeg` / `GOOGLE_TTS_API_KEY` はすべて既に廃止され、
+> Gemini (`google/gemini-3.8-flash-lite-tts` を OpenRouter 経由) + `audio/wav` +
+> `OPENROUTER_API_KEY` に置き換わっている。現状は `AGENTS.md` の TTS 規約節を参照。
 
 ### provider 側 (`src/routes/api/tts/+server.ts`)
 

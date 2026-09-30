@@ -44,9 +44,18 @@ export const TTS_CACHE_MAX_BYTES = 64 * 1024 * 1024;
  * then cancels the bytes counted during the earlier scan's window and the store
  * can transiently reach roughly 2x the threshold above the ceiling. Each scan
  * still ends at or below the ceiling, so the resting state is safe — only the
- * transient peak is wider. Task 5 awaits every write, so this is unreachable
- * from the practice flow; a caller that fires writes concurrently should
- * serialise them if it cares about the peak.
+ * transient peak is wider.
+ *
+ * The serialisation assumption does NOT hold on the practice flow. `src/lib/tts.ts`
+ * persists with `void persistToIdb(key, blob)` (fire-and-forget, no await), and
+ * `practice/+page.svelte` fires `prefetchTts(next.text, ...)` for the NEXT
+ * sentence and `speak(s.text, ...)` for the CURRENT one from the same effect, so
+ * two distinct keys can be written concurrently. Overlapping writes therefore
+ * happen in practice, and the transient peak can indeed widen to roughly
+ * 2x PRUNE_SCAN_THRESHOLD_BYTES above the ceiling. Nothing exceeds
+ * TTS_CACHE_MAX_BYTES at rest, so this is a soft-hint artefact rather than a
+ * storage-bound violation — but a caller that cares about the peak must
+ * serialise its own writes.
  */
 const PRUNE_SCAN_THRESHOLD_BYTES = TTS_CACHE_MAX_BYTES / 8;
 

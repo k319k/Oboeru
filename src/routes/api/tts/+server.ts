@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
 import { isAllowedVoiceName } from '$lib/tts-voices';
-import { parsePcmContentType, pcmToWav } from '$lib/pcm-wav';
+import { DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE, parsePcmContentType, pcmToWav } from '$lib/pcm-wav';
 
 const MAX_TEXT_LENGTH = 400;
 
@@ -204,7 +204,15 @@ export async function _handleTtsPost(body: unknown, apiKey: string): Promise<Res
   // rejects. Re-wrapping yields the `ArrayBuffer`-backed view `BodyInit` wants.
   // `pcmToWav` currently allocates exactly 44 + dataSize bytes, so the copy is
   // not load-bearing today; it keeps this correct if that ever changes.
-  const wav = new Uint8Array(pcmToWav(result.pcm, result.sampleRate ?? 24000, result.channels ?? 1));
+  // `UpstreamResult.sampleRate` / `.channels` are declared optional, so the `??`
+  // is required for the type checker — but they are not really optional at
+  // runtime: `parsePcmContentType` always fills both, falling back to
+  // DEFAULT_SAMPLE_RATE / DEFAULT_CHANNELS itself. The fallbacks here therefore
+  // use those same exported constants instead of repeating 24000 / 1 as
+  // literals, so the pair has one source of truth. No test can cover this line
+  // (the `??` branch is unreachable), which is exactly why the drift it invites
+  // is worth removing rather than leaving for a reader to spot.
+  const wav = new Uint8Array(pcmToWav(result.pcm, result.sampleRate ?? DEFAULT_SAMPLE_RATE, result.channels ?? DEFAULT_CHANNELS));
   return new Response(wav, { headers: { 'Content-Type': 'audio/wav' } });
 }
 
