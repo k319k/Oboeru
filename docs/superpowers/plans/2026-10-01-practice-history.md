@@ -1273,25 +1273,90 @@ Expected: `svelte-check found 0 errors`
 `nodeStats(track.id)` / `nodeStats(chapter.id)` を**直接呼び出す**。`nodeStats()` は `Map.get` 1 回だけなので
 呼び出しコストは無視できる。
 
-- [ ] **Step 9: 開発サーバーで実物確認する**
+- [ ] **Step 9: 390px のスクショダンプと dumped DOM で検証する**
 
-別ターミナルで `npm run dev` を起動し:
+目視はできないので、机械的に検証できる形に変換する。`dev` サーバーを起動し、
+Playwright で 390×844 のスクリーンショットを**ワークスペースにダンプ**し、
+ついでに描画後の DOM を JSON でダンプして、行high-level な構造を検証する。
 
+`/tmp/opencode` を作業ディレクトリに使ってよい（使い捨て）。 dumped ファイルは
+`.superpowers/sdd/2026-10-01-practice-history/` 配下に置く（git-ignored）。
+
+种子（既定データは各章 10 文、track は `tr-ch-ja-01` / `tr-ch-en-01`）:
+
+```js
+{
+  "version": 1,
+  "sessions": [],
+  "sentences": {
+    "ja-01-1": { "attempts": 2, "lastScore": 92, "lastPracticedAt": 1757000000000 },
+    "ja-01-2": { "attempts": 1, "lastScore": 55, "lastPracticedAt": 1756600000000 },
+    "ja-01-3": { "attempts": 1, "lastScore": 10, "lastPracticedAt": 1756600000000 }
+  }
+}
 ```
-localStorage.setItem('oboeru:history:v1', JSON.stringify({
+
+`.superpowers/sdd/2026-10-01-practice-history/dump-top.mjs` に次を書く（`playwright` はプロジェクトに既に依存として入ってる）:
+
+```js
+import { chromium } from 'playwright';
+import { mkdirSync, writeFileSync } from 'node:fs';
+
+const OUT = '.superpowers/sdd/2026-10-01-practice-history';
+mkdirSync(OUT, { recursive: true });
+const HISTORY = {
   version: 1,
   sessions: [],
   sentences: {
-    s1: { attempts: 2, lastScore: 92, lastPracticedAt: Date.now() },
-    s2: { attempts: 1, lastScore: 55, lastPracticedAt: Date.now() - 3 * 86400000 }
+    'ja-01-1': { attempts: 2, lastScore: 92, lastPracticedAt: 1757000000000 },
+    'ja-01-2': { attempts: 1, lastScore: 55, lastPracticedAt: 1756600000000 },
+    'ja-01-3': { attempts: 1, lastScore: 10, lastPracticedAt: 1756600000000 }
   }
-}));
-location.reload();
+};
+
+const browser = await chromium.launch({ args: ['--no-sandbox'] });
+const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+await page.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
+await page.evaluate((h) => localStorage.setItem('oboeru:history:v1', JSON.stringify(h)), HISTORY);
+await page.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
+await page.waitForSelector('[data-testid="chapter-card"]');
+
+const dump = await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('[data-testid="chapter-card"], [data-testid="track-card"]')].map((card) => {
+    const name = card.querySelector('[data-testid="track-card-name"], .chapter-name')?.textContent?.trim() ?? '';
+    const count = card.querySelector('[data-testid="chapter-card-count"], [data-testid="track-card-count"]')?.textContent?.trim() ?? null;
+    const last = card.querySelector('[data-testid="chapter-last"], [data-testid="track-last"]')?.textContent?.trim() ?? null;
+    const bar = card.querySelector('[data-testid="chapter-progress"]');
+    const dots = [...(card.querySelector('[data-testid="track-dots"]')?.children ?? [])].map((el) => el.getAttribute('data-dot'));
+    return { name, count, last, barWidth: bar ? getComputedStyle(bar.firstElementChild).width : null, dots };
+  });
+  return { rows, streak: document.querySelector('[data-testid="streak-pill"]')?.textContent?.trim() ?? null };
+});
+writeFileSync(`${OUT}/task4-top-dump.json`, JSON.stringify(dump, null, 2));
+const main = await page.$('main');
+await main.screenshot({ path: `${OUT}/task4-top-390.png` });
+console.log(JSON.stringify(dump, null, 2));
+await browser.close();
 ```
 
-`http://localhost:5173/` を開き、390px（DevTools のデバイスツール）で確認する。
+Run: `node .superpowers/sdd/2026-10-01-practice-history/dump-top.mjs`（`npm run dev` を別ターミナルで起動済みである必要あり）
 
-Expected: 既定データ（各章 10 文）で `0/10 合格 · 0%` + 進捗バー 0% が出る。`s1` / `s2` が既定データの文 id と一致しなければ統計は表示されない（`untouched` の-dot になる）ので、それでよい。**ドット列が `order` 順に並び、1 行に約 22 個で折り返す**ことを確認する。
+Expected（ dumped JSON で確認すること）:
+
+- 2 章が `0/10 合格 · 0%` ではなく **`1/10 合格 · 10%`** になる（`ja-01-1` の `lastScore: 92 >= 80`）
+- `ja-01-1` / `ja-01-2` / `ja-01-3` を含むトラックの行に `dots` が **`["passed", "hard", "hard", ...未着手×7]`** で、
+  `ja-01-1` に対応する index が先頭（`order` 昇順）
+- `last` が `最終 1 日前` のような相対表記になっている
+- 章の行に `dots` が**無い**（空配列）— 章は集約
+- `barWidth` が章行だけ非空で `0%` より大きい
+- スクリーンショットが 390px 幅で生成されている
+
+**`ja-01-*` の id が既定データに存在しない場合**、dots が全部 `untouched` になるのが正しい。
+その場合は `src/lib/default-sentences.ts` を読んで**実在する文 id** に差し替えて再実行する
+（このチェック自体が「`stats` に無い文は `untouched`」という契約の検証になる）。
+
+写真は目視できないので、**dumped JSON の値を上記の Expected と 1 項目ずつ照合**すること。
+差異があれば実装を直す。
 
 - [ ] **Step 10: 既存 E2E の失敗を確認する（预期的）**
 
@@ -1463,30 +1528,87 @@ Task 4 Step 2 の effect を
 Run: `npm run check`
 Expected: `svelte-check found 0 errors`
 
-- [ ] **Step 7: 開発サーバーで確認する**
+- [ ] **Step 7: 390px のスクショダンプと dumped DOM で検証する**
 
-Run: `npm run dev` を別ターミナルで起動し、`http://localhost:5173/` を開く。DevTools で:
+Task 4 Step 9 と同じ方式。`.superpowers/sdd/2026-10-01-practice-history/dump-history.mjs` を書き、**ピル / 履歴セクション /
+展開状態 / 削除済みノードの表示 / さらに表示** を dumped JSON で検証する。
 
 ```js
+import { chromium } from 'playwright';
+import { mkdirSync, writeFileSync } from 'node:fs';
+
+const OUT = '.superpowers/sdd/2026-10-01-practice-history';
+mkdirSync(OUT, { recursive: true });
 const now = Date.now();
-localStorage.setItem('oboeru:history:v1', JSON.stringify({
+const day = 86400000;
+const HISTORY = {
   version: 1,
-  sentences: { s1: { attempts: 3, lastScore: 90, lastPracticedAt: now } },
+  sentences: { 'ja-01-1': { attempts: 3, lastScore: 90, lastPracticedAt: now } },
   sessions: Array.from({ length: 25 }, (_, i) => ({
-    id: 'sess' + i, nodeId: 'nonexistent', nodeName: '消えた章',
-    startedAt: now - i * 86400000, endedAt: now - i * 86400000, durationMs: 30000,
-    attempted: 10, passedSentences: 8, totalScore: 870, skipped: 1, endedEarly: i % 3 === 0
+    id: 'sess' + i,
+    nodeId: 'nonexistent',
+    nodeName: '消えた章',
+    startedAt: now - i * day,
+    endedAt: now - i * day,
+    durationMs: 30000,
+    attempted: 10,
+    passedSentences: 8,
+    totalScore: 870,
+    skipped: 1,
+    endedEarly: i % 3 === 0
   }))
-}));
-location.reload();
+};
+
+const browser = await chromium.launch({ args: ['--no-sandbox'] });
+const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+await page.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
+await page.evaluate((h) => localStorage.setItem('oboeru:history:v1', JSON.stringify(h)), HISTORY);
+await page.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
+await page.waitForSelector('[data-testid="chapter-card"]');
+
+const snap = async (label) => {
+  const d = await page.evaluate(() => ({
+    streak: document.querySelector('[data-testid="streak-pill"]')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+    toggle: document.querySelector('[data-testid="history-toggle"]')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+    expanded: document.querySelector('[data-testid="history-toggle"]')?.getAttribute('aria-expanded') ?? null,
+    items: [...document.querySelectorAll('[data-testid="history-item"]')].map((el) => el.textContent.replace(/\s+/g, ' ').trim()),
+    more: document.querySelector('[data-testid="history-more"]')?.textContent?.replace(/\s+/g, ' ').trim() ?? null
+  }));
+  return { label, ...d };
+};
+
+const steps = [];
+steps.push(await snap('initial (collapsed)'));
+await page.getByTestId('history-toggle').click();
+steps.push(await snap('after open'));
+await page.reload();
+steps.push(await snap('after reload (state remembered)'));
+await page.getByTestId('history-more').click();
+steps.push(await snap('after さらに表示'));
+
+writeFileSync(`${OUT}/task5-history-dump.json`, JSON.stringify(steps, null, 2));
+const main = await page.$('main');
+await main.screenshot({ path: `${OUT}/task5-top-390.png` });
+console.log(JSON.stringify(steps, null, 2));
+await browser.close();
 ```
 
-Expected:
-- ピルに `連続 1 日 · のべ 3 文`
-- 履歴セクションに `練習履歴 (25)` が見え、展開すると 20 件 + `さらに表示 (残り 5 件)` が出る
-- 削除済みノードの行が `消えた章 (削除済み)` と表示される
-- 展開 → リロードしても展開状態が残る
-- `さらに表示` で 25 件全部になる
+Run: `node .superpowers/sdd/2026-10-01-practice-history/dump-history.mjs`
+
+Expected（dumped JSON を 1 項目ずつ照合）:
+
+- `initial`: `streak` が `連続 1 日 · のべ 3 文` / `toggle` が `練習履歴 (25)` /
+  `expanded` が `"false"` / `items` が**空配列** / `more` が `null`
+- `after open`: `expanded` が `"true"` / `items.length === 20` / `more` が `さらに表示 (残り 5 件)`
+- `after reload`: `expanded` が**依然 `"true"`**（開閉状態の永続化）、`items.length === 20`
+- `after さらに表示`: `items.length === 25` / `more` が `null`
+- 全 `items` に `消えた章 (削除済み)` が含まれる（現在存在しないノードなので解決失敗）
+- `i % 3 === 0` の行に `途中で終了` が付き、他には付かない
+
+**さらに**、履歴セクションの表示ノードを消したケース（`nodeId: 'ja-01'` など実在する id に
+1 件だけ差し替えたダンプ）を 1 回書き、`nodeName` ではなく**現在の名前**が出ることを確認する。
+
+写真は目視できないので、**dumped JSON の値を上記の Expected と 1 項目ずつ照合**すること。
 
 - [ ] **Step 8: コミット**
 
