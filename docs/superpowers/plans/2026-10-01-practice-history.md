@@ -1277,7 +1277,7 @@ Playwright で 390×844 のスクリーンショットを**ワークスペース
 `/tmp/opencode` を作業ディレクトリに使ってよい（使い捨て）。 dumped ファイルは
 `.superpowers/sdd/2026-10-01-practice-history/` 配下に置く（git-ignored）。
 
-种子（既定データは各章 10 文、track は `tr-ch-ja-01` / `tr-ch-en-01`）:
+シード（既定データは各章 10 文、track は `tr-ch-ja-01` / `tr-ch-en-01`）:
 
 ```js
 {
