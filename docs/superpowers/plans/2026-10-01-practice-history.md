@@ -1428,12 +1428,12 @@ Task 4 Step 2 の effect に 1 行足す。import に `computeStreak` / `getSess
 	}
 
 	/** Current name when the node still exists, otherwise the captured one. */
-	function sessionNodeName(record: SessionRecord): string {
+	function sessionName(record: SessionRecord): { name: string; deleted: boolean } {
 		const live =
 			tracks.find((t) => t.id === record.nodeId)?.name ??
 			chapters.find((c) => c.id === record.nodeId)?.name;
-		if (live) return live;
-		return record.nodeName ? `${record.nodeName} (削除済み)` : '(削除済み)';
+		if (live) return { name: live, deleted: false };
+		return { name: record.nodeName, deleted: true };
 	}
 
 	function sessionAverage(record: SessionRecord): number {
@@ -1502,9 +1502,14 @@ Task 4 Step 2 の effect に 1 行足す。import に `computeStreak` / `getSess
 					<div id="history-log" class="flex flex-col gap-1 pt-2" data-testid="history-log">
 						{#each visible as record (record.id)}
 							<p class="text-sm text-muted-foreground" data-testid="history-item">
-								{formatStamp(record.startedAt)} · {sessionNodeName(record)} ·
-								{record.passedSentences} 文 合格 · 平均 {sessionAverage(record)}% ·
-								スキップ {record.skipped}{record.endedEarly ? ' · 途中で終了' : ''}
+								<span class="flex min-w-0 items-baseline gap-1">
+									<span class="min-w-0 flex-1 truncate">{formatStamp(record.startedAt)} · {@const nm = sessionName(record)}{nm.name}</span>
+									{#if nm.deleted}<span class="shrink-0">(削除済み)</span>{/if}
+								</span>
+								<span class="block">
+									{record.passedSentences} 文 合格 · 平均 {sessionAverage(record)}% ·
+									スキップ {record.skipped}{record.endedEarly ? ' · 途中で終了' : ''}
+								</span>
 							</p>
 						{/each}
 						{#if visible.length < history.sessions.length}
