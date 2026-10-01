@@ -37,7 +37,10 @@ npm install
 - `src/lib/pcm-wav.ts` — PCM→WAV の純関数 (`pcmToWav` / `parsePcmContentType` / `DEFAULT_SAMPLE_RATE=24000` / `DEFAULT_CHANNELS=1`)。**`Buffer` 禁止** — `DataView` + `Uint8Array` のみ。`src/routes/+layout.svelte` → `src/lib/tts.ts` が**直接 import** するのでブラウザ bundle に入る (`tts-cache.ts` とは独立で、`tts-cache.ts` はこのモジュールを import しない。ヘッダ付けはサーバ `api/tts` と再生時 `tts.ts` の責務)
 - `src/lib/tts-cache.ts` — IndexedDB 永存キャッシュ (`cacheKeyOf` / `readCachedPcm` / `writeCachedPcm` / `pruneOldest`、64MiB 上限の自前 LRU)。**透過的最適化** — 全操作が自前のエラーを握り潰して「キャッシュミス」に縮退する (IndexedDB 不可のプライベートモードでも練習は動く)。DB は初回 read/write で lazy open、`indexedDB` をモジュール先頭で触らない、`$app/environment` を import しない (vitest の node 環境で `browser` が false になりテスト不能になる)
 - `src/lib/practice-progress.ts` — セッション途中再開の永続化 (sessionStorage `oboeru:progress:v1`、30分 TTL)。**`chapterId` フィールドには章ではなくセッションのノード id (章 or トラック) が入る** (トラックの概念導入以前の名残。復元の一致判定はその id で行う)
-- `src/routes/+page.svelte` — トップページ (章を根とする1本の木。章行はサブツリー合計、トラック行は直属のみ、`/practice?node=` へのリンク)。**文数・言語バッジ・`練習` ボタンの判定はすべて `getNodeSentences` の 1 系統** — `$derived.by` の `sentencesByNode` (ノード id → 文配列) を 1 度だけ作って全ての行が参照する。別の subset で数えると「`0文` なのに `練習` ボタン」等の矛盾が壊れた `trackId` の章で起きる。トラック行の「直属のみ」は自ノードの結果を `s.trackId === trackId` で抜く
+- `src/lib/history.ts` — **練習履歴の永続化 + 集計**。キー `oboeru:history:v1` = `{version: 1, sessions, sentences}`、履歴セクションの開閉だけ別キー `oboeru:history-ui:v1` (データと同キーに混ぜない)。書き込み `recordSentenceAttempt` / `finalizeSession`、読み出し `loadHistory()`、開閉状態 `loadHistoryUiState` / `saveHistoryUiState`、純関数 `computeNodeStats` / `computeStreak` / `formatRelativeDay`。**全操作が `try/catch` で自前のエラーを握り潰す** (ストレージを拒否するブラウザでも練習は動く — 落ちるのは履歴だけ)。`clearHistory()` は**無い** (UI が無い export は死んだコードになるので、履歴消去 UI を足すときに初めて追加する)
+  - **`loadHistory()` はモジュールキャッシュを返さず、毎回ストレージから読み直す。** だから呼び出し側は「読んだ内容」をそのまま信用できる (テストも localStorage を直書きして `loadHistory()` 経由で検証できる)。キャッシュ `cache` を使うのは**書き込み経路だけ** — `recordSentenceAttempt` は採点ごと (1 文ごと) に呼ばれるので、毎回全履歴を parse + stringify し直すと 1 セッション 20 文 × 200KB 弱の read/write が 20 回走る
+  - **`persist()` は `localStorage.setItem` を呼ぶ前に `cache = data` とする。** だからクォータ超過で書き込みが失敗してもメモリ上の記録は残る — **成功したように見せてリロードで消える** (これが「保存できなくても練習は壊れない」の実装)。逆に `cache` が温まった後に別タブ / テストの直書き / devtools でストレージを書き換えても、次の `finalizeSession` は古い `cache` を stringfy して**その書き換えを消す**。だからモジュールは「テーブルの直後」と「同じタブ内の自前の書き込み」だけに信用し、他所からの更新を仮定しない。`history.test.ts` が `beforeEach` で `vi.resetModules()` して取り直すのはこのキャッシュを隔離するため
+- `src/routes/+page.svelte` — トップページ (章を根とする1本の木。**章行・トラック行ともサブツリー合計**、`/practice?node=` へのリンク)。**文数・言語バッジ・`練習` ボタンの判定はすべて `getNodeSentences` の 1 系統** — `$derived.by` の `sentencesByNode` (ノード id → 文配列) を 1 度だけ作って全ての行が参照し、合格/苦手/未着手は同じ配列を `$derived.by` の `statsByNode` が `computeNodeStats` に渡す。別の subset で数えると「`0文` なのに `練習` ボタン」等の矛盾が壊れた `trackId` の章で起きる。**自ノードの文だけ数える (直属のみ) 実装へ戻してはいけない** — `getNodeSentences` はトラックにも**サブツリー**を返すので、直属に絞ると「自身の文が無く子トラックだけを持つトラック」が `0文` という矛盾した表示のまま生きている `練習` ボタンになる (`top.spec.ts` の `every row counts the subtree it would actually practise` と `a track is startable when only a descendant track holds sentences` がこの契約)
 - `src/routes/practice/+page.svelte` — 練習画面 (`?node=<章id|トラックid>` が唯一の入口。ヘッダはパンくず固定、7フェーズstate machine、T13プッシュトゥトーク、doTranscribe 採点+Jev統合)
 - `src/routes/manage/+page.svelte` — 管理画面 (chapters タブ = 章 + トラックの1本の木 + トラックのインライン本文編集 (IME ガード付き) / sentences タブ = 文の一覧と階層 select (トラックの CRUD は無い) / 設定 / データ。インポート v3 + v2 自動変換)
 - `src/routes/api/{transcribe,tts,judge}/+server.ts` — サーバーproxy (キーは `$env/dynamic/private`、クライアント不露出)
@@ -86,6 +89,21 @@ npm install
 - judge 呼び出し後は transcribe と同一の再ガード (`phase`/`currentIndex`) を挟む (スキップとの競合防止)
 - **時間による自動送りなし。** 採点後の遷移は `next-btn` / `retry-btn` の明示クリック (または Space / Enter) のみ。`oboeru:practice-ui:v1` の autoAdvance / dwell 設定は削除済み。**E2E は時間待ちに依存せず明示クリックする** (実運用の挙動に合わせる)
 
+## 練習履歴の記録規約 (`src/lib/history.ts` の API を呼ぶ側)
+
+- **文統計は `doTranscribe` の採点確定点だけ** — `completedCount++` と passed / failed の更新のあと、`phase = 'feedback'` の直前に 1 回だけ `recordSentenceAttempt(s.id, finalScore, Date.now())`。渡のは **Jev 合成後の `finalScore`** (`sim` ではない) なので、記録値と判定値は必ず一致させる。スキップは記録しない (採点されないので当然)
+- **セッション record の `finalizeSession` は `settleSession()` 経由で 3 箇所から呼ばれる**: 進捗 `$effect` の `summary` 分岐 / `onDestroy` / `retryFailedOnly()` (再試行セッションをはじめる直前)。書いたら必ず `sessionStartedAt = null` にし、書かない早期 return (`completedCount === 0`) も `null` で終わるので**三重計上は起きない**
+- **`onDestroy` は reload / タブを閉じた時に発火しない** (JS realm が破棄されるだけで Svelte の destroy hook が走らない)。だから summary での確定は必須で、`onDestroy` が受け持つのは SvelteKit のリンク遷移やブラウザの「戻る」で**セッション途中離脱**した時だけ。「リロードしても必ず記録される」ではない
+- **`retryFailedOnly()` は `startSession()` を呼ばない**ので `beginSession()` で `sessionStartedAt` を再スタンプする。忘れると再試行セッションの `startedAt` / `durationMs` が前のセッションの時計を継承する
+- **1 文も採点しなかったセッションは記録されない。** `settleSession()` は `completedCount === 0` で `sessionStartedAt = null` にして return する — 「1 文目で閉じた」「全部スキップした」は履歴に残らない。これは仕様で、Throw ではない。文を採点したうえで中断したセッションは `endedEarly: true` として残る
+- **合格状態は保存しない。** `SentenceStat` は `attempts` / `lastScore` / `lastPracticedAt` の 3 つだけ。合格 / 苦手 / 未着手は `lastScore` と**現在の** `threshold` から導出する (`computeNodeStats` が `lastScore >= threshold` で判定)。閾値を下げると過去の合格記録が「合格」に戻る — 進捗が動くのが正しい
+- **章行とトラック行の文数の基準は混ぜない — 両方ともサブツリー。** `statsByNode` は `sentencesByNode` の値をそのまま `computeNodeStats` に渡すので、行の分母 `M` は `/practice?node=` が実際に回すセッション長と一致し、ドット数とも一致する。`canPractice()` も同じ基準。**章行にはドットが出ない** — `computeNodeStats` が `isChapter` でドット出力そのものを抑止し、章行は進捗バー + `N/M 合格` に集約される。「直属のみ」集計に戻さない
+- **ドット順 = 練習順。** `computeNodeStats` は渡された配列を並び替えない (`sentence.order` だけでソートするとトラックが交互に混ざり、子の 1 文が親のドットの真ん中に入る)。章行のラベルは `M文` (サブツリーが空のとき) か `N/M 合格 · P%` の 2 形態で、**`M文` は空ノード専用** — 文を持つノードが `0文` と読むと `練習` ボタンと矛盾する。トップ行の文言は E2E で `toHaveText` 完全一致 assert されているので文言変更はテスト更新が要る
+- **`history` を読む `$effect` は content ロードの `$effect` と分離してある。** 統合して「ロードした直後に `history` を派生させる」と、その effect が自分の書き込みに依存する形になり hydration 中に `effect_update_depth_exceeded` で落ちる。`streak` が `$derived` なのも同じ理由 (derived には書き込みが無い)
+- **連続日数は「今日が何も採点する前でも途切れない」** (`computeStreak` が今日の日付が無いときは 1 日だけ戻って数え直す)。アプリを開いただけでの連続切れは UX として意図している。`連続 N 日` ピルは `totalAttempts > 0` のときだけ出る
+- **章を消しても履歴は残る。** セッション record は開始時の `nodeName` を写し、`+page.svelte` の `sessionName()` は現在のノード名を優先し、消えていれば stored 名 + `(削除済み)` を出す。`(削除済み)` は名前の**兄弟要素** (行全体の `truncate` の中に埋めない) なので、`消した章 (削除済み)` を 1 つの `toContainText` で照合してはいけない
+- **履歴はデバイスローカルのまま。** 管理画面の export は `{version: 3, chapters, tracks, sentences}` のみで履歴を含まない。ロードマップ⑥ のクラウド同期にも**含めない** (練習実績はマージ不能 — last-write-wins で消える)
+
 ## Jev (TypeSafe System One) API 規約
 
 - エンドポイント: `POST https://openrouter.ai/api/v1/systemone`、モデルは **`typesafe/jev-1.13` にピン留め** (jev-latest 不使用)
@@ -124,6 +142,7 @@ npm install
 11. 練習の入口は `/practice?node=<章id|トラックid>` のみ (パラメータ無しは「ID が指定されていません」で summary へ)。進捗行は**章開始時だけ**トラック名付き (`基本 · 1 / 12` — さらにその章がトラック 2 個以上のときのみ `showTrackBadge`)。トラック開始時はトラック名がパンくずにあるので進捗行は素の `1 / 12`
 12. 管理タブの track 行は `tree-track-*` 系 (`tree-track-row` / `tree-track-name` / `tree-track-up` / `tree-track-down` / `tree-track-edit` / `tree-track-delete` / `tree-edit-track-name` / `add-child-track` / `delete-track-preview`)。トラックの CRUD は **chapters タブにのみ**存在し、sentences タブに残るのは読み取り専用の `track-group` / `track-name` と、階層 select の `sentence-form-track` だけ
 13. インライン本文編集 (`inline-sentence-text`) の Enter は IME ガード (`e.isComposing || e.keyCode === 229`) を通す。ガードを外すと日本語入力で「変換確定のたびに半確定テキストを保存」になる。blur ハンドラは event を渡さないので、確定だけは blur 経由で保存される設計
+14. 履歴を種するテストは `tests/helpers.ts` の `seedHistory` を使う (`gotoWithSeed` は `oboeru:v1` しか書かないので、另有**自分の reload を持つ** — `gotoWithSeed` の**後**に呼ぶ)。**種した履歴は書き込み経路の存在を証明しない** ので、`tests/history.spec.ts` の主経路は Space で実際にセッションを回している (localStorage 直書きだと「アプリが書いた」のか「テストが書いた」のか区別がつかず、書き込み経路を丸ごと消しても緑のままになる)。`holdAndRelease` も spec ごとにローカルコピーで、共通化していない。44px の tap target スイープは `tests/a11y.spec.ts` と `tests/responsive.spec.ts` の**別々 2 実装** (同じセレクタ/ログを重複写成) なので、片方から import できない
 
 ## 既知の落とし穴
 
