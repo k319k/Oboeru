@@ -189,6 +189,19 @@ test.describe('Practice history', () => {
 	}) => {
 		await practiseWholeChapter(page, [{ text: 'あああ' }, { text: 'いいい' }]);
 
+		// WRITE path, app-driven. Everything else in this file that touches
+		// totalScore reads a seeded row, so `totalScore: 0` in settleSession()
+		// corrupted every row's 平均 while all 22 history tests stayed green —
+		// the mutation was only ever caught at the RENDER site
+		// (sessionAverage() → 0), not where the value is produced. Both
+		// sentences transcribed back exactly as read, so each scores 100 and the
+		// row must carry their sum. `/api/judge` is stubbed to the key-less
+		// fallback (mockTranscribe installs it), so finalScore === sim === 100
+		// and the number is deterministic.
+		const [written] = await waitForSessions(page, 1);
+		expect(written.attempted).toBe(2);
+		expect(written.totalScore).toBe(200);
+
 		await page.goto('/');
 
 		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('2/2 合格 · 100%');
@@ -205,6 +218,9 @@ test.describe('Practice history', () => {
 		await expect(page.getByTestId('history-item')).toHaveCount(1);
 		await expect(page.getByTestId('history-item').first()).toContainText('2 文 合格');
 		await expect(page.getByTestId('history-item-name').first()).toHaveText('1章');
+		// The rendered average comes from the same field the assertion above
+		// pins at the write site, so the two cannot drift apart.
+		await expect(page.getByTestId('history-item').first()).toContainText('平均 100%');
 		// No skips and no early stop: the marker must be absent, not merely
 		// absent-looking. `途中で終了` is only rendered when endedEarly.
 		await expect(page.getByTestId('history-item').first()).not.toContainText('途中で終了');
@@ -424,6 +440,40 @@ test.describe('Practice history', () => {
 		const byState = Object.fromEntries(dots.map((d) => [d.dot, d.bg]));
 		expect(byState.hard).not.toBe(byState.untouched);
 		expect(byState.hard).not.toBe('');
+	});
+
+	// The dot row is the ONLY place the three counts reach a screen reader: the
+	// spans are 7px squares with no text, so `role="img"` + its `aria-label`
+	// are the accessible name for "1 passed, 1 hard, 1 untouched". Replacing the
+	// label with a constant ("TODO") left all 189 tests green — every other dot
+	// test reads `data-dot` or a colour, neither of which the label feeds.
+	test('the dot row announces all three counts to a screen reader', async ({ page }) => {
+		await gotoWithSeed(page, {
+			chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+			tracks: [{ id: 'tr-1', chapterId: 'ch-1', name: 'トラック1', parentId: null, order: 1 }],
+			sentences: [
+				{ id: 's-1', chapterId: 'ch-1', trackId: 'tr-1', text: 'あ', language: 'ja', order: 1 },
+				{ id: 's-2', chapterId: 'ch-1', trackId: 'tr-1', text: 'い', language: 'ja', order: 2 },
+				{ id: 's-3', chapterId: 'ch-1', trackId: 'tr-1', text: 'う', language: 'ja', order: 3 }
+			]
+		});
+		await seedHistory(page, {
+			version: 1,
+			sessions: [],
+			sentences: {
+				's-1': { attempts: 1, lastScore: 95, lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, lastScore: 40, lastPracticedAt: Date.now() }
+			}
+		});
+
+		const dots = trackCard(page, 'トラック1').getByTestId('track-dots');
+		await expect(dots).toHaveAttribute('role', 'img');
+		// All three counts, with numbers that cannot be reached by accident: one
+		// pass over the default threshold 80, one under it, one never scored.
+		await expect(dots).toHaveAttribute(
+			'aria-label',
+			'合格 1 文 / 苦手 1 文 / 未着手 1 文'
+		);
 	});
 
 	// Value-level, through the real component: the seed below is the shape the
@@ -905,10 +955,21 @@ test.describe('Practice history', () => {
 		expect(record.attempted).toBe(1);
 		expect(record.passedSentences).toBe(1);
 		expect(record.nodeName).toBe('1章');
-		// NOT asserted: `endedEarly`. It is set by 終了 only, so a row written by
-		// this path reads `途中で終了` absent — the log cannot tell this apart
-		// from a run the user finished deliberately. Recorded as an observation
-		// in the fix report rather than silently encoded here; changing the flag
-		// would alter data the per-task review signed off on.
+		// WRITE path for `skipped`, app-driven: this session skipped exactly one
+		// sentence (the skip-btn press above), so the row must say so. The only
+		// other assertion of a skip count in the suite reads a SEEDED row, which
+		// is why `skipped: 0` in settleSession() reached main with every history
+		// test green.
+		expect(record.skipped).toBe(1);
+		// And the score of the one sentence that WAS scored (100 for an exact
+		// transcription), so the row is internally consistent: 1 attempted,
+		// 100 total, 1 skipped.
+		expect(record.totalScore).toBe(100);
+		// `endedEarly`: the spec defines the field as "did this session end
+		// without reaching summary". This row was written by onDestroy, i.e. the
+		// session never reached summary, so it must say so — `settleSession(true)`
+		// from the destroy hook is what makes that true. Without the `|| abandoned`
+		// the row claimed a finished session.
+		expect(record.endedEarly).toBe(true);
 	});
 });

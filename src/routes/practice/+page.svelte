@@ -346,8 +346,15 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 	 * session. Every exit path either clears sessionStartedAt or writes
 	 * nothing, so whichever caller runs second cannot double-count — that is
 	 * what makes settling in two places safe.
+	 *
+	 * `abandoned` marks the onDestroy caller: the component went away with a
+	 * session still open, which is by definition "ended without reaching
+	 * summary" — the spec's definition of `endedEarly`. The OR cannot
+	 * false-positive: once summary has settled, `sessionStartedAt` is null and
+	 * this returns before writing anything, so `abandoned` only ever reaches a
+	 * record for a session that really did leave early.
 	 */
-	function settleSession(): void {
+	function settleSession(abandoned = false): void {
 		if (sessionStartedAt === null || !sessionNodeId) return;
 		if (completedCount === 0) {
 			sessionStartedAt = null;
@@ -368,7 +375,7 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 			passedSentences: passedIds.length,
 			totalScore,
 			skipped: skippedCount,
-			endedEarly
+			endedEarly: endedEarly || abandoned
 		});
 		sessionStartedAt = null;
 	}
@@ -979,8 +986,12 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 	// the realm is torn down without running Svelte's destroy hook — which is
 	// why the summary transition also settles. A no-op after summary, where
 	// settleSession() has already cleared sessionStartedAt.
+	//
+	// `true` = abandoned: reaching this hook with a live session means the user
+	// left before summary, so the row is written `endedEarly: true` rather than
+	// claiming a finished run.
 	onDestroy(() => {
-		settleSession();
+		settleSession(true);
 	});
 </script>
 

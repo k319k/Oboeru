@@ -333,7 +333,10 @@ function beginSession(): void {
   `startSession()` を**呼ばない**（`sessionReady` を触らず `phase = 'show'` を代入するだけ）。
   ここを直さないと再挑戦セッションの `startedAt` / `durationMs` が 1 つ前のセッションの開始時刻の
   まま書かれ、ガード（`sessionStartedAt !== null`）を通して**静かに不正データを書く**
-- **確定は `summary` 到達時と `onDestroy` の両方**。`onDestroy` だけだと、summary に到達してから
+- **確定は `summary` 到達時と `onDestroy` の両方**。`onDestroy` は `settleSession(true)` を呼ぶ
+  （引数 `abandoned` は「summary に到達せず组件が消えた」= `endedEarly` の定義そのもの。
+  2026-10-01 の全体レビューで、`false` をそのまま書いて仕様と食い違っていたのを修正）。
+  summary 到達済みの破棄では `sessionStartedAt` が既に `null` なので書き込みは起きない。`onDestroy` だけだと、summary に到達してから
   リロードやタブを閉じた場合そのセッションが**永久に失われる**（summary で既に
   `clearPracticeProgress()` を呼ぶので、次のマウントは `completedCount === 0` で early return する）。
   ロードマップ⑤ は PWA (Android)、⑥ はクラウド同期で、タブを背景に入れるのが既定の挙動
@@ -353,8 +356,7 @@ function beginSession(): void {
   `startedAt` は `applyRestore` が `saved.savedAt` に上書きするので `durationMs` は正しく、矛盾は合格文数だけ。
   `passedIds` の永続化はスコープ外（実害は見た目だけ）。E2E `a resumed session keeps the original start time` が
   `passedSentences === 1` を pin している
-- **`endedEarly` は「終了」ボタンで停止した時だけ立つ**。ブラウザ「戻る」などのクライアントサイド遷移で離脱した
-  セッションの行は `途中で終了` を出さない（最後まで終えた行と区別できない）
+
 
 ## エラー処理
 

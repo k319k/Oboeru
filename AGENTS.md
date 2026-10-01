@@ -108,7 +108,7 @@ npm install
 - **`totalAttempts` は文統計の `attempts` 合計のまま**。セッション行の `attempted` 合計にはしない (行はタブ強制終了で失われることがあるが、文統計は採点ごとに必ず書かれる)
 - **復元セッションの `startedAt` は `saved.savedAt`**。`applyRestore()` は `startSession()` で「いま」にスタンプした後で `sessionStartedAt = saved.savedAt` に上書きする。计数器だけ復元して時計を復元しないと、20 分前のセッションが 4 秒と表示される (`durationMs` はこの stamp から計算される)
 - **`passedSentences` は「このマウント内」の合格数**。`practice-progress.ts` は `passedIds` を永続化しないので、リロード復元したセッションではリロード前の合格が `attempted` には数えられながら `passedSentences` には含まれない (**受け入れる制約**。復元テスト `a resumed session keeps the original start time` が `passedSentences === 1` を明示的に pin している)
-- **`endedEarly` は「終了」ボタンだけで立つ。** ブラウザ「戻る」などクライアントサイド遷移で離脱したセッションの行は `途中で終了` を出さない (最後まで終えたセッションと区別できない。既知の制約・未修正)
+- **`endedEarly` は「summary に到達せず終わったか」** — 仕様（`docs/superpowers/specs/2026-10-01-practice-history-design.md:77`）の定義そのもの。`終了` ボタンは `endedEarly = true` を立て、`onDestroy` は `settleSession(true)` を呼ぶ (引数 `abandoned`)。**クライアントサイド遷移で離脱した行も `途中で終了` を出す** (summary 到達済みの破棄では `sessionStartedAt` が `null` なので書き込みは起きない — 誤検出しない)。E2E `abandoning a session with the browser Back button still records it` が `endedEarly === true` を pin している
 - **章を消しても履歴は残る。** セッション record は開始時の `nodeName` を写し、`+page.svelte` の `sessionName()` は現在のノード名を優先し、消えていれば stored 名 + `(削除済み)` を出す。`(削除済み)` は名前の**兄弟要素** (行全体の `truncate` の中に埋めない) なので、`消した章 (削除済み)` を 1 つの `toContainText` で照合してはいけない
 - **履歴はデバイスローカルのまま。** 管理画面の export は `{version: 3, chapters, tracks, sentences}` のみで履歴を含まない。ロードマップ⑥ のクラウド同期にも**含めない** (練習実績はマージ不能 — last-write-wins で消える)
 

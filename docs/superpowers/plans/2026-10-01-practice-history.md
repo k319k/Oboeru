@@ -31,6 +31,7 @@
 | 場所 | 計画の誤り | 正しい姿 |
 |---|---|---|
 | `computeStreak`（Task 1 Step / Task 4 Step 3） | シグネチャ `computeStreak(stats, now)`、日集合は文統計の `lastPracticedAt` のみ | **`computeStreak(stats, sessions, now)`**、日集合は文統計の日と `sessions[].startedAt` の日の**和集合**。文統計だけの集合では、同じ章を 5 日連続で練習すると各文の直近 stamp が全部今日になり集合が 1 要素に潰れる（実測 `days: 1, 0, 0, 0, 0`）。同じ章の繰り返しは暗記アプリの本命の用法 |
+| `onDestroy` の確定（Task 3 Step 7） | `onDestroy(() => { settleSession(); })` — 引数なしの呼び出し。ブラウザの「戻る」などクライアントサイド遷移で離脱した行が `endedEarly: false` になり、仕様の定義「summary に到達せず終了したか」と食い違っていた | `settleSession(abandoned = false)` にして `endedEarly: endedEarly \|\| abandoned` を書き、`onDestroy` は `settleSession(true)` を呼ぶ。summary 到達済みの破棄は `sessionStartedAt` が `null` なので誤検出しない |
 | ドットの span（Task 4 Step 4） | `class="size-[7px] rounded-[2px] bg-border"` + `class:bg-success` / `class:bg-amber-500` | **3 色とも条件付き**（`class:bg-border={dot==='untouched'}` / `class:bg-success={dot==='passed'}` / `class:bg-amber-500={dot==='hard'}`）。静的 base を条件付きで上書きする形は、Tailwind の同一詳細度の `utilities` レイヤーで**生成 CSS のソース順が勝つ**ため、実測で苦手と未着手がピクセル同一の灰色になっていた |
 
 
