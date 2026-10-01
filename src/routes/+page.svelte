@@ -83,29 +83,14 @@
 	}
 
 	/**
-	 * The exact sentence set each row shows: a chapter row is its whole
-	 * subtree, a track row is its own sentences. Every number, percentage
-	 * and dot in a row comes from this one map — `getNodeSentences` already
-	 * returns a subtree for tracks (`sentences.ts`), so track rows must
-	 * filter, exactly like the existing ownCount() did.
+	 * One aggregation per row, read by every number, percentage and dot.
+	 * The display set is getNodeSentences(nodeId) — the same sentences
+	 * /practice?node=nodeId walks — so the row's denominator is the real
+	 * session length and canPractice() cannot disagree with it.
 	 */
-	let displaySentencesByNode = $derived.by(() => {
-		const map = new Map<string, Sentence[]>();
-		for (const chapter of rootChapters()) {
-			map.set(chapter.id, nodeSentences(chapter.id));
-			for (const track of flattenTrackTree(chapter.id, tracks)) {
-				map.set(
-					track.id,
-					nodeSentences(track.id).filter((s) => s.trackId === track.id)
-				);
-			}
-		}
-		return map;
-	});
-
 	let statsByNode = $derived.by(() => {
 		const map = new Map<string, NodeStats>();
-		for (const [id, list] of displaySentencesByNode) {
+		for (const [id, list] of sentencesByNode) {
 			map.set(
 				id,
 				computeNodeStats(list, chapters.some((c) => c.id === id), history.sentences, threshold)
@@ -128,16 +113,6 @@
 		);
 	}
 
-	/** A track row counts only its own sentences — descendants have their own rows. */
-	function ownCount(trackId: string): number {
-		return displaySentencesByNode.get(trackId)?.length ?? 0;
-	}
-
-	/** A chapter row aggregates its whole subtree. */
-	function chapterTotal(chapterId: string): number {
-		return displaySentencesByNode.get(chapterId)?.length ?? 0;
-	}
-
 	function percent(part: number, total: number): number {
 		return total === 0 ? 0 : Math.round((part / total) * 100);
 	}
@@ -158,11 +133,11 @@
 	/**
 	 * A node is startable when its subtree holds at least one sentence.
 	 *
-	 * Deliberately subtree-based while the row's count is own-based for tracks:
-	 * the button answers "can I start a session here", the count answers "how
-	 * many sentences does this row list". A track whose sentences all live in a
-	 * child track therefore shows `0文` next to a working 練習 button, and both
-	 * are right — practice collects the whole subtree.
+	 * Subtree-based on purpose, and the row's count is subtree-based too: both
+	 * read `nodeSentences`, so `M > 0` and this predicate can never disagree.
+	 * A track whose sentences all live in a child track starts the child's
+	 * sentences, so it shows `0/1 合格` next to its 練習 button rather than a
+	 * `0文` count that would claim the button has nothing to practise.
 	 */
 	function canPractice(nodeId: string): boolean {
 		return nodeSentences(nodeId).length > 0;
