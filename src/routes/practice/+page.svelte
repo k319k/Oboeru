@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { Volume2, Loader2, Mic, X } from '@lucide/svelte';
 	import { toast, Toaster } from 'svelte-sonner';
@@ -15,6 +15,7 @@
 	import { startRecording } from '$lib/recorder';
 	import { transcribe } from '$lib/transcribe';
 	import { similarity } from '$lib/similarity';
+import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 	import { tokenizeSentence, ProgressAligner } from '$lib/alignment';
 	import { loadSettings } from '$lib/settings';
 	import {
@@ -23,7 +24,7 @@
 		clearPracticeProgress,
 		type PracticeProgress
 	} from '$lib/practice-progress';
-	import type { Sentence, PracticeState, Track } from '$lib/types';
+	import type { Sentence, PracticeState, Track, Chapter } from '$lib/types';
 	import { Button } from '$lib/components/ui/button';
 	import { Progress } from '$lib/components/ui/progress';
 	import {
@@ -58,10 +59,12 @@
 	/** Blob of the failed transcription attempt, kept so 「もう一度採点」 can resend it. */
 	let pendingBlob: Blob | null = $state(null);
 
-	// Session outcome tracking for the summary (memory only, not persisted).
 	let endedEarly: boolean = $state(false);
 	let passedIds: string[] = $state([]);
 	let failedEntries: Sentence[] = $state([]);
+
+	/** Session start, stamped by beginSession(). Persisted with the session record. */
+	let sessionStartedAt: number | null = $state(null);
 
 	// Active recorder while phase === 'recording' (released on phase exit).
 	let rec: {
@@ -117,6 +120,9 @@
 	// Tracks of the practiced chapter (loaded once at session start) — powers
 	// the current-track badge in the header.
 	let tracks: Track[] = $state([]);
+	// Chapters alongside it: settleSession() resolves the session record's node
+	// name, and a chapter-started session has no matching track.
+	let chapters: Chapter[] = $state([]);
 
 	// End-of-session confirmation dialog (終了 button / Esc)
 	let endDialogOpen: boolean = $state(false);
@@ -317,9 +323,10 @@
 		phase = 'summary';
 	}
 
-	/** Restart the session with only the sentences that never passed (memory only). */
+	/** Restart the session with only the sentences that never passed. */
 	function retryFailedOnly(): void {
 		if (failedEntries.length === 0) return;
+		settleSession();
 		sentences = [...failedEntries];
 		currentIndex = 0;
 		resetAttemptState();
@@ -329,7 +336,39 @@
 		passedIds = [];
 		failedEntries = [];
 		endedEarly = false;
+		beginSession();
 		phase = 'show';
+	}
+
+	/**
+	 * Persist the finished session. Only called from onDestroy and from
+	 * retryFailedOnly() — never at summary, because the retry button starts
+	 * another session in this same mount and would double-count.
+	 */
+	function settleSession(): void {
+		if (sessionStartedAt === null || !sessionNodeId) return;
+		if (completedCount === 0) {
+			sessionStartedAt = null;
+			return;
+		}
+		const endedAt = Date.now();
+		const node =
+			tracks.find((t) => t.id === sessionNodeId) ??
+			chapters.find((c) => c.id === sessionNodeId) ??
+			null;
+		finalizeSession({
+			nodeId: sessionNodeId,
+			nodeName: node?.name ?? '',
+			startedAt: sessionStartedAt,
+			endedAt,
+			durationMs: endedAt - sessionStartedAt,
+			attempted: completedCount,
+			passedSentences: passedIds.length,
+			totalScore,
+			skipped: skippedCount,
+			endedEarly
+		});
+		sessionStartedAt = null;
 	}
 
 	// ---------------------------------------------------------------------------
@@ -753,6 +792,7 @@
 			} else {
 				if (!failedEntries.some((entry) => entry.id === s.id)) failedEntries.push(s);
 			}
+			recordSentenceAttempt(s.id, finalScore, Date.now());
 			// No dwell: the user advances with the 次へ / もう一度試す button
 			// (or Space / Enter). Time alone never moves the session forward.
 			phase = 'feedback';
@@ -779,7 +819,18 @@
 	// Session restore (T9)
 	// ---------------------------------------------------------------------------
 
+	/**
+	 * Stamp the session start. retryFailedOnly() starts a second session inside
+	 * the same mount without going through startSession(), so both callers
+	 * must re-stamp or the retry's startedAt / durationMs inherit the
+	 * previous session's clock.
+	 */
+	function beginSession(): void {
+		sessionStartedAt = Date.now();
+	}
+
 	function startSession(): void {
+		beginSession();
 		sessionReady = true;
 		phase = 'show';
 	}
@@ -893,6 +944,7 @@
 		currentIndex = 0;
 		sessionNodeId = rawNodeId;
 		tracks = allTracks;
+		chapters = allChapters;
 
 		const saved = loadPracticeProgress(rawNodeId);
 		const hasProgress =
@@ -904,6 +956,12 @@
 		} else {
 			startSession();
 		}
+	});
+
+	// The session record is settled here, not at summary: summary's retry
+	// button starts another session inside this mount.
+	onDestroy(() => {
+		settleSession();
 	});
 </script>
 
