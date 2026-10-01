@@ -10,6 +10,14 @@
 	import { ChevronRight, Play } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { Chapter, Sentence, Track } from '$lib/types';
+	import {
+		loadHistory,
+		computeNodeStats,
+		formatRelativeDay,
+		type HistoryData,
+		type NodeStats
+	} from '$lib/history';
+	import { loadSettings } from '$lib/settings';
 
 	let chapters = $state<Chapter[]>([]);
 	let sentences = $state<Sentence[]>([]);
@@ -18,10 +26,24 @@
 	// Collapsed node IDs (chapter or track). Default: all nodes expanded.
 	let collapsed = $state<Set<string>>(new Set());
 
+	let history = $state<HistoryData>({ version: 1, sessions: [], sentences: {} });
+	let threshold = $state(80);
+	// Captured once per history load so relative dates do not drift mid-render.
+	let nowMs = $state(Date.now());
+
 	$effect(() => {
 		chapters = loadChapters();
 		sentences = loadSentences();
 		tracks = loadTracks();
+	});
+
+	// Independent of the content load above: practice and history live in
+	// separate storage keys, so the row's pass/hard verdict follows the
+	// threshold the user last saved rather than a hard-coded 80.
+	$effect(() => {
+		history = loadHistory();
+		threshold = loadSettings().threshold;
+		nowMs = Date.now();
 	});
 
 	// Chapters are roots only — the hierarchy below them belongs to tracks.
@@ -60,14 +82,70 @@
 		return sentencesByNode.get(nodeId) ?? [];
 	}
 
+	/**
+	 * The exact sentence set each row shows: a chapter row is its whole
+	 * subtree, a track row is its own sentences. Every number, percentage
+	 * and dot in a row comes from this one map — `getNodeSentences` already
+	 * returns a subtree for tracks (`sentences.ts`), so track rows must
+	 * filter, exactly like the existing ownCount() did.
+	 */
+	let displaySentencesByNode = $derived.by(() => {
+		const map = new Map<string, Sentence[]>();
+		for (const chapter of rootChapters()) {
+			map.set(chapter.id, nodeSentences(chapter.id));
+			for (const track of flattenTrackTree(chapter.id, tracks)) {
+				map.set(
+					track.id,
+					nodeSentences(track.id).filter((s) => s.trackId === track.id)
+				);
+			}
+		}
+		return map;
+	});
+
+	let statsByNode = $derived.by(() => {
+		const map = new Map<string, NodeStats>();
+		for (const [id, list] of displaySentencesByNode) {
+			map.set(
+				id,
+				computeNodeStats(list, chapters.some((c) => c.id === id), history.sentences, threshold)
+			);
+		}
+		return map;
+	});
+
+	function nodeStats(nodeId: string): NodeStats {
+		return (
+			statsByNode.get(nodeId) ?? {
+				total: 0,
+				passed: 0,
+				practiced: 0,
+				hard: 0,
+				avgLastScore: null,
+				lastPracticedAt: null,
+				dots: []
+			}
+		);
+	}
+
 	/** A track row counts only its own sentences — descendants have their own rows. */
 	function ownCount(trackId: string): number {
-		return nodeSentences(trackId).filter((s) => s.trackId === trackId).length;
+		return displaySentencesByNode.get(trackId)?.length ?? 0;
 	}
 
 	/** A chapter row aggregates its whole subtree. */
 	function chapterTotal(chapterId: string): number {
-		return nodeSentences(chapterId).length;
+		return displaySentencesByNode.get(chapterId)?.length ?? 0;
+	}
+
+	function percent(part: number, total: number): number {
+		return total === 0 ? 0 : Math.round((part / total) * 100);
+	}
+
+	/** "0/N 合格 · 87%" — or the plain "N文" when the node holds no sentences. */
+	function progressLabel(stats: NodeStats): string {
+		if (stats.total === 0) return `${stats.total}文`;
+		return `${stats.passed}/${stats.total} 合格 · ${percent(stats.passed, stats.total)}%`;
 	}
 
 	/** Languages present in the chapter's subtree, JA first. Chapter rows only. */
@@ -77,7 +155,15 @@
 		return [...langs].sort((a, b) => (a === 'ja' ? -1 : 1));
 	}
 
-	/** A node is startable when its subtree holds at least one sentence. */
+	/**
+	 * A node is startable when its subtree holds at least one sentence.
+	 *
+	 * Deliberately subtree-based while the row's count is own-based for tracks:
+	 * the button answers "can I start a session here", the count answers "how
+	 * many sentences does this row list". A track whose sentences all live in a
+	 * child track therefore shows `0文` next to a working 練習 button, and both
+	 * are right — practice collects the whole subtree.
+	 */
 	function canPractice(nodeId: string): boolean {
 		return nodeSentences(nodeId).length > 0;
 	}
@@ -155,9 +241,29 @@
 						<span class="truncate text-base font-semibold" data-testid="track-card-name"
 							>{track.name}</span
 						>
-						<span class="text-sm text-muted-foreground" data-testid="track-card-count"
-							>{ownCount(track.id)}文</span
+						<span class="truncate text-sm text-muted-foreground" data-testid="track-card-count"
+							>{progressLabel(nodeStats(track.id))}</span
 						>
+						{#if nodeStats(track.id).practiced > 0}
+							<span class="text-sm text-muted-foreground" data-testid="track-last">
+								最終 {formatRelativeDay(nodeStats(track.id).lastPracticedAt ?? nowMs, nowMs)}
+							</span>
+							<div
+								class="flex flex-wrap gap-[3px]"
+								role="img"
+								aria-label={`合格 ${nodeStats(track.id).passed} 文 / 苦手 ${nodeStats(track.id).hard} 文 / 未着手 ${nodeStats(track.id).total - nodeStats(track.id).practiced} 文`}
+								data-testid="track-dots"
+							>
+								{#each nodeStats(track.id).dots as dot, i (i)}
+									<span
+										class="size-[7px] rounded-[2px] bg-border"
+										class:bg-success={dot === 'passed'}
+										class:bg-amber-500={dot === 'hard'}
+										data-dot={dot}
+									></span>
+								{/each}
+							</div>
+						{/if}
 					</div>
 					{#if canPractice(track.id)}
 						<Button
@@ -203,14 +309,30 @@
 					{/if}
 					<div class="flex min-w-0 flex-1 flex-col gap-0.5 px-2">
 						<span class="chapter-name truncate text-base font-semibold">{chapter.name}</span>
-						<div class="flex items-center gap-1.5">
+						<div class="flex items-center gap-1.5 overflow-hidden">
 							{#each chapterLanguages(chapter.id) as lang (lang)}
 								{@render languageBadge(lang)}
 							{/each}
-							<span class="text-sm text-muted-foreground" data-testid="chapter-card-count"
-								>{chapterTotal(chapter.id)}文</span
+							<span
+								class="truncate text-sm text-muted-foreground"
+								data-testid="chapter-card-count">{progressLabel(nodeStats(chapter.id))}</span
 							>
 						</div>
+						<div
+							class="h-1 w-full overflow-hidden rounded-full bg-border"
+							aria-hidden="true"
+							data-testid="chapter-progress"
+						>
+							<div
+								class="h-full rounded-full bg-success"
+								style:width={`${percent(nodeStats(chapter.id).passed, nodeStats(chapter.id).total)}%`}
+							></div>
+						</div>
+						{#if nodeStats(chapter.id).practiced > 0}
+							<span class="truncate text-sm text-muted-foreground" data-testid="chapter-last">
+								最終 {formatRelativeDay(nodeStats(chapter.id).lastPracticedAt ?? nowMs, nowMs)} · 苦手 {nodeStats(chapter.id).hard} 文
+							</span>
+						{/if}
 					</div>
 					{#if canPractice(chapter.id)}
 						<Button
