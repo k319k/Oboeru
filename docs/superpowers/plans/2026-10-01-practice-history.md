@@ -2134,7 +2134,7 @@ git commit -m "test(history): cover progress, dots, threshold, streak and the se
 `AGENTS.md` の「採点パイプライン規約」節の末尾に追記する。
 
 ```md
-- **練習結果の記録** (`src/lib/history.ts`): 文統計は `doTranscribe` の採点確定点 (`practice/+page.svelte:747-755` の直後) で 1 文ごとに `recordSentenceAttempt`、セッション record は **`summary` 到達時（進捗 `$effect` 内）と `onDestroy` の両方**で `finalizeSession` する。`onDestroy` はブラウザの reload / タブを閉じた時には**発火しない**（JS realm が破棄されるだけで Svelte の destroy hook が走らない）ので、summary での確定 indispensable であり、`onDestroy` は SvelteKit のリンク遷移やブラウザの「戻る」で**セッション途中離脱**した時の担当になる。`settleSession()` が `sessionStartedAt = null` で終わるので二重計上は起きない。`retryFailedOnly()` は `startSession()` を**呼ばない**ので、`beginSession()` で `sessionStartedAt` を再スタンプしないと不正データを書く
+- **練習結果の記録** (`src/lib/history.ts`): 文統計は `doTranscribe` の採点確定点 (`practice/+page.svelte:747-755` の直後) で 1 文ごとに `recordSentenceAttempt`、セッション record は **`summary` 到達時（進捗 `$effect` 内）と `onDestroy` の両方**で `finalizeSession` する。`onDestroy` はブラウザの reload / タブを閉じた時には**発火しない**（JS realm が破棄されるだけで Svelte の destroy hook が走らない）ので、summary での確定は必須であり、`onDestroy` は SvelteKit のリンク遷移やブラウザの「戻る」で**セッション途中離脱**した時の担当になる。`settleSession()` が `sessionStartedAt = null` で終わるので二重計上は起きない。`retryFailedOnly()` は `startSession()` を**呼ばない**ので、`beginSession()` で `sessionStartedAt` を再スタンプしないと不正データを書く
 - **合格状態は保存しない。** `SentenceStat` は `attempts` / `lastScore` / `lastPracticedAt` の 3 つだけ。合格/苦手/未着手は `lastScore` と**現在の** `threshold` から導出する (閾値を下げると進捗が動くのが正しい)
 - **章行とトラック行の文数の基準は混ぜない。** 章 = `getNodeSentences` のサブツリー、トラック = `s.trackId === trackId` の直属のみ。`getNodeSentences` は**トラックにもサブツリーを返す** (`sentences.ts`) ので、トラック行は必ず filter する。`displaySentencesByNode` がこの 1 系統を持ち、`statsByNode` がそこから集計する
 - **履歴はデバイスローカルのまま。** ロードマップ⑥ のクラウド同期対象に**含めない** (練習実績はマージ不能 — last-write-wins で上書きされる)
