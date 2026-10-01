@@ -346,12 +346,15 @@ describe('computeNodeStats', () => {
 		expect(node.lastPracticedAt).toBe(1000);
 	});
 
-	// The invariant the whole feature rests on: inside one row the `N/M`
-	// denominator and the dot count must describe the same sentences. A track
-	// row is handed its own sentences, so a child track's sentence is outside
-	// both — while the chapter row above it counts that sentence in its total
-	// and deliberately renders no dots at all. Passing `getNodeSentences`'s
-	// subtree to a track row would break exactly this pairing.
+	// `computeNodeStats` is a pure function of the array it is handed — it never
+	// inspects trackId. What this pins: every sentence in that array yields one
+	// dot and one unit of the `N/M` denominator, and a stat for a sentence
+	// outside the array moves neither. Which array a row passes (a chapter's
+	// subtree, a track's own sentences) is the caller's discipline, enforced by
+	// `getNodeSentences` at the call site — no unit test here can enforce it.
+	// The chapter half of the test shows the same rule with dots switched off:
+	// the child track's sentence counts toward `total` and `passed` but adds no
+	// dot, so a chapter row never pairs a dot count with a denominator.
 	it('keeps the dot count and the N/M denominator on the same sentence set', () => {
 		const child = { ...sent('s4', 4), trackId: 'tr-2' };
 		const own = [sent('s1', 1), sent('s2', 2)];
@@ -420,16 +423,31 @@ describe('formatRelativeDay', () => {
 	const now = new Date(1000 * DAY);
 	now.setHours(12, 0, 0, 0);
 
+	/** Local wall clock N days back — calendar arithmetic, so DST stays safe. */
+	function atClock(daysAgo: number, hours: number, minutes = 0): number {
+		const d = new Date(now.getTime());
+		d.setDate(d.getDate() - daysAgo);
+		d.setHours(hours, minutes, 0, 0);
+		return d.getTime();
+	}
+
 	it('names today, yesterday and older days in Japanese', () => {
 		expect(H.formatRelativeDay(now.getTime(), now.getTime())).toBe('今日');
 		expect(H.formatRelativeDay(now.getTime() - DAY, now.getTime())).toBe('昨日');
 		expect(H.formatRelativeDay(now.getTime() - 5 * DAY, now.getTime())).toBe('5 日前');
 	});
 
-	it('names two timestamps on the same calendar day 今日 regardless of the hour', () => {
-		const morning = new Date(now.getTime());
-		morning.setHours(6, 0, 0, 0);
-		expect(H.formatRelativeDay(morning.getTime(), now.getTime())).toBe('今日');
+	// 05:00 → 20:00 is 0.625 day: a raw-millisecond diff rounds to 1 and prints
+	// 昨日. Only calendar-day keying prints 今日, so this pair separates the two.
+	// A 6-hour gap (06:00 → 12:00) would prove nothing — it rounds to 0 either way.
+	it('names a timestamp 15 hours earlier on the same calendar day 今日', () => {
+		expect(H.formatRelativeDay(atClock(0, 5), atClock(0, 20))).toBe('今日');
+	});
+
+	// 20 minutes across midnight is 0.014 day: a raw-millisecond diff rounds to 0
+	// and prints 今日. Calendar-day keying sees two different days.
+	it('names a timestamp from just before midnight 昨日 when read just after', () => {
+		expect(H.formatRelativeDay(atClock(1, 23, 50), atClock(0, 0, 10))).toBe('昨日');
 	});
 
 	it('never returns a negative day count for a future timestamp', () => {
