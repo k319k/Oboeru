@@ -299,7 +299,19 @@ test.describe('Practice history', () => {
 		expect(records[0].startedAt).toBeGreaterThan(records[1].startedAt);
 		expect(records[0].startedAt - records[1].startedAt).toBeGreaterThan(1000);
 		// And the retry's own duration must not be the whole elapsed span.
-		expect(records[0].durationMs).toBeLessThan(5000);
+		// 8000 rather than 5000: this is the file's only wall-clock-derived
+		// bound, and the segment measures ~1-2s locally, so headroom on a
+		// throttled worker is worth more than the extra tightness.
+		expect(records[0].durationMs).toBeLessThan(8000);
+		// The user COMPLETED the retry, so its row must not claim an early stop.
+		// `endedEarly = false` in retryFailedOnly() is the only thing clearing the
+		// flag the first session set via 終了 — without it this row renders
+		// "・ 途中で終了" for a run that finished, and every other assertion here
+		// still passes.
+		expect(records[0].endedEarly).toBe(false);
+		// ...and the first session genuinely WAS ended with 終了, so it must keep
+		// saying so. This stops the fix from over-clearing.
+		expect(records[1].endedEarly).toBe(true);
 	});
 
 	test('a partially practised node shows a non-zero percentage', async ({ page }) => {
@@ -336,9 +348,15 @@ test.describe('Practice history', () => {
 	test('track rows render one dot per subtree sentence in practice order', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
 		// Seeded in REVERSE practice order (s-2 before s-1): the dots must come
-		// from the caller's display order (getNodeSentences, pre-order), not
-		// from object-key order. A re-sort by `sentence.order`, or a Map built
-		// in seed order, puts the two the wrong way round.
+		// from the caller's display order (getNodeSentences), never from the
+		// seed's key order — a stats map or an aggregation walked in insertion
+		// order would render [hard, passed] here.
+		//
+		// Scope, stated precisely: this seed puts both sentences in ONE track,
+		// where `sentence.order` and practice order coincide, so this test pins
+		// the seed-order dimension only. The cross-track interleaving that a
+		// `sentence.order` re-sort would break is unit-pinned in
+		// src/lib/history.test.ts (computeNodeStats uses the array as given).
 		await seedHistory(page, {
 			version: 1,
 			sessions: [],
@@ -404,6 +422,14 @@ test.describe('Practice history', () => {
 	});
 
 	test('the history section stays open across a reload', async ({ page }) => {
+		// Both directions of the same contract, because the seeded half alone
+		// only reaches loadHistoryUiState(): with `open: true` written straight
+		// into storage, deleting `saveHistoryUiState({ open: historyOpen })`
+		// from toggleHistory() (src/routes/+page.svelte:143) leaves every
+		// assertion below green — including a real user who expands the log,
+		// reloads and finds it collapsed. src/lib/history.test.ts unit-tests the
+		// function in isolation, so the call site had no coverage at all; the
+		// click at the bottom is the only way a test can reach the write.
 		await gotoWithSeed(page, SEED);
 		await seedHistory(
 			page,
@@ -433,6 +459,25 @@ test.describe('Practice history', () => {
 		await expect(page.getByTestId('history-log')).toBeVisible();
 		// The open state is persisted, not remembered per page view only.
 		await expect(page.getByTestId('history-toggle')).toHaveAttribute('aria-expanded', 'true');
+
+		// The write half. Collapsed, the log is not in the DOM at all (it lives
+		// inside `{#if historyOpen}`), so this asserts absence rather than
+		// visibility.
+		await page.getByTestId('history-toggle').click();
+		await expect(page.getByTestId('history-log')).toHaveCount(0);
+		await expect(page.getByTestId('history-toggle')).toHaveAttribute('aria-expanded', 'false');
+		await page.reload();
+		// Hydration gate before the negative assertions. `historyOpen` is
+		// initialised to `false` in the component and only then overwritten from
+		// storage, so a correctly-collapsed reload and a page that has not
+		// applied the stored state yet are indistinguishable — and
+		// `toHaveCount(0)` would happily pass on the un-hydrated DOM, which is
+		// exactly how a broken save slips through. The history section renders
+		// out of that same load effect, so waiting for it means the state has
+		// been applied.
+		await expect(page.getByTestId('history-section')).toBeVisible();
+		await expect(page.getByTestId('history-log')).toHaveCount(0);
+		await expect(page.getByTestId('history-toggle')).toHaveAttribute('aria-expanded', 'false');
 	});
 
 	test('a deleted node keeps its captured name in the log', async ({ page }) => {
