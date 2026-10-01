@@ -15,7 +15,6 @@
 		computeNodeStats,
 		computeStreak,
 		formatRelativeDay,
-		getSessions,
 		loadHistoryUiState,
 		saveHistoryUiState,
 		type HistoryData,
@@ -391,7 +390,7 @@
 <!-- History outlives the content tree: deleting every chapter must not delete
      the record of practising them. -->
 {#if history.sessions.length > 0}
-	{@const visible = getSessions(historyLimit)}
+	{@const visible = history.sessions.slice(0, historyLimit)}
 	<section class="mt-6 border-t border-border pt-4" data-testid="history-section">
 		<h2>
 			<button
