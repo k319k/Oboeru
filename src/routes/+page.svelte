@@ -13,9 +13,14 @@
 	import {
 		loadHistory,
 		computeNodeStats,
+		computeStreak,
 		formatRelativeDay,
+		getSessions,
+		loadHistoryUiState,
+		saveHistoryUiState,
 		type HistoryData,
-		type NodeStats
+		type NodeStats,
+		type SessionRecord
 	} from '$lib/history';
 	import { loadSettings } from '$lib/settings';
 
@@ -30,6 +35,16 @@
 	let threshold = $state(80);
 	// Captured once per history load so relative dates do not drift mid-render.
 	let nowMs = $state(Date.now());
+	// Derived, not state: the loading effect writes `history` and gets a fresh
+	// object back from loadHistory(), so reading `history` inside that same
+	// effect makes it its own dependency and Svelte throws
+	// effect_update_depth_exceeded during hydration. A derived has no write of
+	// its own, so the streak can never drift from the history it summarises.
+	let streak = $derived(computeStreak(history.sentences, nowMs));
+	// The session log is long and secondary, so it starts closed and the
+	// choice is remembered across reloads.
+	let historyOpen = $state(false);
+	let historyLimit = $state(20);
 
 	$effect(() => {
 		chapters = loadChapters();
@@ -44,6 +59,7 @@
 		history = loadHistory();
 		threshold = loadSettings().threshold;
 		nowMs = Date.now();
+		historyOpen = loadHistoryUiState().open;
 	});
 
 	// Chapters are roots only — the hierarchy below them belongs to tracks.
@@ -123,6 +139,34 @@
 		return `${stats.passed}/${stats.total} 合格 · ${percent(stats.passed, stats.total)}%`;
 	}
 
+	function toggleHistory(): void {
+		historyOpen = !historyOpen;
+		saveHistoryUiState({ open: historyOpen });
+	}
+
+	function showMoreHistory(): void {
+		historyLimit += 20;
+	}
+
+	/** Current name when the node still exists, otherwise the captured one. */
+	function sessionNodeName(record: SessionRecord): string {
+		const live =
+			tracks.find((t) => t.id === record.nodeId)?.name ??
+			chapters.find((c) => c.id === record.nodeId)?.name;
+		if (live) return live;
+		return record.nodeName ? `${record.nodeName} (削除済み)` : '(削除済み)';
+	}
+
+	function sessionAverage(record: SessionRecord): number {
+		return record.attempted > 0 ? Math.round(record.totalScore / record.attempted) : 0;
+	}
+
+	function formatStamp(ts: number): string {
+		const d = new Date(ts);
+		const pad = (n: number) => String(n).padStart(2, '0');
+		return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	}
+
 	/** Languages present in the chapter's subtree, JA first. Chapter rows only. */
 	function chapterLanguages(chapterId: string): ('ja' | 'en')[] {
 		const langs = new Set<'ja' | 'en'>();
@@ -168,6 +212,15 @@
 
 <h1 class="mb-1 text-2xl font-bold">おぼえる</h1>
 <p class="mb-6 text-sm text-muted-foreground">カードの練習ボタンですぐに開始できます</p>
+
+{#if streak.totalAttempts > 0}
+	<p
+		class="mb-4 inline-flex min-h-11 max-w-full items-center gap-1.5 self-start rounded-full border border-border px-4 text-sm text-muted-foreground"
+		data-testid="streak-pill"
+	>
+		連続 {streak.days} 日 · のべ {streak.totalAttempts} 文
+	</p>
+{/if}
 
 {#if chapters.length === 0}
 	<div class="py-8 text-center">
@@ -333,4 +386,50 @@
 			{@render chapterNode(chapter, 0)}
 		{/each}
 	</div>
+{/if}
+
+<!-- History outlives the content tree: deleting every chapter must not delete
+     the record of practising them. -->
+{#if history.sessions.length > 0}
+	{@const visible = getSessions(historyLimit)}
+	<section class="mt-6 border-t border-border pt-4" data-testid="history-section">
+		<h2>
+			<button
+				type="button"
+				class="flex min-h-11 w-full items-center gap-2 text-left text-base font-semibold"
+				aria-expanded={historyOpen}
+				aria-controls="history-log"
+				onclick={toggleHistory}
+				data-testid="history-toggle"
+			>
+				<ChevronRight
+					class={historyOpen
+						? 'h-5 w-5 rotate-90 transition-transform'
+						: 'h-5 w-5 transition-transform'}
+				/>
+				練習履歴 ({history.sessions.length})
+			</button>
+		</h2>
+		{#if historyOpen}
+			<div id="history-log" class="flex flex-col gap-1 pt-2" data-testid="history-log">
+				{#each visible as record (record.id)}
+					<p class="text-sm text-muted-foreground" data-testid="history-item">
+						{formatStamp(record.startedAt)} · {sessionNodeName(record)} ·
+						{record.passedSentences} 文 合格 · 平均 {sessionAverage(record)}% ·
+						スキップ {record.skipped}{record.endedEarly ? ' · 途中で終了' : ''}
+					</p>
+				{/each}
+				{#if visible.length < history.sessions.length}
+					<button
+						type="button"
+						class="mt-2 inline-flex min-h-11 items-center rounded-md border border-border px-4 text-sm"
+						onclick={showMoreHistory}
+						data-testid="history-more"
+					>
+						さらに表示 (残り {history.sessions.length - visible.length} 件)
+					</button>
+				{/if}
+			</div>
+		{/if}
+	</section>
 {/if}
