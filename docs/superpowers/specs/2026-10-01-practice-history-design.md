@@ -47,7 +47,7 @@ Cache Storage ではない）ため、Service Worker のキャッシュ戦略を
 | 1 | 表示場所は**トップページ**。章/トラックの行に進捗、ページ上部にストリークピル、ページ最下部に折りたたみ履歴セクション | トップが練習の入口であり、「どこから続けるか」の判断がトップで完結する |
 | 2 | **章行 = 集約**（進捗バー + 合格数 + 平均 + 最終練習日 + 苦手文数）。**トラック行 = ドット**（1 文 = 1 ドット） | 実測で 390px の 1 行には約 12 ドットしか入らない（展開トグルと練習ボタンが横幅を取る）。32 文で 3 行、100 文で 9 行に膨らむため、章ではドットをやめる。practice 順はトラックに委譲する |
 | 3 | 保持は**セッション直近 500 件 + 文統計は削除しない** | 500 × 約 200B = 100KB、1000 文統計 × 約 80B = 80KB、合計約 180KB で localStorage 5MB に収まる。無期限保存は quota 超過で「黙って消える」危険がある |
-| 4 | **合格状態は保存しない**。`lastScore` だけ保存し、合格/苦手/未着手は `lastScore` と現在の `threshold` から**導出**する | 閾値を下げると合格判定が緩まる、というユーザー意図に追従して進捗が動く。合格フラグを保存すると過去の進捗が黙って書き換わる |
+| 4 | **合格状態は保存しない**。直近 **10 回**の `finalScore` を配列で保存し、合格/苦手/未着手はその**平均**と現在の `threshold` から**導出**する | 直近 1 回だけだと 1 回の正解で合格になり、9 回合格したあとの 1 失敗で不合格に落ちる（実測: `[40×9, 95]` が合格、`[95×9, 40]` が不合格）。記憶学習では 1 回の躂躂 shouldn’t 9 回の成果を相殺しない |
 | 5 | `nodeId` + `nodeName` の両方を保存する。表示は「現在の値 → 保存値 + ` (削除済み)`」の 2 段 | 章を削除しても「`(削除済み)`」だけより「`日本語基礎 (削除済み)`」の方が情報量がある。保存コスト 10KB |
 | 6 | 履歴は**デバイスローカル**。ロードマップ ⑥ の同期対象に**含めない** | 練習実績はマージが不可能（last-write-wins で上書きされる）。メタデータ（章/トラック/文）と違い undo できない。**⑥ の引数** |
 | 7 | **行**の平均スコアは `lastScore` の平均。**履歴ログ行**の平均は `totalScore / attempted`（既存 summary と同じ定義） | `bestScore` の平均では全部 100 に寄って「今の自分の状態」が読めない。2 つの平均は別の物 |
@@ -55,7 +55,10 @@ Cache Storage ではない）ため、Service Worker のキャッシュ戦略を
 | 9 | **行の文数は「そのノードで練習したときのセッション長」と一致させる**。章もトラックも `getNodeSentences`（= サブツリー）基準。`canPractice` も同じ基準なので、`0文` の行に練習ボタンが出る矛盾が起きない（2026-10-01 レビューで発見。従来は章=サブツリー / トラック=直属で別 subset だった） | AGENTS.md が禁じる「`0文` なのに `練習` ボタン」の矛盾。直属文の無い中間トラック（`tests/top.spec.ts:191` が「祖先は全部開始可能」と固定）が realistic な入力で、空のトラックを押すとサブツリー分のセッションが始まるのに `0文` と出ていた |
 | 10 | **復習アクションは付けない**（session 内 summary の既存 `retry-failed-btn` はそのまま） | 用途は苦手文の特定まで。「間違えた文だけやり直す」は既に summary に存在する |
 | 11 | **`SentenceStat` は `lastScore` と `lastPracticedAt` だけ**持つ。`passes` / `bestScore` は持たない | 決定事項 4 で合格は導出するので両方とも死んだフィールドになる。書かれるが読まれないコードは作らない |
-| 12 | 履歴セクション見出しの件数は**記録済みセッション件数**。累積の単位は「のべ N 文」 | `sessions.length` と混同しない。文の累計は `attempts`（試行回数）合計なので「文」ではなく「のべ」 |
+| 12 | 履歴セクション見出しの件数は**記録済みセッション件数**。累積の単位は「のべ N 文」 |
+| 13 | 平均は **finalScore**（Jev で救済された値も含む）。合格判定と同じ数値なので「平均 68% → 苦手（閾値 80%）」が整合する | 生の類似度だと漢字の表記ゆらぎを Jev が救った文だけが不 利に扱い、表示された平均が合格判定を説明しない |
+| 14 | 「直近 N 回」を**最終練習日の行に併記**する。N は**練習済みの文の最小サンプル数**（弱い方） | 1 回の平均と 10 回の平均が同じ数字で出ると、1 回の閾値クリアが弱者の証拠だと利用者に伝えられない。最大だと「1 文だけ 10 回・残り 19 文は 1 回」で過大に見える |
+| 15 | ノードの平均は**文ごとの平均の平均**（文を等_weightで） | 1 文だけ belle 10 回練習した章で、その 1 文が章の平均を支配してしまう | `sessions.length` と混同しない。文の累計は `attempts`（試行回数）合計なので「文」ではなく「のべ」 |
 
 ## データモデル
 
@@ -78,10 +81,18 @@ export interface SessionRecord {
 }
 
 export interface SentenceStat {
-  attempts: number;        // 採点された回数（のべ 횟수 の表示に使う）
-  lastScore: number;       // 直近の finalScore。合格/苦手/未着手はここから導出する
+  attempts: number;        // 採点された回数（のべ文数の表示に使う）
+  /**
+   * 直近 SCORE_WINDOW (10) 件の finalScore。古い順。
+   * 合格/苦手/未着手はここから**平均**を導出して判定する — 直近 1 件だけを使うと
+   * 1 回の正解で合格が確定し、9 回合格したあとの 1 失敗で不合格に落ちる（実測済み）。
+   */
+  scores: number[];
   lastPracticedAt: number; // epoch ms
 }
+
+/** 1 文が保持する直近スコアの数。 */
+export const SCORE_WINDOW = 10;
 
 export interface HistoryData {
   version: 1;
@@ -99,11 +110,22 @@ export interface HistoryData {
 | 状態 | 条件 | ドット色 |
 |---|---|---|
 | `untouched` | `sentences[id]` が無い | `bg-border` |
-| `passed` | `lastScore >= threshold` | `bg-success` |
-| `hard` | `lastScore < threshold` | amber |
+| `passed` | **直近10回の平均** `>= threshold` | `bg-success` |
+| `hard` | 1 回以上練習済み かつ 平均 `< threshold` | amber |
 
 `threshold` は現在値なので、閾値の変更が過去の進捗に正しく反映される。
 孤立した文統計（削除済みの文）は現在の文一覧と交差合わせるだけなので無視され、掃除は不要。
+
+### 移行: `version` は 1 のまま、`lastScore` を読み取り側で吸収する
+
+`HistoryData.version` を **2 に上げるのは禁止**。`loadHistory()` は `version` 不一致で既定値へ縮退するため、
+**ユーザーが既に積んだ練習履歴が全部消える**。
+
+代わりに読み取り側シムで吸収する。`scores` が配列でないが `lastScore` が数値であるエントリは
+`scores: [lastScore]` として読む。`attempts` は残すので「のべ N 文」も変わらない。
+
+**この移行は見た目を変えない。** 既存エントリは 1 件の配列になり `mean([95]) === 95` なので、
+合格判定・ドット・表示平均はすべてデプロイ前と一致する。**2 件目以降の試行から初めて窓が効く。**
 
 ## 保存層 (`src/lib/history.ts`)
 
@@ -137,10 +159,11 @@ export type DotState = 'passed' | 'hard' | 'untouched';
 
 export interface NodeStats {
   total: number;               // この行が表示する文数（下記「表示集合」）
-  passed: number;              // passed の文数
+  passed: number;              // passed の文数（= 直近10回の平均 >= threshold）
   practiced: number;           // 1 回でも採点された文数（= untouched でない文数）
   hard: number;                // hard の文数
-  avgLastScore: number | null; // 採点された文の lastScore 平均。0 件なら null
+  avgScore: number | null;     // 採点済みの文の平均の平均。0 件なら null
+  minSamples: number;          // 採点済みの文の scores.length の最小値。「直近 N 回」の N
   lastPracticedAt: number | null; // 表示集合内の lastPracticedAt の最大値
   dots: DotState[];            // 章は空配列、トラックは渡された順序（= practice 順）のまま
 }
@@ -171,7 +194,13 @@ export function computeNodeStats(
 出していた（押すとサブツリー分のセッションが始まる）。AGENTS.md が禁じる「`0文` なのに `練習` ボタン」
 の矛盾そのものなので廃止した。`ownCount()` / `chapterTotal()` は削除し、`NodeStats.total` に一本化する。
 
-`total` / `passed` / `hard` / `avgLastScore` / `lastPracticedAt` / `dots` は**全て同じ集合**で統一する。
+`total` / `passed` / `hard` / `avgScore` / `minSamples` / `lastPracticedAt` / `dots` は
+**全て同じ集合**で統一する。
+
+- 文の合格/苦手は**その文の直近10回の平均**で判定する
+- `avgScore` = 採点済みの文それぞれの平均を足して割る（**文を等_weightで**。1 文だけ 10 回練習した章で
+  その 1 文が章の平均を支配するのを防ぐ）
+- `minSamples` = 採点済みの文の `scores.length` の最小値。`practiced === 0` なら 0
 集約は 1 系統のみ（`displaySentencesByNode` のような中間 map は不要 — `nodeSentences()` が既に
 その役割を持つ）。
 
@@ -224,7 +253,7 @@ export function computeNodeStats(
 │ ⌄  日本語基礎          [ja]      [練習] │
 │    24/32 合格 · 87%                     │
 │    ████████████░░░░░░░░                │
-│    最終 昨日 · 苦手 2 文                │
+│    最終 昨日 · 苦手 2 文 · 直近 4 回    │
 └────────────────────────────────────────┘
 ```
 
@@ -241,7 +270,7 @@ export function computeNodeStats(
 ┌──────────────────────────────────────┐
 │    ひらがな                    [練習] │
 │    12/12 合格 · 94%                   │
-│    最終 昨日                           │
+│    最終 昨日 · 直近 10 回              │
 │    ■■■■■■■■■■■■                       │
 └──────────────────────────────────────┘
 ```
@@ -262,7 +291,12 @@ export function computeNodeStats(
 **ドットは常に描く**（未着手ノードは全部灰）。variant D を選んだ価値が「灰 = どこが未着手か」
 なので、`{#if practiced > 0}` でゲートすると (a) fresh install で「未着手」の情報が一切出ず、
 (b) 1 文だけ練習した瞬間に 20 個のドットが突然出現する。どちらも不自然な挙動。
-「最終 … · 苦手 …」の行だけは `practiced > 0` でゲートする（空データ表示を避けるため）。
+「最終 … · 苦手 … · 直近 N 回」の行だけは `practiced > 0` でゲートする（空データ表示を避けるため）。
+
+**`直近 N 回` を最終練習日の行に併記する**（決定事項 14）。`N` は `minSamples`、つまり表示集合内で
+**採点済みの文の最小サンプル数**。「平均 87%」だけだと 1 回の閾値クリアと 10 回の安定が同じ数字で出て、
+利用者に自分の理解の厚さが分からない。最大値だと「1 文だけ 10 回・残り 19 文は 1 回」の時に過大に見える。
+`minSamples` が 1 のときは `直近 1 回` と明示する（`直近 1 回` は「根拠が 1 回しかない」ことを表す）。
 
 ### ページ最下部 — 折りたたみ履歴セクション
 
@@ -291,7 +325,7 @@ export function computeNodeStats(
 - 初期表示は最新 20 件。`さらに表示`（実 `<button>`、44px 以上）で全件（最大 500 件）表示する
 - セッションが 1 件も無ければセクションごと描画しない
 - ノード名は「現在の章/トラック一覧から `nodeId` で解決 → 無ければ `nodeName` + ` (削除済み)`」
-- 平均 = `round(totalScore / attempted)`（**セッション単位**。行の `avgLastScore` とは別の物）。
+- 平均 = `round(totalScore / attempted)`（**セッション単位**。行の `avgScore` とは別の物）。
   `attempted === 0` の行は作らない。`endedEarly` の行には「途中で終了」を添える
 - 見出しの件数 = `sessions.length`
 
@@ -403,7 +437,7 @@ assert していない）。
 - **キャッシュ** — 2 回続けて `recordSentenceAttempt` を呼んでも之前的な文統計が消えない
   （in-memory キャッシュが read-modify-write で壊していないことの検証）
 - `computeNodeStats` — `total` が渡した文配列長と一致 / `threshold` を下げると `passed` が増え
-  `hard` が減る / `stats[id]` が無い文は `untouched` / `practiced === 0` で `avgLastScore` が `null` /
+  `hard` が減る / `stats[id]` が無い文は `untouched` / `practiced === 0` で `avgScore` が `null` /
   孤立した統計が無視される / 表示集合内の `lastPracticedAt` の最大値を返す
 - `computeNodeStats` — `isChapter: true` で `dots` が `[]`、`isChapter: false` で `order` 昇順の
   `DotState[]` / `total === 0` で `dots` が `[]`
