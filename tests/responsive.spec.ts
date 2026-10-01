@@ -1,6 +1,6 @@
 import { test, expect, type Page } from './fixtures';
 import { mkdirSync, appendFileSync } from 'node:fs';
-import { gotoWithSeed } from './helpers';
+import { gotoWithSeed, seedHistory } from './helpers';
 import { mockTtsApi } from './tts-mock';
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,33 @@ const TALL_SEED = {
 
 /** A partial transcript → a real word-diff spanning the whole long sentence. */
 const TALL_TRANSCRIPT = TALL_LONG.replace(/[0-9]/g, '').slice(0, Math.floor(TALL_LONG.length * 0.75));
+
+/**
+ * 25 sessions on one chapter. Above the UI's initial `historyLimit` of 20, so
+ * the section renders 20 rows AND the さらに表示 button — without the button
+ * the `history-more` tap target is never in the DOM and the assertion below
+ * would pass vacuously.
+ */
+const HISTORY_SEED = {
+	version: 1,
+	sentences: {},
+	sessions: Array.from({ length: 25 }, (_, i) => ({
+		id: 's' + i,
+		nodeId: 'ch-1',
+		nodeName: '章',
+		startedAt: Date.now() - i * 86400000,
+		endedAt: Date.now() - i * 86400000,
+		durationMs: 1000,
+		attempted: 1,
+		passedSentences: 1,
+		totalScore: 90,
+		skipped: 0,
+		endedEarly: false
+	}))
+};
+
+/** The two buttons the history section owns, measured for a precise failure message. */
+const HISTORY_BUTTONS = ['history-toggle', 'history-more'] as const;
 
 const MANAGE_TABS = [
 	{ id: 'chapters', label: 'チャプター' },
@@ -315,6 +342,57 @@ test.describe('Responsive layout (390px)', () => {
 		expect(singleColumn, '/ seeded: top cards must be single column').toBe(true);
 
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/top-seeded.png`, fullPage: true });
+	});
+
+	/**
+	 * The two gates the top-page scans above cannot cover, because they seed
+	 * only `oboeru:v1` and so never render the new UI:
+	 *
+	 *   - `expectTapTargets` (asserting, unlike the a11y.spec.ts copy) proves
+	 *     the history toggle and さらに表示 are >= 44px at 390px,
+	 *   - `expectNoHorizontalOverflow` proves 25 long rows plus the streak pill
+	 *     do not spill sideways.
+	 *
+	 * Reuses this file's own module-private helpers — no duplicated copy of
+	 * `checkTapTargets`, so the existing tap-target tests are untouched.
+	 */
+	test('top page with history open — no overflow, tap targets >= 44px', async ({ page }) => {
+		await gotoWithSeed(page, {
+			chapters: [{ id: 'ch-1', name: '章', parentId: null, order: 1 }],
+			tracks: [],
+			sentences: []
+		});
+		await seedHistory(page, HISTORY_SEED, { open: true });
+
+		// Setup guards: an empty history renders no section at all, which would
+		// make every assertion below pass over zero elements.
+		await expect(page.getByTestId('history-log')).toBeVisible();
+		await expect(page.getByTestId('history-item')).toHaveCount(20); // historyLimit
+		await expect(page.getByTestId('history-more')).toBeVisible();
+
+		const boxes = await page.evaluate((ids) => {
+			const out: Record<string, { h: number; w: number } | null> = {};
+			for (const id of ids) {
+				const el = document.querySelector(`[data-testid="${id}"]`);
+				const r = el?.getBoundingClientRect();
+				out[id] = r ? { h: Math.round(r.height), w: Math.round(r.width) } : null;
+			}
+			return out;
+		}, HISTORY_BUTTONS);
+		logEvidence(
+			`\n=== history tap targets @390px: ` +
+				HISTORY_BUTTONS.map((id) => `${id}=${boxes[id] ? `${boxes[id]!.w}x${boxes[id]!.h}px` : 'MISSING'}`).join(', ') +
+				' ==='
+		);
+		for (const id of HISTORY_BUTTONS) {
+			expect(boxes[id], `/ history: [data-testid="${id}"] must be rendered`).not.toBeNull();
+			expect(boxes[id]!.h, `/ history: ${id} height >= 44px`).toBeGreaterThanOrEqual(44);
+		}
+
+		await expectNoHorizontalOverflow(page, '/ history open');
+		await expectTapTargets(page, '/ history open');
+
+		await page.screenshot({ path: `${SCREENSHOT_DIR}/top-history.png`, fullPage: true });
 	});
 
 	test('practice show — no overflow, tap targets >= 44px, skip full-width + header exit', async ({
