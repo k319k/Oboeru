@@ -153,7 +153,10 @@ export function recordSentenceAttempt(sentenceId: string, score: number, at: num
 	const prev = data.sentences[sentenceId];
 	data.sentences[sentenceId] = {
 		attempts: (prev?.attempts ?? 0) + 1,
-		lastScore: Math.max(0, Math.min(100, Math.round(score))),
+		// A non-finite score would survive Math.round/Math.min as NaN, which
+		// JSON.stringify writes as null: storage would read back 0 while the
+		// cache said NaN, and computeNodeStats would render a literal "NaN%".
+		lastScore: Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : 0,
 		lastPracticedAt: at
 	};
 	persist(data);

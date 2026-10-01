@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Sentence } from './types';
+import type { SessionRecord } from './history';
 
 function createStorageMock(): Storage {
 	let store: Record<string, string> = {};
@@ -34,6 +35,25 @@ const KEY = 'oboeru:history:v1';
 function seed(raw: unknown): void {
 	ls.setItem(KEY, JSON.stringify(raw));
 }
+
+const VALID_SESSION: Omit<SessionRecord, 'id'> = {
+	nodeId: 'ch-1',
+	nodeName: '日本語基礎',
+	startedAt: 1000,
+	endedAt: 4000,
+	durationMs: 3000,
+	attempted: 10,
+	passedSentences: 8,
+	totalScore: 870,
+	skipped: 1,
+	endedEarly: false
+};
+
+const SENTENCE_FIXTURE: Sentence[] = [
+	{ id: 's3', chapterId: 'ch-1', trackId: 'tr-1', text: 'c', language: 'ja', order: 2 },
+	{ id: 's1', chapterId: 'ch-1', trackId: 'tr-1', text: 'a', language: 'ja', order: 0 },
+	{ id: 's2', chapterId: 'ch-1', trackId: 'tr-1', text: 'b', language: 'ja', order: 1 }
+];
 
 beforeEach(async () => {
 	ls = createStorageMock();
@@ -114,6 +134,23 @@ describe('loadHistory — defaults and validation', () => {
 		expect(data.sessions).toHaveLength(500);
 		expect(data.sessions[0].id).toBe('s0');
 	});
+
+	// Regression: the plan's `const EMPTY` literal was shared by every empty
+	// return, so a caller mutating one "empty history" poisoned all of them.
+	it('returns a fresh object each call, so a caller cannot poison the default', () => {
+		expect(H.loadHistory()).not.toBe(H.loadHistory());
+		// The shallow-spread wrapper is fresh either way; the array inside it
+		// is what a shared literal would hand out to every caller.
+		expect(H.loadHistory().sessions).not.toBe(H.loadHistory().sessions);
+	});
+
+	it('does not let a mutated result leak into the next read', () => {
+		const first = H.loadHistory();
+		// Injected by hand, not via finalizeSession — that one persists, so the
+		// next read would legitimately see one session.
+		first.sessions.push({ id: 'injected', ...VALID_SESSION });
+		expect(H.loadHistory().sessions).toHaveLength(0);
+	});
 });
 
 describe('recordSentenceAttempt', () => {
@@ -151,21 +188,21 @@ describe('recordSentenceAttempt', () => {
 		};
 		expect(() => H.recordSentenceAttempt('s1', 80, 1000)).not.toThrow();
 	});
+
+	it('stores 0 for a non-finite score instead of letting NaN reach the stats', () => {
+		H.recordSentenceAttempt('s1', Number.NaN, 1000);
+		const { sentences } = H.loadHistory();
+		expect(sentences.s1.lastScore).toBe(0);
+		// loadHistory() reads back 0 either way (null coerces to 0), so pin the
+		// written payload: an unguarded NaN is serialised as null, which leaves
+		// the cache saying NaN while storage says 0.
+		expect(ls.getItem(KEY)).toContain('"lastScore":0');
+		expect(H.computeNodeStats(SENTENCE_FIXTURE.filter((s) => s.id === 's1'), false, sentences, 80).avgLastScore).not.toBeNaN();
+	});
 });
 
 describe('finalizeSession / getSessions', () => {
-	const base = {
-		nodeId: 'ch-1',
-		nodeName: '日本語基礎',
-		startedAt: 1000,
-		endedAt: 4000,
-		durationMs: 3000,
-		attempted: 10,
-		passedSentences: 8,
-		totalScore: 870,
-		skipped: 1,
-		endedEarly: false
-	};
+	const base = VALID_SESSION;
 
 	it('unshifts the record and assigns an id', () => {
 		const stored = H.finalizeSession(base);
@@ -239,11 +276,7 @@ describe('loadHistoryUiState / saveHistoryUiState', () => {
 });
 
 describe('computeNodeStats', () => {
-	const sentences: Sentence[] = [
-		{ id: 's3', chapterId: 'ch-1', trackId: 'tr-1', text: 'c', language: 'ja', order: 2 },
-		{ id: 's1', chapterId: 'ch-1', trackId: 'tr-1', text: 'a', language: 'ja', order: 0 },
-		{ id: 's2', chapterId: 'ch-1', trackId: 'tr-1', text: 'b', language: 'ja', order: 1 }
-	];
+	const sentences = SENTENCE_FIXTURE;
 
 	it('sorts by order and counts pass / hard / untouched', () => {
 		const stats = {
