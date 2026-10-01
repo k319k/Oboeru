@@ -204,9 +204,12 @@ test.describe('Practice history', () => {
 
 		await page.goto('/');
 
+		// Both sentences scored 100, so the average and the pass ratio coincide
+		// at 100 here — this row cannot tell the two apart. The test that does
+		// is 「a partially practised node」 below (label 70% / bar 50%).
 		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('2/2 合格 · 100%');
-		// The bar is fed by the same percent() as the label — assert it too, so
-		// a percent() that only the label reads cannot pass.
+		// The BAR is the pass ratio. Asserted here too so a percent() that only
+		// the bar reads cannot pass.
 		await expect(
 			page.getByTestId('chapter-progress').first().locator('div')
 		).toHaveAttribute('style', /width:\s*100%/);
@@ -330,12 +333,15 @@ test.describe('Practice history', () => {
 		expect(records[1].endedEarly).toBe(true);
 	});
 
-	test('a partially practised node shows a non-zero percentage', async ({ page }) => {
-		// percent() guard. Every other assertion in the whole suite reads "0%"
-		// (or "100%" from a full pass), so a percent() hardcoded to 0 would keep
-		// top.spec.ts, responsive.spec.ts and the main test above green. This
-		// one row is half-passed, so the only correct answers are 50% and a 50%
-		// wide bar.
+	// The label is the AVERAGE (avgScore), the bar is the PASS RATIO, and this
+	// row is the one place the two disagree: (95 + 45) / 2 = 70 for the average,
+	// 1 of 2 = 50 for the bar. Reading the label off the pass ratio — the bug
+	// this row was written against — would print 50% here and every other
+	// history test would still pass, because they either have no history at all
+	// (no percentage now) or 100% (both numbers agree).
+	test('a partially practised row shows the average score, and the bar the pass ratio', async ({
+		page
+	}) => {
 		await gotoWithSeed(page, SEED);
 		await seedHistory(page, {
 			version: 1,
@@ -346,19 +352,21 @@ test.describe('Practice history', () => {
 			}
 		});
 
-		// 1 of 2 at or above the default threshold 80 → 50%.
-		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 50%');
+		// 1 of 2 at or above the default threshold 80 → the BAR is 50%.
 		await expect(
 			page.getByTestId('chapter-progress').first().locator('div')
 		).toHaveAttribute('style', /width:\s*50%/);
-		// The track row reads the same aggregation — one broken percent() would
-		// have to be fixed in two places to pass both.
+		// The TEXT is the average of the two window means: 70.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 70%');
+		// The track row reads the same aggregation — one broken label would have
+		// to be fixed in two places to pass both.
 		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toHaveText(
-			'1/2 合格 · 50%'
+			'1/2 合格 · 70%'
 		);
-		// 50% is not reachable by accident from 0 or 100, and it is not the
-		// "empty" label either.
+		// 70 is reachable from neither 0 nor 100 nor 50, and it is not the
+		// "empty" label.
 		await expect(page.getByTestId('chapter-card-count').first()).not.toHaveText('0文');
+		await expect(page.getByTestId('chapter-card-count').first()).not.toHaveText('1/2 合格 · 50%');
 	});
 
 	test('track rows render one dot per subtree sentence in practice order', async ({ page }) => {
@@ -621,7 +629,13 @@ test.describe('Practice history', () => {
 
 		// Newest-score scoring would read s-1 合格 (95) and s-2 苦手 (40) — the
 		// exact inversion the user reported. The mean reads them the other way.
-		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 50%');
+		// 1 of 2 passed → the bar says 50%; the LABEL is the average of the two
+		// means: (45.5 + 89.5) / 2 = 67.5 → 68. Reverting the label to the pass
+		// ratio (the pre-fix behaviour) prints 50% here.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 68%');
+		await expect(
+			page.getByTestId('chapter-progress').first().locator('div')
+		).toHaveAttribute('style', /width:\s*50%/);
 		const dots = trackCard(page, 'トラック1').getByTestId('track-dots').locator('span');
 		await expect(dots.nth(0)).toHaveAttribute('data-dot', 'hard');
 		await expect(dots.nth(1)).toHaveAttribute('data-dot', 'passed');
@@ -672,8 +686,10 @@ test.describe('Practice history', () => {
 			}
 		});
 
-		// Unchanged verdicts: 87 passes, 45 does not.
-		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 50%');
+		// Unchanged verdicts: 87 passes, 45 does not. The average is (87 + 45) / 2
+		// = 66 — identical to what the previous release's own numbers produced,
+		// because the pre-window label was never a score at all (it was 1/2).
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 66%');
 		await expect(page.getByTestId('chapter-last').first()).toHaveText(
 			'最終 今日 · 苦手 1 文 · 直近 1 回'
 		);
@@ -764,7 +780,9 @@ test.describe('Practice history', () => {
 		// that same set.
 		const row = trackCard(page, '空のトラック');
 		await expect(row.getByTestId('card-start')).toHaveCount(1);
-		await expect(row.getByTestId('track-card-count')).toHaveText('0/1 合格 · 0%');
+		// No percentage either: s2 has never been scored, so the row has a pass
+		// count and no average to show.
+		await expect(row.getByTestId('track-card-count')).toHaveText('0/1 合格');
 		await expect(row.getByTestId('track-dots').locator('span')).toHaveCount(1);
 	});
 
@@ -780,7 +798,9 @@ test.describe('Practice history', () => {
 		});
 		// Pass / hard are derived from the score window's MEAN against the LIVE
 		// threshold, not stored — so nothing but the setting moves.
-		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('0/2 合格 · 0%');
+		// The average is 70 either way — the threshold moves the VERDICT, not the
+		// score, which is the point: 0/2 合格 · 70% says 「70% だが閾値 80% に届かない」.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('0/2 合格 · 70%');
 		await expect(trackCard(page, 'トラック1').getByTestId('track-dots').locator('span').first())
 			.toHaveAttribute('data-dot', 'hard');
 
@@ -792,7 +812,10 @@ test.describe('Practice history', () => {
 		});
 		await page.reload();
 
-		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('2/2 合格 · 100%');
+		// 2/2 now — and the average is STILL 70%, unchanged by the setting. Before
+		// this was "2/2 合格 · 100%", a pass ratio that made the row look better
+		// than it is; the number that did not move is the one worth reading.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('2/2 合格 · 70%');
 		await expect(trackCard(page, 'トラック1').getByTestId('track-dots').locator('span').first())
 			.toHaveAttribute('data-dot', 'passed');
 	});
@@ -931,7 +954,7 @@ test.describe('Practice history', () => {
 			tracks: [],
 			sentences: []
 		});
-		// No `0/0 合格 · 0%` — a percentage over an empty denominator is noise.
+		// No `0/0 合格` — a count over an empty denominator is noise.
 		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('0文');
 	});
 

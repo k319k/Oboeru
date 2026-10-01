@@ -126,14 +126,33 @@
 		return statsByNode.get(nodeId) ?? computeNodeStats([], false, {}, threshold);
 	}
 
+	/**
+	 * A share, for the chapter progress BAR's width only. Never a label: a
+	 * percentage of passes says nothing about how well the sentences are being
+	 * read. The text label is `avgScore` — see progressLabel() below.
+	 */
 	function percent(part: number, total: number): number {
 		return total === 0 ? 0 : Math.round((part / total) * 100);
 	}
 
-	/** "0/N 合格 · 87%" — or the plain "N文" when the node holds no sentences. */
+	/**
+	 * "24/32 合格 · 87%" — `N/M` is the pass count and the percentage is the
+	 * node's AVERAGE SCORE, not a pass ratio. The user's request: 「直近10回
+	 * …の平均で出すべき」. They are different numbers and only one of them
+	 * explains the verdict: six sentences all averaging 89.5 read
+	 * "6/6 合格 · 100%" as a pass ratio, which hides every score below the
+	 * threshold; as an average it reads "6/6 合格 · 90%", and the pair
+	 * "0/6 合格 · 46%" is the only line that says 「直すならここ」.
+	 *
+	 * Nothing practised yet → no percentage at all. `avgScore` is null then, and
+	 * printing "· 0%" would assert a score of 0 for a node nobody has attempted.
+	 *
+	 * The plain "N文" form (a node with no sentences) is unchanged.
+	 */
 	function progressLabel(stats: NodeStats): string {
 		if (stats.total === 0) return `${stats.total}文`;
-		return `${stats.passed}/${stats.total} 合格 · ${percent(stats.passed, stats.total)}%`;
+		const passed = `${stats.passed}/${stats.total} 合格`;
+		return stats.avgScore === null ? passed : `${passed} · ${stats.avgScore}%`;
 	}
 
 	function toggleHistory(): void {
@@ -376,6 +395,12 @@
 							aria-hidden="true"
 							data-testid="chapter-progress"
 						>
+							<!-- The BAR is the pass ratio, the LABEL is avgScore. Deliberate:
+							     a bar is a share of a whole, and 「合格した文がどれだけあるか」
+							     is exactly what a share answers. Feeding the average here
+							     would claim 「8割の文が合格」 when it is 「平均 8割」.
+							     history.spec.ts pins the two apart on a row where they
+							     disagree (label 70% / bar 50%). -->
 							<div
 								class="h-full rounded-full bg-success"
 								style:width={`${percent(nodeStats(chapter.id).passed, nodeStats(chapter.id).total)}%`}

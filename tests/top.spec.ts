@@ -46,11 +46,18 @@ test.describe('Top page', () => {
 		await expect(page.getByText('First Steps（English）')).toBeVisible();
 	});
 
-	test('shows the pass count and percentage per chapter', async ({ page }) => {
+	test('shows the pass count per chapter, and no score before anything is practised', async ({
+		page
+	}) => {
 		await page.goto('/');
 		// Each default chapter has 10 sentences, none practised yet — a fresh
-		// context has no history, so the row reads "0 of 10 passed".
-		await expect(page.getByText('0/10 合格 · 0%').first()).toBeVisible();
+		// context has no history, so the row reads "0 of 10 passed" and NOTHING
+		// else. The percentage is the average score (avgScore), and there is no
+		// average before the first scoring: the old "· 0%" was the pass ratio of
+		// a row with no evidence, i.e. a score of 0 asserted about nothing.
+		await expect(page.getByText('0/10 合格').first()).toBeVisible();
+		// …and the percentage really is absent, not merely shortened elsewhere.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('0/10 合格');
 	});
 
 	// ---------------------------------------------------------------------------
@@ -156,12 +163,12 @@ test.describe('Top page', () => {
 		// トラック1-1 = 1 (leaf).
 		await expect(
 			page.getByTestId('chapter-card').filter({ hasText: '1章' }).getByTestId('chapter-card-count')
-		).toHaveText('0/2 合格 · 0%');
+		).toHaveText('0/2 合格');
 		await expect(trackCard(page, 'トラック1-1').getByTestId('track-card-count')).toHaveText(
-			'0/1 合格 · 0%'
+			'0/1 合格'
 		);
 		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toHaveText(
-			'0/2 合格 · 0%'
+			'0/2 合格'
 		);
 	});
 
@@ -213,8 +220,9 @@ test.describe('Top page', () => {
 
 		// And the empty intermediate track must not read "0文" next to a live
 		// button — its subtree holds s2, so the session started from it is 1 long.
+		// No percentage: s2 has never been scored, so there is no average to show.
 		await expect(trackCard(page, '文のないトラック').getByTestId('track-card-count')).toHaveText(
-			'0/1 合格 · 0%'
+			'0/1 合格'
 		);
 	});
 
