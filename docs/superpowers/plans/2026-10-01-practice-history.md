@@ -1701,8 +1701,12 @@ git commit -m "feat(top): add streak pill and collapsible session history"
 			'0/1 合格'
 		);
 	});
+```
 
-**注意**: `toHaveText` ではなく `toContainText` を使う。章行の `chapter-card-count` は言語バッジと同じ `flex` コンテナ内にあり、`toHaveText` は完全一致を要求するため。
+**注意**: ここでは `toContainText` を使う（章行の言語バッジは `chapter-card-count` と兄弟要素で同じ `flex` コンテナに入るため）。
+ただし Task 4/6 のレビューで、章行・トラック行の実アサーションは** `toHaveText` に復元済み** — `toContainText`
+に下げると `X%` のアサーションが suite 全体で 1 箇所（全て `0%`）だけになり、`percent()` を 0 固定しても
+緑になるためです。
 
 - [ ] **Step 3: `tests/e2e-full.spec.ts:213-216` を更新する**
 
