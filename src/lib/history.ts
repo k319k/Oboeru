@@ -171,12 +171,6 @@ export function finalizeSession(record: Omit<SessionRecord, 'id'>): SessionRecor
 	return stored;
 }
 
-export function getSessions(limit?: number): SessionRecord[] {
-	const all = read().sessions;
-	if (typeof limit !== 'number' || limit <= 0) return [...all];
-	return all.slice(0, limit);
-}
-
 export function loadHistoryUiState(): HistoryUiState {
 	try {
 		const raw = localStorage.getItem(HISTORY_UI_KEY);
@@ -210,14 +204,20 @@ export interface NodeStats {
 	hard: number;
 	avgLastScore: number | null;
 	lastPracticedAt: number | null;
-	/** Empty for chapters; the display set in `order` for tracks. */
+	/** Empty for chapters; for tracks, one entry per display sentence, in display order. */
 	dots: DotState[];
 }
 
 /**
- * Aggregate one row's display set. Pass exactly the sentences the row shows:
- * a chapter's whole subtree, a track's own sentences. Mixing the two makes
- * the `N/M` denominator disagree with the dot count in the same row.
+ * Aggregate one row's display set. Pass exactly the sentences the row shows —
+ * that is, `getNodeSentences(nodeId)`, so the `N/M` denominator is the real
+ * session length and cannot disagree with the dot count in the same row.
+ *
+ * The array is used exactly as given: the caller supplies the display order,
+ * and that order is practice order (pre-order — a node's own track, then each
+ * child subtree). Do not re-sort by `sentence.order` here: `order` is only
+ * meaningful within one track, so a global sort interleaves tracks and puts a
+ * child's only sentence in the middle of the parent's dots.
  */
 export function computeNodeStats(
 	sentences: Sentence[],
@@ -225,7 +225,6 @@ export function computeNodeStats(
 	stats: Readonly<Record<string, SentenceStat>>,
 	threshold: number
 ): NodeStats {
-	const ordered = [...sentences].sort((a, b) => a.order - b.order);
 	let passed = 0;
 	let practiced = 0;
 	let hard = 0;
@@ -233,7 +232,7 @@ export function computeNodeStats(
 	let lastPracticedAt: number | null = null;
 	const dots: DotState[] = [];
 
-	for (const sentence of ordered) {
+	for (const sentence of sentences) {
 		const stat = stats[sentence.id];
 		if (!stat) {
 			if (!isChapter) dots.push('untouched');
@@ -252,7 +251,7 @@ export function computeNodeStats(
 	}
 
 	return {
-		total: ordered.length,
+		total: sentences.length,
 		passed,
 		practiced,
 		hard,

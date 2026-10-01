@@ -271,6 +271,10 @@
 						<span class="truncate text-sm text-muted-foreground" data-testid="track-card-count"
 							>{progressLabel(nodeStats(track.id))}</span
 						>
+<!-- Gated on total > 0: a track whose subtree is empty would otherwise render an
+					     empty `role="img"` directly under a row that already reads `0文`,
+					     which is screen-reader noise with no meaning. -->
+					{#if nodeStats(track.id).total > 0}
 						<div
 							class="flex flex-wrap gap-[3px]"
 							role="img"
@@ -286,6 +290,7 @@
 								></span>
 							{/each}
 						</div>
+					{/if}
 						{#if nodeStats(track.id).practiced > 0}
 							<span class="text-sm text-muted-foreground" data-testid="track-last">
 								最終 {formatRelativeDay(nodeStats(track.id).lastPracticedAt ?? nowMs, nowMs)}

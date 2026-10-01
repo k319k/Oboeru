@@ -212,7 +212,7 @@ test('full flow: seed → top → practice complete → manage round-trip → to
 	await expect(page.getByText('E2Eチャプター')).toBeVisible();
 	// Cross-page state: the created sentence counts toward the new chapter
 	const e2eChapter = page.getByTestId('chapter-card').filter({ hasText: 'E2Eチャプター' });
-	await expect(e2eChapter).toContainText('0/1 合格');
+	await expect(e2eChapter.getByTestId('chapter-card-count')).toHaveText('0/1 合格 · 0%');
 });
 
 // ---------------------------------------------------------------------------

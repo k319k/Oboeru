@@ -209,7 +209,7 @@ describe('recordSentenceAttempt', () => {
 	});
 });
 
-describe('finalizeSession / getSessions', () => {
+describe('finalizeSession', () => {
 	const base = VALID_SESSION;
 
 	it('unshifts the record and assigns an id', () => {
@@ -246,13 +246,6 @@ describe('finalizeSession / getSessions', () => {
 		});
 	});
 
-	it('getSessions returns newest first and honours limit', () => {
-		H.finalizeSession({ ...base, nodeName: 'first' });
-		H.finalizeSession({ ...base, nodeName: 'second' });
-		expect(H.getSessions(1).map((s) => s.nodeName)).toEqual(['second']);
-		expect(H.getSessions()).toHaveLength(2);
-	});
-
 	it('never throws when localStorage rejects the write', () => {
 		ls.setItem = () => {
 			throw new Error('QuotaExceededError');
@@ -286,7 +279,10 @@ describe('loadHistoryUiState / saveHistoryUiState', () => {
 describe('computeNodeStats', () => {
 	const sentences = SENTENCE_FIXTURE;
 
-	it('sorts by order and counts pass / hard / untouched', () => {
+	// `SENTENCE_FIXTURE` is deliberately out of `order` (s3, s1, s2 for orders
+	// 2, 0, 1), so this test fails if a sort ever comes back: `order` is only
+	// meaningful inside one track, and the caller owns the display order.
+	it('preserves the input sequence verbatim, without re-sorting by order', () => {
 		const stats = {
 			s1: { attempts: 1, lastScore: 90, lastPracticedAt: 5 },
 			s3: { attempts: 2, lastScore: 40, lastPracticedAt: 9 }
@@ -298,7 +294,23 @@ describe('computeNodeStats', () => {
 		expect(node.practiced).toBe(2);
 		expect(node.avgLastScore).toBe(65);
 		expect(node.lastPracticedAt).toBe(9);
-		expect(node.dots).toEqual(['passed', 'untouched', 'hard']);
+		// Input order s3 (40 → hard), s1 (90 → passed), s2 (no stat → untouched).
+		expect(node.dots).toEqual(['hard', 'passed', 'untouched']);
+	});
+
+	// Regression (observed in the running app): a display set spanning two
+	// tracks arrives in pre-order, but `order` restarts at 1 in each track. A
+	// global `order` sort interleaved them and put the child's only sentence in
+	// the middle of the parent's dots — `hard, passed, passed` instead of
+	// `passed, passed, hard`, i.e. the row no longer read as practice order.
+	it('keeps a two-track display set in pre-order, not in interleaved `order`', () => {
+		const parent = [sent('s1', 1), sent('s2', 2)];
+		const child = [{ ...sent('s3', 1), trackId: 'tr-child' }];
+		const stats = { s1: stat(92), s2: stat(92), s3: stat(40) };
+
+		const node = H.computeNodeStats([...parent, ...child], false, stats, 80);
+		expect(node.total).toBe(3);
+		expect(node.dots).toEqual(['passed', 'passed', 'hard']);
 	});
 
 	it('omits dots for chapters and reports nulls when nothing was practised', () => {
@@ -349,9 +361,9 @@ describe('computeNodeStats', () => {
 	// `computeNodeStats` is a pure function of the array it is handed — it never
 	// inspects trackId. What this pins: every sentence in that array yields one
 	// dot and one unit of the `N/M` denominator, and a stat for a sentence
-	// outside the array moves neither. Which array a row passes (a chapter's
-	// subtree, a track's own sentences) is the caller's discipline, enforced by
-	// `getNodeSentences` at the call site — no unit test here can enforce it.
+	// outside the array moves neither. Which array a row passes is the
+	// caller's discipline — every row passes `getNodeSentences(nodeId)`, its own
+	// subtree, and no unit test here can enforce that.
 	// The chapter half of the test shows the same rule with dots switched off:
 	// the child track's sentence counts toward `total` and `passed` but adds no
 	// dot, so a chapter row never pairs a dot count with a denominator.

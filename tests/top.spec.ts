@@ -156,12 +156,12 @@ test.describe('Top page', () => {
 		// トラック1-1 = 1 (leaf).
 		await expect(
 			page.getByTestId('chapter-card').filter({ hasText: '1章' }).getByTestId('chapter-card-count')
-		).toContainText('0/2 合格');
-		await expect(trackCard(page, 'トラック1-1').getByTestId('track-card-count')).toContainText(
-			'0/1 合格'
+		).toHaveText('0/2 合格 · 0%');
+		await expect(trackCard(page, 'トラック1-1').getByTestId('track-card-count')).toHaveText(
+			'0/1 合格 · 0%'
 		);
-		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toContainText(
-			'0/2 合格'
+		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toHaveText(
+			'0/2 合格 · 0%'
 		);
 	});
 
@@ -213,8 +213,8 @@ test.describe('Top page', () => {
 
 		// And the empty intermediate track must not read "0文" next to a live
 		// button — its subtree holds s2, so the session started from it is 1 long.
-		await expect(trackCard(page, '文のないトラック').getByTestId('track-card-count')).toContainText(
-			'0/1 合格'
+		await expect(trackCard(page, '文のないトラック').getByTestId('track-card-count')).toHaveText(
+			'0/1 合格 · 0%'
 		);
 	});
 
