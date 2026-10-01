@@ -432,11 +432,22 @@
 					     the name is safe because everything else on the second line is
 					     short by construction: `MM/DD HH:MM`, two counts, and 途中で終了
 					     (which wraps between kanji anyway). Same treatment as
-					     `chapter-name truncate` / `track-card-name truncate`: a
-					     `min-w-0` flex column with `truncate` on the name. `min-w-0` is
-					     load-bearing — without it a nowrap flex item's min-content width
-					     (a 120-char Latin name) refuses to shrink and pushes the whole
-					     document sideways instead of ellipsising. -->
+					     `chapter-name truncate` / `track-card-name truncate`.
+
+					     What actually prevents the horizontal overflow is `truncate` on
+					     the name — its `overflow: hidden` makes the flex automatic
+					     minimum size 0 (css-flexbox §4.5), so the item may shrink below
+					     its min-content (a 120-char Latin name), and it then clips.
+					     Measured at 390px: dropping all three `min-w-0` here and
+					     keeping only `truncate` still overflows 0px, whereas dropping
+					     only `truncate` overflows ~645px even with every `min-w-0`
+					     present.
+
+					     `min-w-0` is therefore DEFENSIVE, not load-bearing: it changes
+					     nothing while `truncate` is on the same element. Kept because if
+					     the truncation is ever replaced (or moves to an ancestor) the
+					     automatic minimum size comes back and the spill returns with
+					     it. Same wording as AGENTS.md's `level-meter` `min-w-0`. -->
 					<p
 						class="flex min-w-0 flex-col gap-0.5 text-sm text-muted-foreground"
 						data-testid="history-item"
