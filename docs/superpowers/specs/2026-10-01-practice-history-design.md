@@ -192,7 +192,7 @@ export function computeNodeStats(
 ```
 
 - 連続日数 = 文統計の `lastPracticedAt` をローカル日（`YYYY-MM-DD`）の集合にし、**今日を含む**降順連続の長さ
-- **0 日でも描画する**（`連続 0 日`）。5 日連続的用户が 6 日目に開いてピルが消えるのは通常の
+- **0 日でも描画する**（`連続 0 日`）。5 日連続で練習していた人が 6 日目に開いてピルが消えるのは通常の
   ストリーク UX と逆で、「継続を保つ」目的を壊す。0 日 = 昨日まで練習して今日はまだ、という情報が残る
 - のべ文数 = **全文統計の `attempts` 合計**。`sessions` の合計ではない（セッション record はタブ強制終了で
   失われることがあるが、文統計は採点ごとに必ず書かれるのでドリフトしない）。単位は「のべ」（再挑戦を含む）
@@ -281,8 +281,7 @@ recordSentenceAttempt(s.id, finalScore, Date.now());
 
 ### セッションレコード — アンマウント時 + 再挑戦開始時
 
-`onMount`（`practice/+page.svelte:854-907`）は cleanup を返しておらず、`onDestroy` はファイル内に
-存在しないので **新設**する（`:696-700` の `$effect` cleanup は `releaseWarmMic` だけ）。
+`onMount`（`practice/+page.svelte:854-907`）は cleanup を返しておらず、`onDestroy` も無いので **新設**する（`:696-700` の `$effect` cleanup は `releaseWarmMic` だけ）。
 
 `sessionStartedAt` は **1 つのヘルパーでスタンプする**:
 
@@ -316,7 +315,7 @@ function beginSession(): void {
 | ケース | 挙動 |
 |---|---|
 | localStorage が書けない（プライベートモード / quota 超過） | 全 write API が `try/catch` で黙って no-op。練習は正常に続行。トップページは 0 のまま表示され、エラーは出さない |
-| 破損 JSON / 非オブジェクト / `version` 不一致 | `loadHistory()` が既定値へ縮退して読み proceeds。既存データを破壊しない |
+| 破損 JSON / 非オブジェクト / `version` 不一致 | `loadHistory()` が既定値へ縮退してから読み進める。既存データを破壊しない |
 | counter が NaN / 負数 / 小数 | 非負整数にクランプ（`practice-progress.ts:27-31` と同じ） |
 | 文が削除された | 統計は孤児になるが、集約は現在の文一覧と交差合わせるだけなので無視される |
 | 章/トラックが削除された | 履歴行は `nodeName (削除済み)`。集計は他ノードに影響しない |
