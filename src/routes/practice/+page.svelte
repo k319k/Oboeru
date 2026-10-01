@@ -847,6 +847,13 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 		totalScore = saved.totalScore;
 		skippedCount = saved.skippedCount;
 		startSession();
+		// startSession() stamps "now", which is wrong for a resumed session: the
+		// user practised before the reload too (their counters are in the row
+		// above), so a stamp from resume time reports a 20-minute session as
+		// lasting four seconds. `savedAt` is when the snapshot was last written,
+		// i.e. the last moment the pre-reload run was known to be alive — the
+		// closest honest lower bound on the start.
+		sessionStartedAt = saved.savedAt;
 	}
 
 	function startFresh(): void {
@@ -873,7 +880,13 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 		if (bodyEl) bodyEl.scrollTop = 0;
 	});
 
-	// Track the session in sessionStorage so a reload can offer to resume.
+	// Two jobs in one effect, because both key off the same phase: it snapshots the
+	// session into sessionStorage so a reload can offer to resume, AND it settles
+	// the session record when `summary` arrives. The settle is here (not only in
+	// onDestroy) because onDestroy does not fire on a reload or a tab close —
+// the realm is torn down without running Svelte's destroy hook — and a row
+	// written only on unmount would be lost for every user who reloads from the
+	// summary screen.
 	// A passing feedback rounds forward (the attempt is settled); every other
 	// phase keeps the snapshot at the current sentence — recording /
 	// transcribing therefore round back to the last show origin.

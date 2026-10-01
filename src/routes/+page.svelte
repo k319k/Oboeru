@@ -39,7 +39,10 @@
 	// effect makes it its own dependency and Svelte throws
 	// effect_update_depth_exceeded during hydration. A derived has no write of
 	// its own, so the streak can never drift from the history it summarises.
-	let streak = $derived(computeStreak(history.sentences, nowMs));
+	// Both halves are passed: the sentence stats alone collapse a
+	// repeated-chapter streak to one day (each stat keeps only its most recent
+	// practice), the session rows carry the per-day log.
+	let streak = $derived(computeStreak(history.sentences, history.sessions, nowMs));
 	// The session log is long and secondary, so it starts closed and the
 	// choice is remembered across reloads.
 	let historyOpen = $state(false);
@@ -114,18 +117,13 @@
 		return map;
 	});
 
+	// The miss is unreachable in practice (every rendered row's id is in
+	// sentencesByNode), but a hand-written NodeStats literal here duplicated the
+	// interface field-for-field and could drift the moment a field was added.
+	// computeNodeStats([], false, {}, threshold) is the empty answer by
+	// definition and cannot.
 	function nodeStats(nodeId: string): NodeStats {
-		return (
-			statsByNode.get(nodeId) ?? {
-				total: 0,
-				passed: 0,
-				practiced: 0,
-				hard: 0,
-				avgLastScore: null,
-				lastPracticedAt: null,
-				dots: []
-			}
-		);
+		return statsByNode.get(nodeId) ?? computeNodeStats([], false, {}, threshold);
 	}
 
 	function percent(part: number, total: number): number {
@@ -290,8 +288,17 @@
 							data-testid="track-dots"
 						>
 							{#each nodeStats(track.id).dots as dot, i (i)}
+								<!-- All three backgrounds conditional, never one static plus a
+								     conditional. Tailwind puts every colour utility in a single
+								     `utilities` layer at equal specificity, so the winner is the
+								     generated stylesheet's source order — NOT the attribute order
+								     here — and a static `bg-border` lost to `bg-amber-500` in
+								     practice, painting 苦手 the same grey as 未着手. Exactly one
+								     class is ever present. Pinned by tests/history.spec.ts
+								     ("each dot state paints its own colour"). -->
 								<span
-									class="size-[7px] rounded-[2px] bg-border"
+									class="size-[7px] rounded-[2px]"
+									class:bg-border={dot === 'untouched'}
 									class:bg-success={dot === 'passed'}
 									class:bg-amber-500={dot === 'hard'}
 									data-dot={dot}

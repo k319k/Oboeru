@@ -29,7 +29,13 @@ export interface SessionRecord {
 	durationMs: number;
 	/** Scoring attempts (retries included) — same definition as completedCount. */
 	attempted: number;
-	/** Distinct sentences that passed — same definition as passedIds.length. */
+	/**
+	 * Distinct sentences that passed IN THIS MOUNT. Equals `passedIds.length` for
+	 * a fresh session; a session resumed from `practice-progress.ts` starts with
+	 * an empty `passedIds` (that module does not persist it), so the passes made
+	 * before the reload are missing here while `attempted` still counts them.
+	 * Accepted limitation — see the spec's 既知の制限.
+	 */
 	passedSentences: number;
 	totalScore: number;
 	skipped: number;
@@ -168,7 +174,11 @@ export function finalizeSession(record: Omit<SessionRecord, 'id'>): SessionRecor
 	data.sessions.unshift(stored);
 	if (data.sessions.length > MAX_SESSIONS) data.sessions.length = MAX_SESSIONS;
 	persist(data);
-	return stored;
+	// A copy, not `stored`: the return value is the SAME object the cache holds,
+	// so a caller mutating it would poison the next persist() (any later
+	// recordSentenceAttempt writes the mutated copy). loadHistory() already
+	// returns fresh objects for the same reason.
+	return { ...stored };
 }
 
 export function loadHistoryUiState(): HistoryUiState {
@@ -264,7 +274,11 @@ export function computeNodeStats(
 export interface StreakInfo {
 	/** Consecutive days ending today (0 when nothing was practised today). */
 	days: number;
-	/** Sum of every sentence stat's attempts — retries included. */
+	/**
+	 * Sum of every sentence stat's attempts — retries included. Deliberately
+	 * NOT the log's `attempted` sum: a session lost to a tab kill scored its
+	 * sentences (so they are counted here) but never wrote a row.
+	 */
 	totalAttempts: number;
 }
 
@@ -278,6 +292,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function computeStreak(
 	stats: Readonly<Record<string, SentenceStat>>,
+	sessions: readonly SessionRecord[],
 	now: number = Date.now()
 ): StreakInfo {
 	const days = new Set<number>();
@@ -285,6 +300,18 @@ export function computeStreak(
 	for (const stat of Object.values(stats)) {
 		totalAttempts += stat.attempts;
 		if (stat.lastPracticedAt > 0) days.add(localDayKey(stat.lastPracticedAt));
+	}
+	// The session rows are the per-DAY log; the sentence stats are not.
+	// `SentenceStat.lastPracticedAt` holds only each sentence's MOST RECENT
+	// practice, so practising the same chapter on five consecutive days leaves
+	// every stat stamped today and the sentence side collapses to a single day
+	// (measured against the pre-fix function: days 1, 0, 0, 0, 0). Session rows
+	// are append-only and each carries its own `startedAt`, so they carry the
+	// real run. The union loses nothing: a session lost to a tab kill is still
+	// covered by that day's sentence stats. Bounded by MAX_SESSIONS, so a streak
+	// longer than the retained log (500) is all the sentence side can extend.
+	for (const session of sessions) {
+		if (session.startedAt > 0) days.add(localDayKey(session.startedAt));
 	}
 	if (days.size === 0) return { days: 0, totalAttempts: 0 };
 

@@ -372,6 +372,235 @@ test.describe('Practice history', () => {
 		await expect(dots.nth(1)).toHaveAttribute('data-dot', 'hard');
 	});
 
+	// Measured, not asserted by attribute. A static `bg-border` next to a
+	// conditional `class:bg-amber-500` used to render 苦手 in the untouched grey:
+	// both utilities sit in Tailwind's single `utilities` layer at equal
+	// specificity, so the generated stylesheet's source order decides the winner
+	// (measured: `.bg-border` at offset 15223 beat `.bg-amber-500` at 14881) and
+	// the attribute order in the template decides nothing. Every other dot test
+	// in this file reads `data-dot`, which is computed from `lastScore` alone —
+	// the state was always right and only the paint was wrong, so all of them
+	// stayed green.
+	test('each dot state paints its own colour, so 苦手 is not the 未着手 grey', async ({ page }) => {
+		await gotoWithSeed(page, {
+			chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+			tracks: [{ id: 'tr-1', chapterId: 'ch-1', name: 'トラック1', parentId: null, order: 1 }],
+			sentences: [
+				{ id: 's-1', chapterId: 'ch-1', trackId: 'tr-1', text: 'あ', language: 'ja', order: 1 },
+				{ id: 's-2', chapterId: 'ch-1', trackId: 'tr-1', text: 'い', language: 'ja', order: 2 },
+				{ id: 's-3', chapterId: 'ch-1', trackId: 'tr-1', text: 'う', language: 'ja', order: 3 }
+			]
+		});
+		await seedHistory(page, {
+			version: 1,
+			sessions: [],
+			sentences: {
+				// s-1 over the default threshold 80, s-2 under it, s-3 never scored.
+				's-1': { attempts: 1, lastScore: 95, lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, lastScore: 40, lastPracticedAt: Date.now() }
+			}
+		});
+
+		// Hydration gate: without it evaluateAll() can sample the pre-hydration
+		// DOM, which has no dots at all, and an empty sample reads as "one
+		// colour" rather than as a failure.
+		await expect(page.getByTestId('track-dots').locator('span')).toHaveCount(3);
+		const dots = await page
+			.getByTestId('track-dots')
+			.locator('span')
+			.evaluateAll((els) =>
+				els.map((el) => ({
+					dot: el.getAttribute('data-dot'),
+					bg: getComputedStyle(el).backgroundColor
+				}))
+			);
+
+		// The states themselves, so a failure below cannot be an empty or
+		// mis-seeded fixture reading as "three different colours".
+		expect(dots.map((d) => d.dot)).toEqual(['passed', 'hard', 'untouched']);
+		// Three states, three colours. Anything that collapses 苦手 onto 未着手
+		// — or paints a dot with no background at all — makes this 2 or 1.
+		expect(new Set(dots.map((d) => d.bg)).size).toBe(3);
+		const byState = Object.fromEntries(dots.map((d) => [d.dot, d.bg]));
+		expect(byState.hard).not.toBe(byState.untouched);
+		expect(byState.hard).not.toBe('');
+	});
+
+	// Value-level, through the real component: the seed below is the shape the
+	// dominant usage produces. Three sessions on three consecutive days, and one
+	// sentence whose stat is stamped today (a re-practice overwrites the earlier
+	// days' stamps, which is exactly why the sentence side alone cannot see the
+	// run). Pre-fix the pill read 連続 1 日 here.
+	test('the streak counts session days, not just the last practice of each sentence', async ({
+		page
+	}) => {
+		const now = Date.now();
+		const dayAgo = (n: number) => now - n * 24 * 60 * 60 * 1000;
+		const row = (id: string, startedAt: number): SessionRecord => ({
+			id,
+			nodeId: 'ch-1',
+			nodeName: '1章',
+			startedAt,
+			endedAt: startedAt + 60_000,
+			durationMs: 60_000,
+			attempted: 1,
+			passedSentences: 1,
+			totalScore: 90,
+			skipped: 0,
+			endedEarly: false
+		});
+
+		await gotoWithSeed(page, SEED);
+		await seedHistory(page, {
+			version: 1,
+			sessions: [row('d0', dayAgo(0)), row('d1', dayAgo(1)), row('d2', dayAgo(2))],
+			sentences: {
+				// Same sentence each day: only its most recent stamp survives.
+				's-1': { attempts: 3, lastScore: 95, lastPracticedAt: now },
+				's-2': { attempts: 3, lastScore: 95, lastPracticedAt: now }
+			}
+		});
+
+		// のべ is the sentence-stat attempt sum, not the log's — 3 + 3, not 3.
+		await expect(page.getByTestId('streak-pill')).toContainText('連続 3 日 · のべ 6 文');
+	});
+
+	// The whole second line, exactly. Four single-line mutations of this row
+	// (totalScore → 0, skipped → 0, formatStamp → a constant, the 平均 divisor)
+	// left the suite at 180 passed because every other assertion in the branch
+	// reads the section title, the row count or the node NAME — never these four
+	// numbers. `expected` is built from the literal calendar time below rather
+	// than from a reimplementation of formatStamp, so a formatter that returns a
+	// constant cannot pass by agreeing with itself.
+	test('a log row prints its stamp, pass count, average and skip count', async ({ page }) => {
+		// Local 2026-01-02 03:04 — far enough from the epoch that a formatter
+		// reading the wrong field (or a constant) cannot produce it by accident.
+		const startedAt = new Date(2026, 0, 2, 3, 4).getTime();
+		await gotoWithSeed(page, SEED);
+		await seedHistory(
+			page,
+			{
+				version: 1,
+				sessions: [
+					{
+						id: 'a',
+						nodeId: 'ch-1',
+						nodeName: '1章',
+						startedAt,
+						endedAt: startedAt + 90_000,
+						durationMs: 90_000,
+						attempted: 2,
+						passedSentences: 1,
+						// 174 / 2 = 87, so an off-by-one divisor reads 58 or 174.
+						totalScore: 174,
+						skipped: 1,
+						endedEarly: false
+					}
+				],
+				sentences: {}
+			},
+			{ open: true }
+		);
+
+		await expect(page.getByTestId('history-item').first()).toContainText(
+			'01/02 03:04 · 1 文 合格 · 平均 87% · スキップ 1'
+		);
+		// And no early-stop marker on a completed row.
+		await expect(page.getByTestId('history-item').first()).not.toContainText('途中で終了');
+	});
+
+	// spec success condition 1 (最終練習日 … が反映される) had NO assertion
+	// anywhere in tests/ — grepping 最終 returned only the word inside a comment.
+	// Deleting the line from both the chapter and the track row left all 180
+	// tests green, because no other row field carries the date.
+	test('practised rows show 最終 and the chapter row its 苦手 count', async ({ page }) => {
+		const DAY = 24 * 60 * 60 * 1000;
+		await gotoWithSeed(page, SEED);
+		await seedHistory(page, {
+			version: 1,
+			sessions: [],
+			sentences: {
+				// s-1 today and passing; s-2 yesterday and failing → 苦手 1.
+				's-1': { attempts: 1, lastScore: 95, lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, lastScore: 45, lastPracticedAt: Date.now() - DAY }
+			}
+		});
+
+		await expect(page.getByTestId('chapter-last').first()).toHaveText('最終 今日 · 苦手 1 文');
+		// The track row carries the date but not the 苦手 count (dots do that).
+		await expect(trackCard(page, 'トラック1').getByTestId('track-last')).toHaveText('最終 今日');
+
+		// A never-practised node has nothing to date, so the line is gated on
+		// practiced > 0 — トラック2 holds no sentences at all here.
+		await expect(trackCard(page, 'トラック2').getByTestId('track-last')).toHaveCount(0);
+	});
+
+	// `historyLimit += 0` left the suite green: no other test ever had 20+ rows
+	// to page through. spec: 「初期表示は最新 20 件。`さらに表示` で全件表示する」.
+	test('さらに表示 pages the log past its first 20 rows', async ({ page }) => {
+		const now = Date.now();
+		const row = (i: number) => ({
+			id: `s${i}`,
+			nodeId: 'ch-1',
+			nodeName: '1章',
+			startedAt: now - i * 60_000,
+			endedAt: now - i * 60_000 + 30_000,
+			durationMs: 30_000,
+			attempted: 1,
+			passedSentences: 1,
+			totalScore: 90,
+			skipped: 0,
+			endedEarly: false
+		});
+		await gotoWithSeed(page, SEED);
+		await seedHistory(
+			page,
+			{ version: 1, sessions: Array.from({ length: 25 }, (_, i) => row(i)), sentences: {} },
+			{ open: true }
+		);
+
+		await expect(page.getByTestId('history-item')).toHaveCount(20);
+		const more = page.getByTestId('history-more');
+		await expect(more).toHaveText('さらに表示 (残り 5 件)');
+		await more.click();
+		await expect(page.getByTestId('history-item')).toHaveCount(25);
+		// Nothing left to page through, so the button goes away.
+		await expect(page.getByTestId('history-more')).toHaveCount(0);
+	});
+
+	// The pill is gated on `streak.totalAttempts > 0`, which is the sentence-stat
+	// attempt sum. Seeded log rows with no sentence stats prove the gate is the
+	// attempt sum and not "any history at all": `{#if true}` rendered the pill
+	// here as 連続 3 日 · のべ 0 文 and nothing caught it.
+	test('the streak pill stays hidden when nothing has been scored', async ({ page }) => {
+		const now = Date.now();
+		const row = (id: string, startedAt: number) => ({
+			id,
+			nodeId: 'ch-1',
+			nodeName: '1章',
+			startedAt,
+			endedAt: startedAt + 1000,
+			durationMs: 1000,
+			attempted: 1,
+			passedSentences: 1,
+			totalScore: 90,
+			skipped: 0,
+			endedEarly: false
+		});
+		await gotoWithSeed(page, SEED);
+		await seedHistory(page, {
+			version: 1,
+			sessions: [row('d0', now), row('d1', now - 86_400_000), row('d2', now - 172_800_000)],
+			sentences: {}
+		});
+
+		// A three-day streak exists — the log rows say so — but のべ is 0, and a
+		// pill reading のべ 0 文 is worse than no pill.
+		await expect(page.getByTestId('streak-pill')).toHaveCount(0);
+		// The log itself still renders: the gate is the pill, not the section.
+		await expect(page.getByTestId('history-toggle')).toContainText('練習履歴 (3)');
+	});
+
 	test('an empty intermediate track reads like the session it starts', async ({ page }) => {
 		await gotoWithSeed(page, {
 			chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
@@ -557,5 +786,129 @@ test.describe('Practice history', () => {
 		});
 		// No `0/0 合格 · 0%` — a percentage over an empty denominator is noise.
 		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('0文');
+	});
+
+	// `settleSession()`'s `completedCount === 0` early return. AGENTS.md states it
+	// as binding ("1 文も採点しなかったセッションは記録されない"), and deleting those
+	// three lines left all 180 tests green: no other test opens a session and
+	// leaves without scoring, so nothing ever produced a 0-attempt row to catch.
+	test('a session that scored nothing writes no log row', async ({ page }) => {
+		await gotoWithSeed(page, SEED);
+		await mockTtsApi(page);
+		await mockTranscribe(page, [{ text: 'あああ' }]);
+		await page.goto('/practice?node=ch-1');
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 10_000 });
+
+		// Open, look, leave — never a single scoring.
+		await page.getByTestId('stop-btn').click();
+		await page.getByTestId('confirm-end-btn').click();
+		await expect(page.getByTestId('summary')).toBeVisible({ timeout: 10_000 });
+
+		expect(await readSessions(page)).toHaveLength(0);
+		await page.goto('/');
+		await expect(page.getByTestId('history-section')).toHaveCount(0);
+		// Nothing was scored, so there is no sentence stat either — the pill is
+		// gated on the same zero.
+		await expect(page.getByTestId('streak-pill')).toHaveCount(0);
+	});
+
+	// A resumed session's `startedAt`. `applyRestore()` restores the counters but
+	// re-stamped the clock at resume time, so a row could claim a 20-minute-old
+	// session had lasted four seconds — the duration field is derived from this
+	// stamp. The seed moves `savedAt` a minute into the past (still inside the
+	// 30-minute TTL), so "stamped from savedAt" and "stamped at resume" differ by
+	// a minute, far outside any timing tolerance.
+	test('a resumed session keeps the original start time', async ({ page }) => {
+		const GAP_MS = 60_000;
+		await gotoWithSeed(page, SEED);
+		await mockTtsApi(page);
+		await mockTranscribe(page, [{ text: 'あああ' }, { text: 'いいい' }]);
+		await page.goto('/practice?node=ch-1');
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 10_000 });
+
+		// Score the first sentence so the snapshot the app writes has something
+		// in it, then age that snapshot instead of using the app's own stamp.
+		await holdAndRelease(page);
+		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10_000 });
+		await page.keyboard.press('Space');
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 10_000 });
+
+		const resumedAt = await page.evaluate(() => {
+			const key = 'oboeru:progress:v1';
+			const saved = JSON.parse(sessionStorage.getItem(key) ?? '{}') as Record<string, number>;
+			saved.savedAt = Date.now() - 60_000;
+			sessionStorage.setItem(key, JSON.stringify(saved));
+			return saved.savedAt;
+		});
+
+		await page.reload();
+		await expect(page.getByTestId('restore-dialog')).toBeVisible({ timeout: 10_000 });
+		await page.getByTestId('resume-btn').click();
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 10_000 });
+
+		// Finish the resumed session.
+		await holdAndRelease(page);
+		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10_000 });
+		await page.keyboard.press('Space');
+		await expect(page.getByTestId('summary')).toBeVisible({ timeout: 10_000 });
+
+		const [record] = await waitForSessions(page, 1);
+		// The pre-reload stamp, not the moment 続ける was pressed.
+		expect(Math.abs(record.startedAt - resumedAt)).toBeLessThan(2000);
+		// And the duration therefore spans the gap instead of the resume.
+		expect(record.durationMs).toBeGreaterThan(GAP_MS - 2000);
+		// Both attempts are counted, so the row is not silently half-empty.
+		expect(record.attempted).toBe(2);
+		// DOCUMENTED LIMITATION, pinned on purpose: `passedIds` is per-mount and
+		// `practice-progress.ts` does not persist it, so the pre-reload pass is
+		// missing here even though `attempted` counts it. Persisting `passedIds`
+		// was ruled out of scope (spec §既知の制限); this assertion exists so the
+		// day it changes is a deliberate one, not a silent data change.
+		expect(record.passedSentences).toBe(1);
+	});
+
+	// `onDestroy(() => settleSession())` — the only writer on this path. A
+	// client-side navigation away from a session in progress tears the component
+	// down (Svelte runs the destroy hook), the summary $effect never runs
+	// because `phase` is never 'summary', and `clearPracticeProgress()` is not
+	// called either, so removing the block loses the row silently.
+	//
+	// Entered through the SPA (the top page's 練習 button) on purpose: a direct
+	// `page.goto('/practice?…')` leaves no same-document history entry for
+	// `page.goBack()` to pop, so it would leave via a full document load — which
+	// never runs destroy hooks, and would pass with the block deleted.
+	test('abandoning a session with the browser Back button still records it', async ({ page }) => {
+		await gotoWithSeed(page, SEED);
+		await mockTtsApi(page);
+		await mockTranscribe(page, [{ text: 'あああ' }]);
+		await page.goto('/');
+
+		// SPA navigation, so goBack() is a client-side route change.
+		await page
+			.getByTestId('chapter-card')
+			.filter({ hasText: '1章' })
+			.getByTestId('card-start')
+			.click();
+		await page.waitForURL('**/practice?node=ch-1');
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 10_000 });
+
+		// One scored sentence, then leave mid-session (2 remain).
+		await holdAndRelease(page);
+		await expect(page.getByTestId('feedback')).toBeVisible({ timeout: 10_000 });
+		await page.getByTestId('skip-btn').click();
+		await expect(page.getByTestId('record-ready')).toBeVisible({ timeout: 10_000 });
+
+		await page.goBack();
+		await page.waitForURL((url) => !url.pathname.startsWith('/practice'));
+
+		const [record] = await waitForSessions(page, 1);
+		expect(record.attempted).toBe(1);
+		expect(record.passedSentences).toBe(1);
+		expect(record.nodeName).toBe('1章');
+		// NOT asserted: `endedEarly`. It is set by 終了 only, so a row written by
+		// this path reads `途中で終了` absent — the log cannot tell this apart
+		// from a run the user finished deliberately. Recorded as an observation
+		// in the fix report rather than silently encoded here; changing the flag
+		// would alter data the per-task review signed off on.
 	});
 });

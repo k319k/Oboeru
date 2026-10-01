@@ -246,6 +246,15 @@ describe('finalizeSession', () => {
 		});
 	});
 
+	it('returns a copy, so a caller mutating it cannot poison the next write', () => {
+		const returned = H.finalizeSession(base);
+		// The cache holds this row, and every later write stringifies the whole
+		// cache — so a mutation here would be written straight back to storage.
+		returned.attempted = 999;
+		H.recordSentenceAttempt('s1', 90, 1000);
+		expect(H.loadHistory().sessions[0].attempted).toBe(base.attempted);
+	});
+
 	it('never throws when localStorage rejects the write', () => {
 		ls.setItem = () => {
 			throw new Error('QuotaExceededError');
@@ -393,8 +402,14 @@ describe('computeStreak', () => {
 		return d.getTime() - daysAgo * DAY;
 	}
 
+	/** A session row on the day `daysAgo` before `now`. Only `startedAt` matters. */
+	function sessionOn(now: number, daysAgo: number, name = `s${daysAgo}`): SessionRecord {
+		const startedAt = at(now, daysAgo);
+		return { ...VALID_SESSION, id: name, nodeName: name, startedAt, endedAt: startedAt + 1000 };
+	}
+
 	it('reports zero when nothing was practised', () => {
-		expect(H.computeStreak({}, 1000 * DAY)).toEqual({ days: 0, totalAttempts: 0 });
+		expect(H.computeStreak({}, [], 1000 * DAY)).toEqual({ days: 0, totalAttempts: 0 });
 	});
 
 	it('counts consecutive days ending today', () => {
@@ -404,13 +419,13 @@ describe('computeStreak', () => {
 			s2: { attempts: 2, lastScore: 90, lastPracticedAt: at(now, 1) },
 			s3: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 2) }
 		};
-		expect(H.computeStreak(stats, now)).toEqual({ days: 3, totalAttempts: 4 });
+		expect(H.computeStreak(stats, [], now)).toEqual({ days: 3, totalAttempts: 4 });
 	});
 
 	it('counts a single practised day as 1', () => {
 		const now = at(1000 * DAY, 0);
 		const stats = { s1: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 0) } };
-		expect(H.computeStreak(stats, now).days).toBe(1);
+		expect(H.computeStreak(stats, [], now).days).toBe(1);
 	});
 
 	it('stops at the first gap and still counts yesterday as current', () => {
@@ -420,13 +435,63 @@ describe('computeStreak', () => {
 			s2: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 2) },
 			s3: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 5) }
 		};
-		expect(H.computeStreak(stats, now).days).toBe(2);
+		expect(H.computeStreak(stats, [], now).days).toBe(2);
 	});
 
 	it('reports zero when the last practice is two days old', () => {
 		const now = at(1000 * DAY, 0);
 		const stats = { s1: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 2) } };
-		expect(H.computeStreak(stats, now).days).toBe(0);
+		expect(H.computeStreak(stats, [], now).days).toBe(0);
+	});
+
+	// THE regression. `SentenceStat.lastPracticedAt` keeps only the most recent
+	// practice of each sentence, so practising the same three sentences on five
+	// consecutive days leaves all three stats stamped today — the sentence side
+	// of the day set collapses to one member and the headline reads 連続 1 日
+	// forever. Repeating a chapter is the dominant use of a memorisation app.
+	// Measured against the pre-fix function: days 1, 0, 0, 0, 0.
+	it('counts every day of a streak when the same sentences are practised again', () => {
+		const now = at(1000 * DAY, 0);
+		const stats = {
+			s1: stat(90, at(now, 0), 5),
+			s2: stat(90, at(now, 0), 5),
+			s3: stat(90, at(now, 0), 5)
+		};
+		const sessions = [0, 1, 2, 3, 4].map((d) => sessionOn(now, d));
+		// The sentence side alone sees one day; only the union sees five.
+		expect(H.computeStreak(stats, [], now).days).toBe(1);
+		expect(H.computeStreak(stats, sessions, now)).toEqual({ days: 5, totalAttempts: 15 });
+	});
+
+	// Each source contributes a day the other lacks, and only the union makes
+	// the run contiguous: sessions know days 0-1, stats know days 0 and 2.
+	// Session-only would read 2, stats-only 1, the union 3.
+	it('unions the session days with the sentence-stat days', () => {
+		const now = at(1000 * DAY, 0);
+		const stats = { s1: stat(90, at(now, 0)), s2: stat(90, at(now, 2)) };
+		const sessions = [sessionOn(now, 0), sessionOn(now, 1)];
+		expect(H.computeStreak(stats, [], now).days).toBe(1);
+		expect(H.computeStreak({}, sessions, now).days).toBe(2);
+		expect(H.computeStreak(stats, sessions, now).days).toBe(3);
+	});
+
+	// A session lost to a tab kill never reaches the log, but the sentences it
+	// scored still carry that day — so the union must not need the row to exist.
+	it('counts a day whose session row was lost to a kill, via its sentence stats', () => {
+		const now = at(1000 * DAY, 0);
+		const stats = { s1: stat(90, at(now, 1)) };
+		// Nothing logged for that day at all.
+		expect(H.computeStreak(stats, [], now).days).toBe(1);
+	});
+
+	// `totalAttempts` stays the sentence-stat sum: the log's `attempted` counts
+	// attempts that are deliberately NOT recorded (a session lost to a kill), so
+	// summing it here would double-count nothing but drift upward.
+	it('takes のべ attempts from the sentence stats only', () => {
+		const now = at(1000 * DAY, 0);
+		const stats = { s1: stat(90, at(now, 0), 2), s2: stat(40, at(now, 1), 3) };
+		const sessions = [sessionOn(now, 0), sessionOn(now, 1)];
+		expect(H.computeStreak(stats, sessions, now).totalAttempts).toBe(5);
 	});
 });
 

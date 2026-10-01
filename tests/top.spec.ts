@@ -46,7 +46,7 @@ test.describe('Top page', () => {
 		await expect(page.getByText('First Steps（English）')).toBeVisible();
 	});
 
-	test('shows sentence count per chapter', async ({ page }) => {
+	test('shows the pass count and percentage per chapter', async ({ page }) => {
 		await page.goto('/');
 		// Each default chapter has 10 sentences, none practised yet — a fresh
 		// context has no history, so the row reads "0 of 10 passed".
