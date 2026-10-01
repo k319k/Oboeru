@@ -1390,19 +1390,28 @@ Task 4 の state 群に足す。
 
 - [ ] **Step 2: 履歴を読む `$effect` を Task 4 の effect に足す**
 
-Task 4 Step 2 の effect を
+Task 4 Step 2 の effect に 1 行足す。import に `computeStreak` / `getSessions` /
+`loadHistoryUiState` / `saveHistoryUiState` / `type SessionRecord` を追加する。
 
 ```ts
 	$effect(() => {
 		history = loadHistory();
 		threshold = loadSettings().threshold;
 		nowMs = Date.now();
-		streak = computeStreak(history.sentences, nowMs);
 		historyOpen = loadHistoryUiState().open;
 	});
 ```
 
-に置き換える。import に `computeStreak` / `getSessions` / `loadHistoryUiState` / `saveHistoryUiState` / `type SessionRecord` を追加する。
+**`streak` はこの effect の中で計算してはいけない**（実測: `effect_update_depth_exceeded`）。
+この effect は `history` を**書き**、`loadHistory()` は毎回新しいオブジェクトを返すので、
+同じ effect が `history` を**読み**返すと自分自身を再起動する。`streak` は Task 4 の
+`history` 読み込みに**反応する `$derived`** にする:
+
+```ts
+	let streak = $derived(computeStreak(history.sentences, nowMs));
+```
+
+`streak.days` / `streak.totalAttempts` はそのまま参照でよい（`$derived` なので参照だけで更新される）。
 
 - [ ] **Step 3: 開閉と Helpers を実装する**
 
