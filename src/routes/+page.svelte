@@ -219,25 +219,25 @@
 						<span class="truncate text-sm text-muted-foreground" data-testid="track-card-count"
 							>{progressLabel(nodeStats(track.id))}</span
 						>
+						<div
+							class="flex flex-wrap gap-[3px]"
+							role="img"
+							aria-label={`合格 ${nodeStats(track.id).passed} 文 / 苦手 ${nodeStats(track.id).hard} 文 / 未着手 ${nodeStats(track.id).total - nodeStats(track.id).practiced} 文`}
+							data-testid="track-dots"
+						>
+							{#each nodeStats(track.id).dots as dot, i (i)}
+								<span
+									class="size-[7px] rounded-[2px] bg-border"
+									class:bg-success={dot === 'passed'}
+									class:bg-amber-500={dot === 'hard'}
+									data-dot={dot}
+								></span>
+							{/each}
+						</div>
 						{#if nodeStats(track.id).practiced > 0}
 							<span class="text-sm text-muted-foreground" data-testid="track-last">
 								最終 {formatRelativeDay(nodeStats(track.id).lastPracticedAt ?? nowMs, nowMs)}
 							</span>
-							<div
-								class="flex flex-wrap gap-[3px]"
-								role="img"
-								aria-label={`合格 ${nodeStats(track.id).passed} 文 / 苦手 ${nodeStats(track.id).hard} 文 / 未着手 ${nodeStats(track.id).total - nodeStats(track.id).practiced} 文`}
-								data-testid="track-dots"
-							>
-								{#each nodeStats(track.id).dots as dot, i (i)}
-									<span
-										class="size-[7px] rounded-[2px] bg-border"
-										class:bg-success={dot === 'passed'}
-										class:bg-amber-500={dot === 'hard'}
-										data-dot={dot}
-									></span>
-								{/each}
-							</div>
 						{/if}
 					</div>
 					{#if canPractice(track.id)}
