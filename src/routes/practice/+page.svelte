@@ -341,9 +341,10 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 	}
 
 	/**
-	 * Persist the finished session. Only called from onDestroy and from
-	 * retryFailedOnly() — never at summary, because the retry button starts
-	 * another session in this same mount and would double-count.
+	 * Persist the finished session. Called from the summary $effect and from
+	 * onDestroy, plus from retryFailedOnly() before it starts the next
+	 * session. Every exit path clears sessionStartedAt, so whichever caller
+	 * runs second no-ops — that is what makes settling in two places safe.
 	 */
 	function settleSession(): void {
 		if (sessionStartedAt === null || !sessionNodeId) return;
@@ -879,6 +880,7 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 		if (!sessionReady) return;
 		if (phase === 'summary') {
 			clearPracticeProgress();
+			settleSession();
 			return;
 		}
 		if (!sessionNodeId) return;
@@ -958,8 +960,9 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 		}
 	});
 
-	// The session record is settled here, not at summary: summary's retry
-	// button starts another session inside this mount.
+	// Settled again here so a reload or tab close cannot lose a session the
+	// user never reached summary on. After summary this call is a no-op:
+	// settleSession() already cleared sessionStartedAt.
 	onDestroy(() => {
 		settleSession();
 	});
