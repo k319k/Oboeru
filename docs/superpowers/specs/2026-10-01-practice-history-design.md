@@ -115,7 +115,6 @@ export interface HistoryData {
 | `loadHistory(): HistoryData` | 読み込み。JSON 破損 / 非オブジェクト / `version` 不一致は**既定値で縮退**（`{version:1, sessions:[], sentences:{}}`）。セッション列を 500 件に切断、counter は非負整数にクランプ |
 | `recordSentenceAttempt(sentenceId, score, at): void` | 文統計を 1 件 upsert。`attempts++`、`lastScore = score`、`lastPracticedAt = at` |
 | `finalizeSession(record): void` | `sessions` の先頭に `unshift`、500 件超で `slice(0, 500)` |
-| `getSessions(limit?): SessionRecord[]` | 新しい順で最大 `limit` 件 |
 | `loadHistoryUiState(): HistoryUiState` | 履歴セクションの開閉状態（別キー `oboeru:history-ui:v1`） |
 | `saveHistoryUiState(state): void` | 開閉状態を書き込む |
 
@@ -143,7 +142,7 @@ export interface NodeStats {
   hard: number;                // hard の文数
   avgLastScore: number | null; // 採点された文の lastScore 平均。0 件なら null
   lastPracticedAt: number | null; // 表示集合内の lastPracticedAt の最大値
-  dots: DotState[];            // 章は空配列、トラックは表示集合を order 昇順で
+  dots: DotState[];            // 章は空配列、トラックは渡された順序（= practice 順）のまま
 }
 
 export function computeNodeStats(
@@ -176,7 +175,10 @@ export function computeNodeStats(
 集約は 1 系統のみ（`displaySentencesByNode` のような中間 map は不要 — `nodeSentences()` が既に
 その役割を持つ）。
 
-`dots` は `isChapter` なら `[]`、トラックなら表示集合を `order` 昇順で `DotState[]` にする。
+`dots` は `isChapter` なら `[]`、トラックなら**渡された配列の順序そのまま**（= practice 順 = pre-order）で
+`DotState[]` にする。**`sentence.order` でソートし直さない** — `getNodeSentences` が pre-order を返すのに、
+グローバルな `order` ソートは別トラックの文を割り込ませる（親トラックの行が `passed, hard, passed` になる）。
+表示順序の所有者は呼び出し側。
 `total === 0` のときは `dots` も `[]`（空行を作らない）。
 
 ### 1 系統の規約

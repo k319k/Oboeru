@@ -2037,6 +2037,22 @@ test.describe('Practice history', () => {
 		await expect(page.getByTestId('chapter-card-count').first()).toContainText('2/2 合格');
 	});
 
+	test('a partially practised node shows a non-zero percentage', async ({ page }) => {
+		// Guards percent(): every other assertion in the suite asserts "0%",
+		// so a percent() hardcoded to 0 would stay green without this.
+		await gotoWithSeed(page, SEED);
+		await seedHistory(page, {
+			version: 1,
+			sessions: [],
+			sentences: {
+				's-1': { attempts: 1, lastScore: 95, lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, lastScore: 45, lastPracticedAt: Date.now() }
+			}
+		});
+		// 1 of 2 passed = 50%, and the average of lastScore is 70%.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 50%');
+	});
+
 	test('the history section stays open across a reload', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
 		await seedHistory(
