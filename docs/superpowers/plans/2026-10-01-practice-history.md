@@ -2056,7 +2056,7 @@ test.describe('Practice history', () => {
 
 **追加した assertion（summary 確定の分）**: summary 到達後にリロードしてから
 `oboeru:history:v1` を読み、**セッション行が残っている**ことを確認する。これは Task 3 の
-「summary でも確定」追加（`$effect` 内の `settleSession()`） .offset する 1 行を削除しても
+「summary でも確定」追加（`$effect` 内の `settleSession()`）の 1 行を削除しても
 緑のままになるため、同じ理由でここで固定する。
 
 ```ts
