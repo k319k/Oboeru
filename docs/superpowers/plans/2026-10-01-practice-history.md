@@ -19,7 +19,7 @@
 - ** 保持上限**: `sessions` は新しい順 500 件。超えたら最古を落とす。`sentences` は削除しない
 - ** UI 文言は日本語**。レスポンシブ 390px を維持。`expectTapTargets`（`tests/a11y.spec.ts`）は可視 `button` に高さ 44px を要求する
 - ** 既存 testid `chapter-card-count` / `track-card-count` は残す**。中身の文言だけが `N/M 合格 · X%` に変わる
-- **ドット列は 390px で 1 行に約 22 個**。`flex flex-wrap` で折り返す。章行にはドットを出さない
+- **ドット列は 390px で 1 行に約 12 個**。`flex flex-wrap` で折り返す。章行にはドットを出さない
 - ** コメントは書かない**（既存コードのコメントの書き方に合わせる。ただし「why」を説明する設計コメントは AGENTS.md の流儀に従う）
 
 ## ファイル構成
