@@ -52,9 +52,10 @@ Cache Storage ではない）ため、Service Worker のキャッシュ戦略を
 | 6 | 履歴は**デバイスローカル**。ロードマップ ⑥ の同期対象に**含めない** | 練習実績はマージが不可能（last-write-wins で上書きされる）。メタデータ（章/トラック/文）と違い undo できない。**⑥ の引数** |
 | 7 | **行**の平均スコアは `lastScore` の平均。**履歴ログ行**の平均は `totalScore / attempted`（既存 summary と同じ定義） | `bestScore` の平均では全部 100 に寄って「今の自分の状態」が読めない。2 つの平均は別の物 |
 | 8 | 履歴セクションの**開閉状態は localStorage に記憶**する | 既存の `collapsed`（章の開閉、`+page.svelte:19`）は refresh でリセットする中途半端な実装。同じ轍を踏まない |
-| 9 | **復習アクションは付けない**（session 内 summary の既存 `retry-failed-btn` はそのまま） | 用途は苦手文の特定まで。「間違えた文だけやり直す」は既に summary に存在する |
-| 10 | **`SentenceStat` は `lastScore` と `lastPracticedAt` だけ**持つ。`passes` / `bestScore` は持たない | 決定事項 4 で合格は導出するので両方とも死んだフィールドになる。書かれるが読まれないコードは作らない |
-| 11 | 履歴セクション見出しの件数は**記録済みセッション件数**。累積の単位は「のべ N 文」 | `sessions.length` と混同しない。文の累計は `attempts`（試行回数）合計なので「文」ではなく「のべ」 |
+| 9 | **行の文数は「そのノードで練習したときのセッション長」と一致させる**。章もトラックも `getNodeSentences`（= サブツリー）基準。`canPractice` も同じ基準なので、`0文` の行に練習ボタンが出る矛盾が起きない（2026-10-01 レビューで発見。従来は章=サブツリー / トラック=直属で別 subset だった） | AGENTS.md が禁じる「`0文` なのに `練習` ボタン」の矛盾。直属文の無い中間トラック（`tests/top.spec.ts:191` が「祖先は全部開始可能」と固定）が realistic な入力で、空のトラックを押すとサブツリー分のセッションが始まるのに `0文` と出ていた |
+| 10 | **復習アクションは付けない**（session 内 summary の既存 `retry-failed-btn` はそのまま） | 用途は苦手文の特定まで。「間違えた文だけやり直す」は既に summary に存在する |
+| 11 | **`SentenceStat` は `lastScore` と `lastPracticedAt` だけ**持つ。`passes` / `bestScore` は持たない | 決定事項 4 で合格は導出するので両方とも死んだフィールドになる。書かれるが読まれないコードは作らない |
+| 12 | 履歴セクション見出しの件数は**記録済みセッション件数**。累積の単位は「のべ N 文」 | `sessions.length` と混同しない。文の累計は `attempts`（試行回数）合計なので「文」ではなく「のべ」 |
 
 ## データモデル
 
@@ -153,31 +154,42 @@ export function computeNodeStats(
 ): NodeStats
 ```
 
-### 表示集合 — 既存規約を壊さない
+### 表示集合 — 1 系統、サブツリー一本
 
-集計する対象は**その行が今文数を表示しているのと同じ集合**にする。既存の実装と一致:
+集計する対象は**その行が文数を表示しているのと同じ集合**にする。それは `getNodeSentences(nodeId, …)`
+が返すもの、つまり**そのノードで練習したときに実際に回ってくる文**:
 
-| 行 | 表示集合 | 既存の対応 |
+| 行 | 表示集合 | `練習` ボタンの基準 |
 |---|---|---|
-| 章 | `getNodeSentences(chapterId, ...)` = **サブツリー全体** | `chapterTotal()`（`+page.svelte:68-70`） |
-| トラック | `sentences.filter(s => s.trackId === trackId)` = **直属のみ** | `ownCount()`（`+page.svelte:63-66`） |
+| 章 | `getNodeSentences(chapterId, …)` = サブツリー全体 | `canPractice` = 同じ集合が非空 |
+| トラック | `getNodeSentences(trackId, …)` = サブツリー全体（**直属ではない**） | `canPractice` = 同じ集合が非空 |
 
 **これが重要**: `getNodeSentences` はトラックに対してもサブツリーを返す
-（`sentences.ts:589-596` — `getNodeDescendantTrackIds` のスコープで絞っている）。もし `total` に
-サブツリー長を使いつつドットは直属だけだと、同じ行の中で `N/M` の `M` とドット数が合わなくなる。
-`total` / `passed` / `hard` / `avgLastScore` / `lastPracticedAt` / `dots` は**全て同じ表示集合**で
-統一する。集約関数は 1 系統 only（`allSentences` と `ownSentences` を両方取ると 2 系統になる）。
+（`sentences.ts:589-596` — `getNodeDescendantTrackIds` のスコープで絞っている）。かつ
+`/practice?node=` も `getNodeSentences` を回ogenes ので、**行の `M` は実際のセッション長と一致する**。
+
+旧的設計（章=サブツリー / トラック=直属）では、直属文の無い中間トラックが `0文` の横で練習ボタンを
+出していた（押すとサブツリー分のセッションが始まる）。AGENTS.md が禁じる「`0文` なのに `練習` ボタン」
+の矛盾そのものなので廃止した。`ownCount()` / `chapterTotal()` は削除し、`NodeStats.total` に一本化する。
+
+`total` / `passed` / `hard` / `avgLastScore` / `lastPracticedAt` / `dots` は**全て同じ集合**で統一する。
+集約は 1 系統のみ（`displaySentencesByNode` のような中間 map は不要 — `nodeSentences()` が既に
+その役割を持つ）。
 
 `dots` は `isChapter` なら `[]`、トラックなら表示集合を `order` 昇順で `DotState[]` にする。
 `total === 0` のときは `dots` も `[]`（空行を作らない）。
 
 ### 1 系統の規約
 
-`src/routes/+page.svelte` に既存の `sentencesByNode`（`:48-57`）と**並列に** `statsByNode` を
-`$derived.by` で 1 度だけ作り、**合格数・総数・平均・苦手数・最終練習日・ドット列の全て**をここから
-供給する。`displaySentencesByNode` は `sentencesByNode` から導出する
-（章 → そのまま / トラック → `s.trackId === nodeId` で 1 回だけ filter し、結果を cache する）。
-既存の `ownCount()` / `chapterTotal()` はこの cache を読む形に置き換える。
+`src/routes/+page.svelte` の既存の `sentencesByNode`（`:48-57`）をそのまま使い、`statsByNode` を
+`$derived.by` で 1 度だけ作る。**合格数・総数・平均・苦手数・最終練習日・ドット列の全て**をここから
+供給する。`nodeStats(id)` は `statsByNode.get(id)` を引くだけ。`displaySentencesByNode` のような
+中間 map は作らない — `nodeSentences()` が既にその役割を持つ。
+
+`ownCount()` / `chapterTotal()` は**削除**する（呼び出し元が無く、同じ数値は `NodeStats.total` から取れる）。
+
+`canPractice()` は**書き換えない**。`nodeSentences(nodeId).length > 0` は行の `M > 0` と完全に一致するので
+2 系統にならない。
 
 ## トップページ UI
 
@@ -228,9 +240,11 @@ export function computeNodeStats(
 ```
 
 `track-card-count`（`12文`）を `12/12 合格 · 94%` に置き換える（`total === 0` は従来文言のまま）。
-ドットは表示集合 = **直属のみ**なので、既存の `ownCount()` と同じ規則になる。
+ドットは表示集合 = **サブツリー**（practice 順 = pre-order）。直属文の無い中間トラックは
+`0/1 合格 · 0%` + ドット 1 個になり、押いた時のセッション長と一致する。
 
-ドットは `flex flex-wrap gap-[3px]`。1 行に約 22 個入り、トラックが 20 文を超えても折り返すだけで破綻しない。
+ドットは `flex flex-wrap gap-[3px]`。1 行に約 22 個入り、サブツリーが 20 文を超えても折り返すだけで
+破綻しない（子トラックを持つ親トラックはドット Preliminary になるが、それは章と同じトレードオフ）。
 色: `passed` = `bg-success` / `hard` = amber / `untouched` = `bg-border`。
 
 未着手ノード（`practiced === 0`）は `0/N 合格 · 0%` + 進捗バー 0% のみ。
@@ -387,9 +401,10 @@ assert していない）。
   文統計には合格状態を持たない（導出する）ので、`passes` のような混同点自体が無い
 - `retryFrom` 設定で「もう一度試す」から再採点した場合も `doTranscribe` を通るので
   文統計の `attempts` は試行回数だけ積まれる（正しい）
-- `sentences.ts:589-596` の `getNodeSentences` はトラックにサブツリーを返す。既存の `ownCount()` が
-  直属で绞っているのと同じ差额建模。**新コードで `getNodeSentences` の結果をそのままトラック行の
-  `total` に使わないこと**（.dot 数と `M` が合わなくなる）
+- `sentences.ts:589-596` の `getNodeSentences` はトラックにもサブツリーを返す。**これが正** —
+  `/practice?node=` も `getNodeSentences` を回るので、行の `M` は実際のセッション長と一致する。
+ 従来の `ownCount()` が直属で絞っていたのは別 subset の誤りだった（決定事項 9）。
+  行の `total` にもドットにも `getNodeSentences` の結果をそのまま使う
 - AGENTS.md のレイアウト規約（`h-dvh` / `action-zone`）は `/practice` 側の話。トップページは通常の
   document スクロールなので影響を受けない
 - AGENTS.md のディレクトリ地図に `src/lib/history.ts` を追記する
