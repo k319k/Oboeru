@@ -1712,6 +1712,21 @@ git commit -m "feat(top): add streak pill and collapsible session history"
 	await expect(e2eChapter).toContainText('0/1 合格');
 ```
 
+- [ ] **Step 3b: 履歴リストの取得元を 1 本化する（任意だが推奨）**
+
+`src/routes/+page.svelte` の履歴セクションで、描画するリストは `getSessions(historyLimit)`（モジュール
+内 in-memory キャッシュ経由）からの読みで、見出しの件数と「残り N 件」は `history` スナップショット
+（`loadHistory()` のストレージ直読み）から来ている。現状は同じタブしか書かないので両者は必ず一致するが、
+書き込みが 2 系統あると、将来の変更で「残り N 件」が嘘になる余地がある。`history.sessions` を
+そのままスライスすれば seam ごと消える:
+
+```ts
+			{@const visible = history.sessions.slice(0, historyLimit)}
+```
+
+`getSessions` の import が不要になる。`top.spec.ts` の 2 アサーションの更新（Step 1〜3）と
+併せて行い、`npm run check` を通すこと。
+
 - [ ] **Step 4: 2 つの spec を走らせる**
 
 Run: `npx playwright test tests/top.spec.ts tests/e2e-full.spec.ts --workers=1 --reporter=list`
@@ -1812,6 +1827,9 @@ const HISTORY_SEED = {
 
 `tests/a11y.spec.ts` の `test('top page (seeded) — light & dark + card ▶ 44px', ...)` の直後に追加する。
 
+import に `seedHistory` を追加する（`tests/a11y.spec.ts:4` の `import { gotoWithSeed } from './helpers';` を
+`import { gotoWithSeed, seedHistory } from './helpers';` に変更）。
+
 ```ts
 	test('top page (history seeded, section open) — light & dark', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
@@ -1829,7 +1847,64 @@ const HISTORY_SEED = {
 	});
 ```
 
-import に `seedHistory` を追加する（`tests/a11y.spec.ts:4` の `import { gotoWithSeed } from './helpers';` を `import { gotoWithSeed, seedHistory } from './helpers';` に変更）。
+**注意**: `tests/a11y.spec.ts` の `expectTapTargets` は **log のみ**（`a11y.spec.ts:131-135` のコメント
+「Log-only here」）。**実アサーションは `tests/responsive.spec.ts:136-138`**。なので 44px を本当に
+ゲートするには Step 3b が要る。
+
+- [ ] **Step 3b: 履歴シード済みトップページの 44px を responsive spec で assert する**
+
+`tests/responsive.spec.ts` に追加する。こちらは `expect(bad).toHaveLength(0)` で**失敗する**ので、
+履歴セクションの toggle と「さらに表示」が 44px を切れば緑にならない。
+
+`tests/responsive.spec.ts` の 390px _Id_ の test 群の最後（:top page の 390px テストの直後）に追加する。
+ファイル先頭の import に `seedHistory` を追加する（`./helpers` から）。
+
+```ts
+	test('top page with history open — all tap targets >= 44px', async ({ page }) => {
+		await gotoWithSeed(page, { chapters: [{ id: 'ch-1', name: '章', parentId: null, order: 1 }], tracks: [], sentences: [] });
+		await seedHistory(
+			page,
+			{
+				version: 1,
+				sentences: {},
+				sessions: Array.from({ length: 25 }, (_, i) => ({
+					id: 's' + i,
+					nodeId: 'ch-1',
+					nodeName: '章',
+					startedAt: Date.now() - i * 86400000,
+					endedAt: Date.now() - i * 86400000,
+					durationMs: 1000,
+					attempted: 1,
+					passedSentences: 1,
+					totalScore: 90,
+					skipped: 0,
+					endedEarly: false
+				}))
+			},
+			{ open: true }
+		);
+		await expect(page.getByTestId('history-log')).toBeVisible();
+		await expect(page.getByTestId('history-more')).toBeVisible();
+
+		const bad = await checkTapTargets(page);
+		expect(bad, `/ history: expected all tap targets >= 44px, got ${bad.length}`).toHaveLength(0);
+	});
+```
+
+`checkTapTargets` が `tests/responsive.spec.ts` のモジュール内 define されているか確認してから使う。
+無ければ、同じ関数を `tests/helpers.ts` に移すか、`responsive.spec.ts` 内の既存関数をこの test から
+呼べる形にする（**既存の tap-target テストを壊さないこと**）。
+
+**さらに**: 同じ test で**ページ横スクロールが出ないこと**も確認する（ピルは `self-start`、
+履歴行は `truncate` 済みだが、25 行が縦に伸びるのは問題外なので縦スクロールは許容）。
+
+```ts
+		const overflow = await page.evaluate(
+			() => document.documentElement.scrollWidth - document.documentElement.clientWidth
+		);
+		expect(overflow, '/ history: horizontal overflow at 390px').toBe(0);
+	});
+```
 
 - [ ] **Step 4: a11y spec を走らせる**
 
