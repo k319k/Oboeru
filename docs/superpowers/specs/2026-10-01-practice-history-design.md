@@ -71,7 +71,7 @@ export interface SessionRecord {
   endedAt: number;         // epoch ms
   durationMs: number;
   attempted: number;       // 採点試行回数（再挑戦も加算。既存 completedCount と同じ定義）
-  passedSentences: number; // distinct 合格文数（既存 passedIds.length と同じ定義）
+  passedSentences: number; // distinct 合格文数。**このマウント内**の passedIds.length（復元セッションは §既知の制限 を参照）
   totalScore: number;      // 採点された finalScore の合計
   skipped: number;         // 既存 skippedCount
   endedEarly: boolean;     // summary に到達せず終了したか（既存 endedEarly を流用）
@@ -205,7 +205,12 @@ export function computeNodeStats(
 └──────────────────────────────────┘
 ```
 
-- 連続日数 = 文統計の `lastPracticedAt` をローカル日（`YYYY-MM-DD`）の集合にし、**今日を含む**降順連続の長さ
+- 連続日数 = **文統計の `lastPracticedAt` の日 ∪ セッション行の `startedAt` の日**をローカル日の集合にし、**今日を含む**降順連続の長さ。
+  **和集合 MUST**（2026-10-01 の全体レビューで修正）。文統計だけの集合だと、同じ 3 文を 5 日連続で練習した場合に
+  各文の直近 stamp が全部今日になって集合が 1 要素に潰れ、ヘッドラインが `連続 1 日` のままになる
+  （修正前を実測: `days: 1, 0, 0, 0, 0`）。同じ章の繰り返しは暗記アプリの本命の用法。セッション行は append-only で
+  各行が自分の `startedAt` を持つので日ごとのログになる。和集合は損失ゼロ — タブ強制終了で失われた行は
+  その日の文統計でカバーされる。シグネチャ: `computeStreak(stats, sessions, now)`（第 2 引数は省略不可）
 - **0 日でも描画する**（`連続 0 日`）。5 日連続で練習していた人が 6 日目に開いてピルが消えるのは通常の
   ストリーク UX と逆で、「継続を保つ」目的を壊す。0 日 = 昨日まで練習して今日はまだ、という情報が残る
 - のべ文数 = **全文統計の `attempts` 合計**。`sessions` の合計ではない（セッション record はタブ強制終了で
@@ -248,6 +253,11 @@ export function computeNodeStats(
 ドットは `flex flex-wrap gap-[3px]`。1 行に約 12 個入り（実測。展開トグルと練習ボタンが横幅を取る）、サブツリーが 12 文を超えても折り返すだけで
 破綻しない（子トラックを持つ親トラックはドット Preliminary になるが、それは章と同じトレードオフ）。
 色: `passed` = `bg-success` / `hard` = amber / `untouched` = `bg-border`。
+  **3 色とも条件付きクラスにして、静的な base クラスを並べてはいけない**（2026-10-01 の全体レビューで実測）。
+  Tailwind の色 utility は全部 `utilities` レイヤーの同一詳細度なので、勝者は生成 CSS のソース順であって
+  テンプレート上の属性順ではない。`class="… bg-border"` + `class:bg-amber-500` の形では実測で `bg-border` が勝ち、
+  **苦手と未着手がピクセル同一の灰色**になっていた（`data-dot` を読む既存テストは全部緑のままだった）。
+  検証は `getComputedStyle(el).backgroundColor` でクラス/値レベルで行うこと。
 
 **ドットは常に描く**（未着手ノードは全部灰）。variant D を選んだ価値が「灰 = どこが未着手か」
 なので、`{#if practiced > 0}` でゲートすると (a) fresh install で「未着手」の情報が一切出ず、
@@ -334,8 +344,17 @@ function beginSession(): void {
 - `attempted === 0` のセッションは記録しない（開いてすぐ閉じただけの閲覧を履歴に載せない）
 - 記録対象は `sessionNodeId` が解決済みで `sessionStartedAt !== null` のときだけ
 
-**既知の残余**: OS にタブを強制終了させた場合（`onDestroy` も `summary` も走らない）、**そのセッション行だけ消える**
-（文統計は採点ごとに書かれているので失われない）。1 文も採点していないなら残るべきものが無いので実害は無い。
+**既知の残余**:
+- OS にタブを強制終了させた場合（`onDestroy` も `summary` も走らない）、**そのセッション行だけ消える**
+  （文統計は採点ごとに書かれているので失われない）。1 文も採点していないなら残るべきものが無いので実害は無い
+- **リロード復元したセッションの行は `passedSentences` を控えめに書く**（2026-10-01 の全体レビューで記録）。
+  `practice-progress.ts` は `passedIds` を永続化しないので復元時の `passedIds` は空で、
+  `attempted` / `totalScore` はリロード前後の両方を含むのに `passedSentences` は復元後の合格だけを数える。
+  `startedAt` は `applyRestore` が `saved.savedAt` に上書きするので `durationMs` は正しく、矛盾は合格文数だけ。
+  `passedIds` の永続化はスコープ外（実害は見た目だけ）。E2E `a resumed session keeps the original start time` が
+  `passedSentences === 1` を pin している
+- **`endedEarly` は「終了」ボタンで停止した時だけ立つ**。ブラウザ「戻る」などのクライアントサイド遷移で離脱した
+  セッションの行は `途中で終了` を出さない（最後まで終えた行と区別できない）
 
 ## エラー処理
 

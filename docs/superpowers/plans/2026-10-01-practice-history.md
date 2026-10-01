@@ -22,6 +22,18 @@
 - **ドット列は 390px で 1 行に約 12 個**。`flex flex-wrap` で折り返す。章行にはドットを出さない
 - ** コメントは書かない**（既存コードのコメントの書き方に合わせる。ただし「why」を説明する設計コメントは AGENTS.md の流儀に従う）
 
+
+## ⚠ 2026-10-01 全体レビューによる訂正
+
+この計画は**実行済み**の記録として残っている。ただし以下の 2 箇所は計画どおりに実装すると**不具合になるので、
+実装・再実装のときはこの節の指示で上書きすること**（コードは修正後の姿に直済み）。
+
+| 場所 | 計画の誤り | 正しい姿 |
+|---|---|---|
+| `computeStreak`（Task 1 Step / Task 4 Step 3） | シグネチャ `computeStreak(stats, now)`、日集合は文統計の `lastPracticedAt` のみ | **`computeStreak(stats, sessions, now)`**、日集合は文統計の日と `sessions[].startedAt` の日の**和集合**。文統計だけの集合では、同じ章を 5 日連続で練習すると各文の直近 stamp が全部今日になり集合が 1 要素に潰れる（実測 `days: 1, 0, 0, 0, 0`）。同じ章の繰り返しは暗記アプリの本命の用法 |
+| ドットの span（Task 4 Step 4） | `class="size-[7px] rounded-[2px] bg-border"` + `class:bg-success` / `class:bg-amber-500` | **3 色とも条件付き**（`class:bg-border={dot==='untouched'}` / `class:bg-success={dot==='passed'}` / `class:bg-amber-500={dot==='hard'}`）。静的 base を条件付きで上書きする形は、Tailwind の同一詳細度の `utilities` レイヤーで**生成 CSS のソース順が勝つ**ため、実測で苦手と未着手がピクセル同一の灰色になっていた |
+
+
 ## ファイル構成
 
 | ファイル | 責務 |
@@ -598,6 +610,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function computeStreak(
 	stats: Readonly<Record<string, SentenceStat>>,
+	sessions: readonly SessionRecord[],
 	now: number = Date.now()
 ): StreakInfo {
 	const days = new Set<number>();
@@ -605,6 +618,12 @@ export function computeStreak(
 	for (const stat of Object.values(stats)) {
 		totalAttempts += stat.attempts;
 		if (stat.lastPracticedAt > 0) days.add(localDayKey(stat.lastPracticedAt));
+	}
+	// The session rows are the per-DAY log; the sentence stats are not — each
+	// stat keeps only its most recent practice, so a repeated chapter collapses
+	// the sentence side to a single day. The union loses nothing.
+	for (const session of sessions) {
+		if (session.startedAt > 0) days.add(localDayKey(session.startedAt));
 	}
 	if (days.size === 0) return { days: 0, totalAttempts: 0 };
 
@@ -656,7 +675,7 @@ Task 1 で実装した純粋関数の振る舞いを固定する。**表示集�
 - Modify: `src/lib/history.test.ts`（末尾に describe を追加）
 
 **Interfaces:**
-- Consumes: Task 1 の `computeNodeStats(sentences, isChapter, stats, threshold)` / `computeStreak(stats, now)` / `formatRelativeDay(ts, now)` / `type NodeStats` / `type DotState` / `type SentenceStat`
+- Consumes: Task 1 の `computeNodeStats(sentences, isChapter, stats, threshold)` / `computeStreak(stats, sessions, now)` / `formatRelativeDay(ts, now)` / `type NodeStats` / `type DotState` / `type SentenceStat`
 - Produces: なし（テストのみ）
 
 - [ ] **Step 1: テストヘルパーを文件的先頭に足す**
@@ -756,31 +775,31 @@ describe('computeStreak', () => {
 	const now = new Date(2026, 9, 1, 12, 0, 0).getTime();
 
 	it('is zero with no stats at all', () => {
-		expect(H.computeStreak({}, now)).toEqual({ days: 0, totalAttempts: 0 });
+		expect(H.computeStreak({}, [], now)).toEqual({ days: 0, totalAttempts: 0 });
 	});
 
 	it('counts a single day as 1', () => {
-		expect(H.computeStreak({ a: stat(90, now) }, now).days).toBe(1);
+		expect(H.computeStreak({ a: stat(90, now) }, [], now).days).toBe(1);
 	});
 
 	it('counts consecutive days ending today', () => {
 		const stats = { a: stat(90, now), b: stat(90, now - day), c: stat(90, now - 2 * day) };
-		expect(H.computeStreak(stats, now).days).toBe(3);
+		expect(H.computeStreak(stats, [], now).days).toBe(3);
 	});
 
 	it('still counts yesterday when nothing was practised today', () => {
 		const stats = { a: stat(90, now - day), b: stat(90, now - 2 * day) };
-		expect(H.computeStreak(stats, now).days).toBe(2);
+		expect(H.computeStreak(stats, [], now).days).toBe(2);
 	});
 
 	it('breaks on a gap day', () => {
 		const stats = { a: stat(90, now), b: stat(90, now - 3 * day) };
-		expect(H.computeStreak(stats, now).days).toBe(1);
+		expect(H.computeStreak(stats, [], now).days).toBe(1);
 	});
 
 	it('sums attempts across every stat', () => {
 		const stats = { a: stat(90, now, 5), b: stat(90, now, 2) };
-		expect(H.computeStreak(stats, now).totalAttempts).toBe(7);
+		expect(H.computeStreak(stats, [], now).totalAttempts).toBe(7);
 	});
 });
 
@@ -1189,7 +1208,8 @@ git commit -m "feat(practice): record sentence stats and settle the session on u
 						>
 							{#each nodeStats(track.id).dots as dot, i (i)}
 								<span
-									class="size-[7px] rounded-[2px] bg-border"
+									class="size-[7px] rounded-[2px]"
+									class:bg-border={dot === 'untouched'}
 									class:bg-success={dot === 'passed'}
 									class:bg-amber-500={dot === 'hard'}
 									data-dot={dot}
@@ -1375,7 +1395,7 @@ git commit -m "feat(top): show per-node progress, weak-sentence dots and last-pr
 - Modify: `src/routes/+page.svelte`
 
 **Interfaces:**
-- Consumes: Task 1 の `computeStreak(stats, now)` / `getSessions(limit)` / `loadHistoryUiState()` / `saveHistoryUiState(state)` / `type SessionRecord`
+- Consumes: Task 1 の `computeStreak(stats, sessions, now)` / `getSessions(limit)` / `loadHistoryUiState()` / `saveHistoryUiState(state)` / `type SessionRecord`
 - Produces: なし（ページ内のみ）
 
 - [ ] **Step 1: state を追加する**
@@ -1408,7 +1428,7 @@ Task 4 Step 2 の effect に 1 行足す。import に `computeStreak` / `getSess
 `history` 読み込みに**反応する `$derived`** にする:
 
 ```ts
-	let streak = $derived(computeStreak(history.sentences, nowMs));
+	let streak = $derived(computeStreak(history.sentences, history.sessions, nowMs));
 ```
 
 `streak.days` / `streak.totalAttempts` はそのまま参照でよい（`$derived` なので参照だけで更新される）。
