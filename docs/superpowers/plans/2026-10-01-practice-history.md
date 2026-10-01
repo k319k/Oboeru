@@ -1762,22 +1762,37 @@ git commit -m "test(top): update sentence-count assertions to the progress forma
 `src/tests/helpers.ts` 末尾（`gotoWithSeed` の閉じ括弧の後）に追加する。`tests/helpers.ts:7-18` の `gotoWithSeed` は `oboeru:v1` しか書かないので、履歴キーは別 함수で扱う。
 
 ```ts
-/** Write raw history payloads (the practice screen owns the real shape). */
-export async function seedHistory(
-	page: Page,
-	history: unknown,
-	ui?: unknown
-): Promise<void> {
+/**
+ * Write the raw practice-history payloads. `gotoWithSeed` only ever writes
+ * `oboeru:v1`, so the history keys need their own helper — without this the
+ * streak pill, dot rows and the collapsible history section never render in a
+ * test at all. The real shapes are owned by `src/lib/history.ts`; this stays
+ * `unknown` on purpose so a seed can also carry deliberately-broken data.
+ *
+ * Call AFTER `gotoWithSeed` — this helper owns the reload that makes the app
+ * re-read storage.
+ */
+export async function seedHistory(page: Page, history: unknown, ui?: unknown): Promise<void> {
 	await page.evaluate(
 		({ h, u }) => {
-			if (h !== null) localStorage.setItem('oboeru:history:v1', JSON.stringify(h));
-			if (u !== null) localStorage.setItem('oboeru:history-ui:v1', JSON.stringify(u));
+			localStorage.setItem('oboeru:history:v1', JSON.stringify(h));
+			// `u == null` (not `!== null`) so an omitted ui never writes the
+			// literal string "undefined" over a valid key.
+			if (u != null) localStorage.setItem('oboeru:history-ui:v1', JSON.stringify(u));
 		},
 		{ h: history, u: ui ?? null }
 	);
 	await page.reload();
 }
 ```
+
+> **注意**: `history` は無条件に書く / `if (h !== null)` の守卫は危険
+> `history` を `if (h !== null)` で守ると、引数を省略して `undefined` が来たとき
+> `JSON.stringify(undefined) === undefined` なので
+> **キーへ文字列 `"undefined"` が書き込まれる**（読込時は `JSON.parse` が
+> 失敗して `emptyData()` に落ちるため、原因の検出が遅れる）。
+> `null` しか捕まえないこの守卫は `history` に対してほぼ無意味。
+> 省略されやすい `ui` 側だけを緩い等号 `u != null` で守る。
 
 **注意**: `gotoWithSeed` は**既にリロードする**ので、呼び順は `await gotoWithSeed(page, SEED); await seedHistory(page, HISTORY_SEED, { open: true });`（`seedHistory` 自身が最後のリロード擔う）。
 

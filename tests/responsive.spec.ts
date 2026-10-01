@@ -54,27 +54,77 @@ const TALL_SEED = {
 const TALL_TRANSCRIPT = TALL_LONG.replace(/[0-9]/g, '').slice(0, Math.floor(TALL_LONG.length * 0.75));
 
 /**
- * 25 sessions on one chapter. Above the UI's initial `historyLimit` of 20, so
- * the section renders 20 rows AND the さらに表示 button — without the button
- * the `history-more` tap target is never in the DOM and the assertion below
- * would pass vacuously.
+ * The history section at 390px, with every part of the top page that the
+ * content tree feeds rendered. Four deliberate choices, each one guarding
+ * something the previous seed could not see:
+ *
+ * 1. **25 sessions** — above the UI's initial `historyLimit` of 20, so the
+ *    section renders 20 rows AND the さらに表示 button. Below that the button
+ *    is never in the DOM and its tap target cannot be gated.
+ * 2. **A 120-character unbreakable name on a node that does not exist**
+ *    (`HISTORY_LONG_NAME` / `gone-node`). Japanese wraps between characters, so
+ *    an ordinary name can never reach the horizontal overflow the gate exists
+ *    to catch; only a long Latin token can. A missing node is what forces the
+ *    *stored* name to be the one displayed (and `(削除済み)` to render), so the
+ *    long string is genuinely on screen rather than shadowed by a live name.
+ * 3. **Stale `nodeName`s on the live sessions.** `sessionName` prefers the
+ *    current chapter/track name, so a seed whose stored name equals the live
+ *    one proves nothing — `nodeName: '章'` against a chapter also named `章` is
+ *    dead data. `保存時の旧名` can never be displayed, and the test asserts so.
+ * 4. **Real sentences + sentence stats.** `streak.totalAttempts` is the sum of
+ *    the stats' attempts, so `sentences: {}` left the streak pill unrendered and
+ *    the dot row / progress bar absent. h-1..h-5 give 2 passed / 2 hard /
+ *    1 untouched against the default threshold of 80, so the chapter row's
+ *    progress bar and the track row's dots are both non-empty.
  */
+const HISTORY_LONG_NAME = 'A'.repeat(120);
+/** Stored but never displayed — the live chapter name wins. */
+const HISTORY_STALE_NAME = '保存時の旧名';
+/** One clock read for every offset, so a midnight crossing cannot skew the day keys. */
+const HISTORY_NOW = Date.now();
+const HISTORY_DAY_MS = 86_400_000;
+
+/** Chapter + track + sentences, so the tree rows have real denominators. */
+const HISTORY_CONTENT = {
+	chapters: [{ id: 'ch-1', name: '現在の章名', parentId: null, order: 1 }],
+	tracks: [{ id: 'tr-1', chapterId: 'ch-1', parentId: null, order: 1, name: '現在のトラック名' }],
+	sentences: [
+		{ id: 'h-1', chapterId: 'ch-1', trackId: 'tr-1', text: 'こんにちは。', language: 'ja', order: 1 },
+		{ id: 'h-2', chapterId: 'ch-1', trackId: 'tr-1', text: 'お元気ですか。', language: 'ja', order: 2 },
+		{ id: 'h-3', chapterId: 'ch-1', trackId: 'tr-1', text: 'また明日。', language: 'ja', order: 3 },
+		{ id: 'h-4', chapterId: 'ch-1', trackId: 'tr-1', text: 'さようなら。', language: 'ja', order: 4 },
+		{ id: 'h-5', chapterId: 'ch-1', trackId: 'tr-1', text: 'Hello there.', language: 'en', order: 5 }
+	]
+};
+
 const HISTORY_SEED = {
 	version: 1,
-	sentences: {},
-	sessions: Array.from({ length: 25 }, (_, i) => ({
-		id: 's' + i,
-		nodeId: 'ch-1',
-		nodeName: '章',
-		startedAt: Date.now() - i * 86400000,
-		endedAt: Date.now() - i * 86400000,
-		durationMs: 1000,
-		attempted: 1,
-		passedSentences: 1,
-		totalScore: 90,
-		skipped: 0,
-		endedEarly: false
-	}))
+	// Scores chosen against the default threshold of 80: 96/88 pass, 58/71 are
+	// hard, and h-4 has no stat at all so its dot stays untouched.
+	sentences: {
+		'h-1': { attempts: 3, lastScore: 96, lastPracticedAt: HISTORY_NOW },
+		'h-2': { attempts: 1, lastScore: 58, lastPracticedAt: HISTORY_NOW },
+		'h-3': { attempts: 2, lastScore: 71, lastPracticedAt: HISTORY_NOW - HISTORY_DAY_MS },
+		'h-5': { attempts: 1, lastScore: 88, lastPracticedAt: HISTORY_NOW - HISTORY_DAY_MS }
+	},
+	sessions: Array.from({ length: 25 }, (_, i) => {
+		// The three newest rows carry the adversarial long name; row 3 onwards
+		// are live nodes, so both display paths sit inside the 20 rendered.
+		const deleted = i < 3;
+		return {
+			id: 's' + i,
+			nodeId: deleted ? 'gone-node' : i === 3 ? 'tr-1' : 'ch-1',
+			nodeName: deleted ? HISTORY_LONG_NAME : HISTORY_STALE_NAME,
+			startedAt: HISTORY_NOW - i * HISTORY_DAY_MS,
+			endedAt: HISTORY_NOW - i * HISTORY_DAY_MS + 1000,
+			durationMs: 1000,
+			attempted: 1,
+			passedSentences: 1,
+			totalScore: 90,
+			skipped: i === 3 ? 2 : 0,
+			endedEarly: i === 3
+		};
+	})
 };
 
 /** The two buttons the history section owns, measured for a precise failure message. */
@@ -345,30 +395,81 @@ test.describe('Responsive layout (390px)', () => {
 	});
 
 	/**
-	 * The two gates the top-page scans above cannot cover, because they seed
+	 * The three gates the top-page scans above cannot cover, because they seed
 	 * only `oboeru:v1` and so never render the new UI:
 	 *
+	 *   - the seed guards below prove the streak pill, the 20 history rows and
+	 *     さらに表示 are actually on screen (otherwise every other assertion
+	 *     here would pass over zero elements),
+	 *   - `expectNoHorizontalOverflow` proves a 120-character unbreakable node
+	 *     name plus the streak pill cannot spill sideways at 390px. Japanese
+	 *     wraps between characters, so without the Latin token in HISTORY_SEED
+	 *     this gate would be measuring nothing,
 	 *   - `expectTapTargets` (asserting, unlike the a11y.spec.ts copy) proves
-	 *     the history toggle and さらに表示 are >= 44px at 390px,
-	 *   - `expectNoHorizontalOverflow` proves 25 long rows plus the streak pill
-	 *     do not spill sideways.
+	 *     the history toggle and さらに表示 are >= 44px at 390px.
 	 *
 	 * Reuses this file's own module-private helpers — no duplicated copy of
 	 * `checkTapTargets`, so the existing tap-target tests are untouched.
 	 */
 	test('top page with history open — no overflow, tap targets >= 44px', async ({ page }) => {
-		await gotoWithSeed(page, {
-			chapters: [{ id: 'ch-1', name: '章', parentId: null, order: 1 }],
-			tracks: [],
-			sentences: []
-		});
+		await gotoWithSeed(page, HISTORY_CONTENT);
 		await seedHistory(page, HISTORY_SEED, { open: true });
 
-		// Setup guards: an empty history renders no section at all, which would
-		// make every assertion below pass over zero elements.
+		// Setup guards: an empty history renders no section at all, and an empty
+		// `sentences` map leaves the streak pill unrendered (its totalAttempts is
+		// the sum of the stats' attempts). Either way the assertions below would
+		// pass vacuously.
 		await expect(page.getByTestId('history-log')).toBeVisible();
 		await expect(page.getByTestId('history-item')).toHaveCount(20); // historyLimit
 		await expect(page.getByTestId('history-more')).toBeVisible();
+		await expect(page.getByTestId('streak-pill')).toBeVisible();
+		await expect(page.getByTestId('track-dots')).toBeVisible();
+		await expect(page.getByTestId('chapter-progress')).toBeVisible();
+
+		// The headline gate first. Japanese wraps between characters, so only the
+		// Latin token in HISTORY_SEED can ever reach this — which is exactly why
+		// the overflow assertion, not the tap-target one, is what proves the seed
+		// is adversarial.
+		await expectNoHorizontalOverflow(page, '/ history open');
+		await expectTapTargets(page, '/ history open');
+
+		// Then prove the long name is really on screen and really is too long for
+		// its row. A seed whose stored name were shadowed by a live name (or
+		// dropped by a rename) would leave nothing to overflow, and the gate above
+		// would pass for the wrong reason.
+		const longRow = await page.evaluate(() => {
+			const el = document.querySelector('[data-testid="history-item-name"]');
+			if (!el) return null;
+			const r = el.getBoundingClientRect();
+			return {
+				text: el.textContent?.trim() ?? '',
+				clientWidth: el.clientWidth,
+				scrollWidth: el.scrollWidth,
+				right: r.right
+			};
+		});
+		expect(longRow, '/ history: the long node name must be rendered').not.toBeNull();
+		expect(
+			longRow!.text.length,
+			'/ history: the displayed name must be the 120-char stored name, not a live one'
+		).toBe(HISTORY_LONG_NAME.length);
+		expect(
+			longRow!.scrollWidth,
+			'/ history: the long name must genuinely exceed its row (nothing to prove otherwise)'
+		).toBeGreaterThan(longRow!.clientWidth);
+		expect(
+			Math.round(longRow!.right),
+			'/ history: the truncated name must stay inside the viewport'
+		).toBeLessThanOrEqual(390);
+
+		// `(削除済み)` rides OUTSIDE the truncated name: with a 120-char name it is
+		// the only thing telling the user the node is gone.
+		await expect(page.getByTestId('history-item').first()).toContainText('(削除済み)');
+		// Live name wins over the stored one — HISTORY_STALE_NAME must never show.
+		const rows = await page.getByTestId('history-item').allInnerTexts();
+		expect(rows.some((t) => t.includes('現在の章名'))).toBe(true);
+		expect(rows.some((t) => t.includes('現在のトラック名'))).toBe(true);
+		expect(rows.some((t) => t.includes(HISTORY_STALE_NAME))).toBe(false);
 
 		const boxes = await page.evaluate((ids) => {
 			const out: Record<string, { h: number; w: number } | null> = {};
@@ -382,15 +483,12 @@ test.describe('Responsive layout (390px)', () => {
 		logEvidence(
 			`\n=== history tap targets @390px: ` +
 				HISTORY_BUTTONS.map((id) => `${id}=${boxes[id] ? `${boxes[id]!.w}x${boxes[id]!.h}px` : 'MISSING'}`).join(', ') +
-				' ==='
+				` | long name: clientWidth=${longRow!.clientWidth} scrollWidth=${longRow!.scrollWidth} right=${Math.round(longRow!.right)} ===`
 		);
 		for (const id of HISTORY_BUTTONS) {
 			expect(boxes[id], `/ history: [data-testid="${id}"] must be rendered`).not.toBeNull();
 			expect(boxes[id]!.h, `/ history: ${id} height >= 44px`).toBeGreaterThanOrEqual(44);
 		}
-
-		await expectNoHorizontalOverflow(page, '/ history open');
-		await expectTapTargets(page, '/ history open');
 
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/top-history.png`, fullPage: true });
 	});

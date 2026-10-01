@@ -147,13 +147,21 @@
 		historyLimit += 20;
 	}
 
-	/** Current name when the node still exists, otherwise the captured one. */
-	function sessionNodeName(record: SessionRecord): string {
+	/**
+	 * The node's display name and whether it has since been deleted.
+	 *
+	 * Split into two fields rather than one assembled string so `(削除済み)` can
+	 * sit OUTSIDE the truncated name: with a long name the marker is the only
+	 * thing telling the user the chapter is gone, and a whole-line `truncate`
+	 * would cut it off. The live name wins when the node still exists, so a
+	 * rename overwrites the stored one on screen (spec §表示 2段).
+	 */
+	function sessionName(record: SessionRecord): { name: string; deleted: boolean } {
 		const live =
 			tracks.find((t) => t.id === record.nodeId)?.name ??
 			chapters.find((c) => c.id === record.nodeId)?.name;
-		if (live) return live;
-		return record.nodeName ? `${record.nodeName} (削除済み)` : '(削除済み)';
+		if (live) return { name: live, deleted: false };
+		return { name: record.nodeName, deleted: true };
 	}
 
 	function sessionAverage(record: SessionRecord): number {
@@ -417,10 +425,34 @@
 		{#if historyOpen}
 			<div id="history-log" class="flex flex-col gap-1 pt-2" data-testid="history-log">
 				{#each visible as record (record.id)}
-					<p class="text-sm text-muted-foreground" data-testid="history-item">
-						{formatStamp(record.startedAt)} · {sessionNodeName(record)} ·
-						{record.passedSentences} 文 合格 · 平均 {sessionAverage(record)}% ·
-						スキップ {record.skipped}{record.endedEarly ? ' · 途中で終了' : ''}
+					{@const session = sessionName(record)}
+					<!-- Two lines, because the row mixes one unbounded field with several
+					     bounded ones. Truncating the whole line would hide the score and
+					     the skip count — the reason a history row exists. Truncating only
+					     the name is safe because everything else on the second line is
+					     short by construction: `MM/DD HH:MM`, two counts, and 途中で終了
+					     (which wraps between kanji anyway). Same treatment as
+					     `chapter-name truncate` / `track-card-name truncate`: a
+					     `min-w-0` flex column with `truncate` on the name. `min-w-0` is
+					     load-bearing — without it a nowrap flex item's min-content width
+					     (a 120-char Latin name) refuses to shrink and pushes the whole
+					     document sideways instead of ellipsising. -->
+					<p
+						class="flex min-w-0 flex-col gap-0.5 text-sm text-muted-foreground"
+						data-testid="history-item"
+					>
+						<span class="flex min-w-0 items-center gap-1">
+							<span
+								class="min-w-0 flex-1 truncate font-medium"
+								data-testid="history-item-name">{session.name}</span
+							>
+							{#if session.deleted}<span class="shrink-0">(削除済み)</span>{/if}
+						</span>
+						<span>
+							{formatStamp(record.startedAt)} · {record.passedSentences} 文 合格 · 平均
+							{sessionAverage(record)}% · スキップ
+							{record.skipped}{record.endedEarly ? ' · 途中で終了' : ''}
+						</span>
 					</p>
 				{/each}
 				{#if visible.length < history.sessions.length}
