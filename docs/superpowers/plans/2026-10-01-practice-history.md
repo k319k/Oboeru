@@ -4,7 +4,7 @@
 
 **Goal:** 練習結果（スコア・合格/苦手・最終練習日・過去セッション）を localStorage に永続化し、トップページに行ごとの進捗・ドット・ストリーク・履歴ログを表示する。
 
-**Architecture:** `src/lib/history.ts` を新設し、既存 `src/lib/practice-progress.ts` と同じ契約（自己完結・全操作が `try/catch` でエラーを握り潰す）で永続化層と純粋な集計関数を提供する。書き込みは `practice/+page.svelte` の採点確定点と `onDestroy` のみ、読み取りはトップページのみ。集計は既存の `sentencesByNode` と並列に `displaySentencesByNode`（章=サブツリー/トラック=直属）→ `statsByNode` の 2 段で 1 度だけ計算し、全行が参照する（AGENTS.md の「1 系統」規約）。
+**Architecture:** `src/lib/history.ts` を新設し、既存 `src/lib/practice-progress.ts` と同じ契約（自己完結・全操作が `try/catch` でエラーを握り潰す）で永続化層と純粋な集計関数を提供する。書き込みは `practice/+page.svelte` の採点確定点と `summary` 到達時・`onDestroy` の両方、読み取りはトップページのみ。集計は既存の `sentencesByNode` と並列に `displaySentencesByNode`（章=サブツリー/トラック=直属）→ `statsByNode` の 2 段で 1 度だけ計算し、全行が参照する（AGENTS.md の「1 系統」規約）。
 
 **Tech Stack:** SvelteKit 5（runes: `$state` / `$derived.by` / `$effect` / `onDestroy`）、TypeScript、Tailwind CSS v4、vitest（`src/**/*.test.ts` のみ収集）、Playwright（`tests/**`）。
 
@@ -929,9 +929,11 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 
 ```ts
 	/**
-	 * Persist the finished session. Only called from onDestroy and from
-	 * retryFailedOnly() — never at summary, because the retry button starts
-	 * another session in this same mount and would double-count.
+	 * Persist the finished session. Called from retryFailedOnly(), from the
+	 * summary transition in the progress $effect, and from onDestroy —
+	 * onDestroy alone loses a session the user completed and then reloaded,
+	 * because a browser reload tears down the realm without running Svelte's
+	 * destroy hook. Nulling sessionStartedAt makes every later call a no-op.
 	 */
 	function settleSession(): void {
 		if (sessionStartedAt === null || !sessionNodeId) return;
@@ -2132,7 +2134,7 @@ git commit -m "test(history): cover progress, dots, threshold, streak and the se
 `AGENTS.md` の「採点パイプライン規約」節の末尾に追記する。
 
 ```md
-- **練習結果の記録** (`src/lib/history.ts`): 文統計は `doTranscribe` の採点確定点 (`practice/+page.svelte:747-755` の直後) で 1 文ごとに `recordSentenceAttempt`、セッション record は **`onDestroy` のみ**で `finalizeSession` (`summary` で確定しない — summary の「間違えた文だけやり直す」が同じマウント内で別セッションを开始するため二重計上になる)。`retryFailedOnly()` は `startSession()` を**呼ばない**ので、`beginSession()` で `sessionStartedAt` を再スタンプしないと不正データを書く
+- **練習結果の記録** (`src/lib/history.ts`): 文統計は `doTranscribe` の採点確定点 (`practice/+page.svelte:747-755` の直後) で 1 文ごとに `recordSentenceAttempt`、セッション record は **`summary` 到達時（進捗 `$effect` 内）と `onDestroy` の両方**で `finalizeSession` する。`onDestroy` はブラウザの reload / タブを閉じた時には**発火しない**（JS realm が破棄されるだけで Svelte の destroy hook が走らない）ので、summary での確定 indispensable であり、`onDestroy` は SvelteKit のリンク遷移やブラウザの「戻る」で**セッション途中離脱**した時の担当になる。`settleSession()` が `sessionStartedAt = null` で終わるので二重計上は起きない。`retryFailedOnly()` は `startSession()` を**呼ばない**ので、`beginSession()` で `sessionStartedAt` を再スタンプしないと不正データを書く
 - **合格状態は保存しない。** `SentenceStat` は `attempts` / `lastScore` / `lastPracticedAt` の 3 つだけ。合格/苦手/未着手は `lastScore` と**現在の** `threshold` から導出する (閾値を下げると進捗が動くのが正しい)
 - **章行とトラック行の文数の基準は混ぜない。** 章 = `getNodeSentences` のサブツリー、トラック = `s.trackId === trackId` の直属のみ。`getNodeSentences` は**トラックにもサブツリーを返す** (`sentences.ts`) ので、トラック行は必ず filter する。`displaySentencesByNode` がこの 1 系統を持ち、`statsByNode` がそこから集計する
 - **履歴はデバイスローカルのまま。** ロードマップ⑥ のクラウド同期対象に**含めない** (練習実績はマージ不能 — last-write-wins で上書きされる)
