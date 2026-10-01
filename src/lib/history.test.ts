@@ -59,8 +59,14 @@ function sent(id: string, order: number): Sentence {
 	return { id, chapterId: 'ch-1', trackId: 'tr-1', text: id, language: 'ja', order };
 }
 
-function stat(lastScore: number, at = 1000, attempts = 1): SentenceStat {
-	return { attempts, lastScore, lastPracticedAt: at };
+/** One sentence's stat. `scores` is the window, oldest first. */
+function stat(scores: number[], at = 1000, attempts = scores.length): SentenceStat {
+	return { attempts, scores, lastPracticedAt: at };
+}
+
+/** N copies of one score — the shape a repeated-drill sentence actually has. */
+function repeated(scoreValue: number, times: number): number[] {
+	return Array.from({ length: times }, () => scoreValue);
 }
 
 beforeEach(async () => {
@@ -113,7 +119,7 @@ describe('loadHistory — defaults and validation', () => {
 					endedEarly: false
 				}
 			],
-			sentences: { s1: { attempts: -1, lastScore: 80, lastPracticedAt: 5 } }
+			sentences: { s1: { attempts: -1, scores: [80, 80.9, -5], lastPracticedAt: 5 } }
 		});
 		const data = H.loadHistory();
 		expect(data.sessions[0].durationMs).toBe(0);
@@ -121,6 +127,7 @@ describe('loadHistory — defaults and validation', () => {
 		expect(data.sessions[0].passedSentences).toBe(2);
 		expect(data.sessions[0].skipped).toBe(0);
 		expect(data.sentences.s1.attempts).toBe(0);
+		expect(data.sentences.s1.scores).toEqual([80, 80, 0]);
 	});
 
 	it('truncates sessions to the newest 500, keeping newest-first order', () => {
@@ -166,17 +173,17 @@ describe('recordSentenceAttempt', () => {
 		H.recordSentenceAttempt('s1', 87, 1000);
 		expect(H.loadHistory().sentences.s1).toEqual({
 			attempts: 1,
-			lastScore: 87,
+			scores: [87],
 			lastPracticedAt: 1000
 		});
 	});
 
-	it('increments attempts and overwrites lastScore on later attempts', () => {
+	it('appends to the score window on later attempts, oldest first', () => {
 		H.recordSentenceAttempt('s1', 50, 1000);
 		H.recordSentenceAttempt('s1', 92, 2000);
 		expect(H.loadHistory().sentences.s1).toEqual({
 			attempts: 2,
-			lastScore: 92,
+			scores: [50, 92],
 			lastPracticedAt: 2000
 		});
 	});
@@ -186,8 +193,31 @@ describe('recordSentenceAttempt', () => {
 		H.recordSentenceAttempt('s2', 60, 1000);
 		H.recordSentenceAttempt('s1', 70, 2000);
 		const { sentences } = H.loadHistory();
-		expect(sentences.s1.lastScore).toBe(70);
-		expect(sentences.s2.lastScore).toBe(60);
+		expect(sentences.s1.scores).toEqual([50, 70]);
+		expect(sentences.s2.scores).toEqual([60]);
+	});
+
+	// The window has a bound, on BOTH sides. Without the write-side cap the
+	// persisted array grows without limit (localStorage quota, and the AGENTS.md
+	// ~80KB budget for 1000 sentences); without the read-side cap a hand-edited
+	// or future value decides the verdict. Asserting only the re-read shape
+	// would pass with the write cap deleted — loadHistory() re-clips — so the
+	// raw payload is pinned here as well.
+	it('keeps only the newest SCORE_WINDOW scores and drops the oldest', () => {
+		for (let i = 1; i <= 12; i++) H.recordSentenceAttempt('s1', i * 5, i * 1000);
+		const { sentences } = H.loadHistory();
+		expect(H.SCORE_WINDOW).toBe(10);
+		expect(sentences.s1.scores).toEqual([15, 20, 25, 30, 35, 40, 45, 50, 55, 60]);
+		expect(sentences.s1.scores).toHaveLength(H.SCORE_WINDOW);
+		const written = JSON.parse(ls.getItem(KEY) as string) as {
+			sentences: Record<string, { scores: number[] }>;
+		};
+		expect(written.sentences.s1.scores).toHaveLength(H.SCORE_WINDOW);
+		// The two oldest samples are gone from storage too, not just on read.
+		expect(written.sentences.s1.scores).not.toContain(5);
+		expect(written.sentences.s1.scores).not.toContain(10);
+		// attempts is cumulative and keeps counting past the window.
+		expect(sentences.s1.attempts).toBe(12);
 	});
 
 	it('never throws when localStorage rejects the write', () => {
@@ -200,12 +230,90 @@ describe('recordSentenceAttempt', () => {
 	it('stores 0 for a non-finite score instead of letting NaN reach the stats', () => {
 		H.recordSentenceAttempt('s1', Number.NaN, 1000);
 		const { sentences } = H.loadHistory();
-		expect(sentences.s1.lastScore).toBe(0);
+		expect(sentences.s1.scores).toEqual([0]);
 		// loadHistory() reads back 0 either way (null coerces to 0), so pin the
 		// written payload: an unguarded NaN is serialised as null, which leaves
 		// the cache saying NaN while storage says 0.
-		expect(ls.getItem(KEY)).toContain('"lastScore":0');
-		expect(H.computeNodeStats(SENTENCE_FIXTURE.filter((s) => s.id === 's1'), false, sentences, 80).avgLastScore).not.toBeNaN();
+		expect(ls.getItem(KEY)).toContain('"scores":[0]');
+		expect(H.computeNodeStats(SENTENCE_FIXTURE.filter((s) => s.id === 's1'), false, sentences, 80).avgScore).not.toBeNaN();
+	});
+});
+
+// MIGRATION. `HistoryData.version` stays 1: loadHistory() shrinks to the empty
+// default on a mismatch, so bumping it would discard every session row and
+// sentence stat the user has accumulated. The old shape is absorbed on read
+// instead — see readScores() in src/lib/history.ts.
+describe('loadHistory — the pre-window shape is absorbed, not discarded', () => {
+	const OLD_ENTRY = { attempts: 1, lastScore: 87, lastPracticedAt: 5000 };
+
+	it('reads a stored lastScore as a one-element window', () => {
+		seed({ version: 1, sessions: [], sentences: { s1: OLD_ENTRY } });
+		expect(H.loadHistory().sentences.s1).toEqual({
+			attempts: 1,
+			scores: [87],
+			lastPracticedAt: 5000
+		});
+	});
+
+	// The whole point of the shim: mean([87]) === 87, so the deploy changes
+	// nothing on screen. If the migration dropped the entry instead, or scored
+	// it 0, this row would read 0/1 合格 · 0% and every past sentence would
+	// silently become 苦手.
+	it('scores an absorbed entry exactly as it scored before the deploy', () => {
+		seed({ version: 1, sessions: [], sentences: { s1: OLD_ENTRY } });
+		const stats = H.loadHistory().sentences;
+		const node = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80);
+		expect(node.passed).toBe(1);
+		expect(node.hard).toBe(0);
+		expect(node.avgScore).toBe(87);
+		expect(node.minSamples).toBe(1);
+	});
+
+	it('prefers a real window over a stale lastScore on the same entry', () => {
+		seed({
+			version: 1,
+			sessions: [],
+			sentences: { s1: { attempts: 2, scores: [95, 40], lastScore: 40, lastPracticedAt: 1 } }
+		});
+		expect(H.loadHistory().sentences.s1.scores).toEqual([95, 40]);
+	});
+
+	it('keeps the attempts count, so のべ文数 does not move either', () => {
+		seed({
+			version: 1,
+			sessions: [],
+			sentences: { s1: { attempts: 12, lastScore: 91, lastPracticedAt: 1 } }
+		});
+		const stats = H.loadHistory().sentences;
+		expect(stats.s1.attempts).toBe(12);
+		expect(H.computeStreak(stats, [], Date.now()).totalAttempts).toBe(12);
+	});
+
+	// A stat with neither field is not a score of 95 to be recovered — there is
+	// nothing to recover. An empty window means 0 → 苦手, the direction that
+	// cannot invent a pass.
+	it('reads a stat carrying neither field as 苦手, not as a pass', () => {
+		seed({ version: 1, sessions: [], sentences: { s1: { attempts: 3 } } });
+		const stats = H.loadHistory().sentences;
+		expect(stats.s1.scores).toEqual([]);
+		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80).hard).toBe(1);
+	});
+
+	// A window longer than SCORE_WINDOW can only arrive from a hand-edited or
+	// future value; the read side must not hand back more than the verdict uses.
+	it('caps an over-long stored window to the newest SCORE_WINDOW', () => {
+		seed({
+			version: 1,
+			sessions: [],
+			sentences: {
+				s1: {
+					attempts: 14,
+					scores: Array.from({ length: 14 }, (_, i) => i * 10),
+					lastPracticedAt: 1
+				}
+			}
+		});
+		expect(H.loadHistory().sentences.s1.scores).toEqual([40, 50, 60, 70, 80, 90, 100, 110, 120, 130]);
 	});
 });
 
@@ -292,16 +400,14 @@ describe('computeNodeStats', () => {
 	// 2, 0, 1), so this test fails if a sort ever comes back: `order` is only
 	// meaningful inside one track, and the caller owns the display order.
 	it('preserves the input sequence verbatim, without re-sorting by order', () => {
-		const stats = {
-			s1: { attempts: 1, lastScore: 90, lastPracticedAt: 5 },
-			s3: { attempts: 2, lastScore: 40, lastPracticedAt: 9 }
-		};
+		const stats = { s1: stat([90], 5), s3: stat([40], 9, 2) };
 		const node = H.computeNodeStats(sentences, false, stats, 80);
 		expect(node.total).toBe(3);
 		expect(node.passed).toBe(1);
 		expect(node.hard).toBe(1);
 		expect(node.practiced).toBe(2);
-		expect(node.avgLastScore).toBe(65);
+		expect(node.avgScore).toBe(65);
+		expect(node.minSamples).toBe(1);
 		expect(node.lastPracticedAt).toBe(9);
 		// Input order s3 (40 → hard), s1 (90 → passed), s2 (no stat → untouched).
 		expect(node.dots).toEqual(['hard', 'passed', 'untouched']);
@@ -315,7 +421,7 @@ describe('computeNodeStats', () => {
 	it('keeps a two-track display set in pre-order, not in interleaved `order`', () => {
 		const parent = [sent('s1', 1), sent('s2', 2)];
 		const child = [{ ...sent('s3', 1), trackId: 'tr-child' }];
-		const stats = { s1: stat(92), s2: stat(92), s3: stat(40) };
+		const stats = { s1: stat([92]), s2: stat([92]), s3: stat([40]) };
 
 		const node = H.computeNodeStats([...parent, ...child], false, stats, 80);
 		expect(node.total).toBe(3);
@@ -325,19 +431,20 @@ describe('computeNodeStats', () => {
 	it('omits dots for chapters and reports nulls when nothing was practised', () => {
 		const node = H.computeNodeStats(sentences, true, {}, 80);
 		expect(node.dots).toEqual([]);
-		expect(node.avgLastScore).toBeNull();
+		expect(node.avgScore).toBeNull();
+		expect(node.minSamples).toBe(0);
 		expect(node.lastPracticedAt).toBeNull();
 		expect(node.total).toBe(3);
 	});
 
-	it('treats lastScore === threshold as passed', () => {
-		const stats = { s1: { attempts: 1, lastScore: 80, lastPracticedAt: 1 } };
+	it('treats a window mean exactly at the threshold as passed', () => {
+		const stats = { s1: stat([80], 1) };
 		expect(H.computeNodeStats(sentences, false, stats, 80).passed).toBe(1);
 		expect(H.computeNodeStats(sentences, false, stats, 81).hard).toBe(1);
 	});
 
 	it('raises passed and clears hard when the threshold is lowered', () => {
-		const stats = { s1: stat(79), s2: stat(85) };
+		const stats = { s1: stat([79]), s2: stat([85]) };
 		const strict = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80);
 		expect(strict.passed).toBe(1);
 		expect(strict.hard).toBe(1);
@@ -346,20 +453,83 @@ describe('computeNodeStats', () => {
 		expect(relaxed.hard).toBe(0);
 	});
 
+	// ── The user-reported defect, both directions ────────────────────────────
+	// 「一回正解しただけで合格判定される！！直近10回の類似度の平均で出すべき！！」
+	// Scoring on the newest value gave, at threshold 80:
+	//   [40×9, 95] → 合格  — nine misses erased by one lucky pass, forever
+	//   [95×9, 40] → 苦手  — nine passes erased by one slip
+	// Neither is defensible for a memorisation app, and both were invisible to
+	// 190 passing E2E tests: every existing assertion seeded a single score, so
+	// mean([x]) and lastScore could not be told apart.
+	it('reads [40×9, 95] as 苦手, so one lucky pass cannot settle a sentence', () => {
+		const stats = { s1: stat([...repeated(40, 9), 95]) };
+		const node = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80);
+		expect(node.passed).toBe(0);
+		expect(node.hard).toBe(1);
+		// 9×40 + 95 = 455 / 10 = 45.5 → 46. The number the row shows must be the
+		// one the verdict used, or 平均 46% next to 苦手 1 文 explains nothing.
+		expect(node.avgScore).toBe(46);
+		// SENTENCE_FIXTURE order is s3, s1, s2 — s1 is the middle dot.
+		expect(node.dots).toEqual(['untouched', 'hard', 'untouched']);
+	});
+
+	it('reads [95×9, 40] as 合格, so one slip cannot undo nine passes', () => {
+		const stats = { s1: stat([...repeated(95, 9), 40]) };
+		const node = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80);
+		expect(node.passed).toBe(1);
+		expect(node.hard).toBe(0);
+		// 9×95 + 40 = 895 / 10 = 89.5 → 90.
+		expect(node.avgScore).toBe(90);
+		expect(node.dots).toEqual(['untouched', 'passed', 'untouched']);
+	});
+
+	// One datum is still one verdict: the mean of [95] is 95, so the first
+	// attempt behaves as it always did. 直近 1 回 in the row is what tells the
+	// user the evidence is thin — not a different verdict.
+	it('passes a sentence scored exactly once', () => {
+		const stats = { s1: stat([95]) };
+		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80).passed).toBe(1);
+		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80).avgScore).toBe(95);
+	});
+
+	it('reports 直近 N 回 as the WEAKEST practised sentence, not the strongest', () => {
+		// s1 has a full window, s2 only one attempt. 最小値 = 1 (the weak side:
+		// 「1文だけ10回・残り19文は1回」で過大に見えないため). The maximum would
+		// read 10 and claim more evidence than the row can show.
+		const stats = { s1: stat(repeated(95, 10)), s2: stat([40]) };
+		const node = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80);
+		expect(node.minSamples).toBe(1);
+		expect(node.practiced).toBe(2);
+		// And with everything equally deep the minimum is the full window.
+		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, { s1: stat(repeated(95, 10)), s2: stat(repeated(95, 4)) }, 80).minSamples).toBe(4);
+	});
+
+	it('averages the per-sentence means, so one drilled sentence cannot dominate', () => {
+		// s1's mean is 89.5. Pooled with s2's single 95 the 11 samples average
+		// 990/11 = 90; per-sentence it is (89.5 + 95) / 2 = 92.25 → 92. The
+		// chapter says how its SENTENCES are doing, not how many times one of
+		// them was drilled.
+		const stats = { s1: stat([...repeated(95, 9), 40]), s2: stat([95]) };
+		const node = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80);
+		expect(node.avgScore).toBe(92);
+		expect(H.SCORE_WINDOW).toBe(10);
+	});
+
 	it('returns an all-zero result for an empty display set', () => {
-		expect(H.computeNodeStats([], false, { s1: stat(90) }, 80)).toEqual({
+		expect(H.computeNodeStats([], false, { s1: stat([90]) }, 80)).toEqual({
 			total: 0,
 			passed: 0,
 			practiced: 0,
 			hard: 0,
-			avgLastScore: null,
+			avgScore: null,
+			minSamples: 0,
 			lastPracticedAt: null,
 			dots: []
 		});
 	});
 
 	it('ignores orphan stats for sentences that no longer exist', () => {
-		const stats = { s1: stat(90, 1000), gone: stat(10, 9000) };
+		const stats = { s1: stat([90], 1000), gone: stat([10], 9000) };
 		const node = H.computeNodeStats([sent('s1', 1)], false, stats, 80);
 		expect(node.total).toBe(1);
 		expect(node.practiced).toBe(1);
@@ -379,7 +549,7 @@ describe('computeNodeStats', () => {
 	it('keeps the dot count and the N/M denominator on the same sentence set', () => {
 		const child = { ...sent('s4', 4), trackId: 'tr-2' };
 		const own = [sent('s1', 1), sent('s2', 2)];
-		const stats = { s1: stat(90), s2: stat(30), s4: stat(90) };
+		const stats = { s1: stat([90]), s2: stat([30]), s4: stat([90]) };
 
 		const track = H.computeNodeStats(own, false, stats, 80);
 		expect(track.total).toBe(2);
@@ -415,32 +585,32 @@ describe('computeStreak', () => {
 	it('counts consecutive days ending today', () => {
 		const now = at(1000 * DAY, 0);
 		const stats = {
-			s1: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 0) },
-			s2: { attempts: 2, lastScore: 90, lastPracticedAt: at(now, 1) },
-			s3: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 2) }
+			s1: stat([90], at(now, 0)),
+			s2: stat([90], at(now, 1), 2),
+			s3: stat([90], at(now, 2))
 		};
 		expect(H.computeStreak(stats, [], now)).toEqual({ days: 3, totalAttempts: 4 });
 	});
 
 	it('counts a single practised day as 1', () => {
 		const now = at(1000 * DAY, 0);
-		const stats = { s1: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 0) } };
+		const stats = { s1: stat([90], at(now, 0)) };
 		expect(H.computeStreak(stats, [], now).days).toBe(1);
 	});
 
 	it('stops at the first gap and still counts yesterday as current', () => {
 		const now = at(1000 * DAY, 0);
 		const stats = {
-			s1: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 1) },
-			s2: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 2) },
-			s3: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 5) }
+			s1: stat([90], at(now, 1)),
+			s2: stat([90], at(now, 2)),
+			s3: stat([90], at(now, 5))
 		};
 		expect(H.computeStreak(stats, [], now).days).toBe(2);
 	});
 
 	it('reports zero when the last practice is two days old', () => {
 		const now = at(1000 * DAY, 0);
-		const stats = { s1: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 2) } };
+		const stats = { s1: stat([90], at(now, 2)) };
 		expect(H.computeStreak(stats, [], now).days).toBe(0);
 	});
 
@@ -453,9 +623,9 @@ describe('computeStreak', () => {
 	it('counts every day of a streak when the same sentences are practised again', () => {
 		const now = at(1000 * DAY, 0);
 		const stats = {
-			s1: stat(90, at(now, 0), 5),
-			s2: stat(90, at(now, 0), 5),
-			s3: stat(90, at(now, 0), 5)
+			s1: stat([90], at(now, 0), 5),
+			s2: stat([90], at(now, 0), 5),
+			s3: stat([90], at(now, 0), 5)
 		};
 		const sessions = [0, 1, 2, 3, 4].map((d) => sessionOn(now, d));
 		// The sentence side alone sees one day; only the union sees five.
@@ -468,7 +638,7 @@ describe('computeStreak', () => {
 	// Session-only would read 2, stats-only 1, the union 3.
 	it('unions the session days with the sentence-stat days', () => {
 		const now = at(1000 * DAY, 0);
-		const stats = { s1: stat(90, at(now, 0)), s2: stat(90, at(now, 2)) };
+		const stats = { s1: stat([90], at(now, 0)), s2: stat([90], at(now, 2)) };
 		const sessions = [sessionOn(now, 0), sessionOn(now, 1)];
 		expect(H.computeStreak(stats, [], now).days).toBe(1);
 		expect(H.computeStreak({}, sessions, now).days).toBe(2);
@@ -479,7 +649,7 @@ describe('computeStreak', () => {
 	// scored still carry that day — so the union must not need the row to exist.
 	it('counts a day whose session row was lost to a kill, via its sentence stats', () => {
 		const now = at(1000 * DAY, 0);
-		const stats = { s1: stat(90, at(now, 1)) };
+		const stats = { s1: stat([90], at(now, 1)) };
 		// Nothing logged for that day at all.
 		expect(H.computeStreak(stats, [], now).days).toBe(1);
 	});
@@ -489,7 +659,7 @@ describe('computeStreak', () => {
 	// summing it here would double-count nothing but drift upward.
 	it('takes のべ attempts from the sentence stats only', () => {
 		const now = at(1000 * DAY, 0);
-		const stats = { s1: stat(90, at(now, 0), 2), s2: stat(40, at(now, 1), 3) };
+		const stats = { s1: stat([90], at(now, 0), 2), s2: stat([40], at(now, 1), 3) };
 		const sessions = [sessionOn(now, 0), sessionOn(now, 1)];
 		expect(H.computeStreak(stats, sessions, now).totalAttempts).toBe(5);
 	});

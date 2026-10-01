@@ -18,6 +18,13 @@ const HISTORY_STORAGE_KEY = 'oboeru:history:v1';
 const HISTORY_UI_KEY = 'oboeru:history-ui:v1';
 const MAX_SESSIONS = 500;
 
+/**
+ * How many of a sentence's most recent scores are kept. The verdict is the mean
+ * of that window, so 1 is the minimum a sentence needs before the mean can say
+ * anything the newest score alone cannot.
+ */
+export const SCORE_WINDOW = 10;
+
 export interface SessionRecord {
 	id: string;
 	/** Session's start node — a chapter or a track id. */
@@ -44,8 +51,14 @@ export interface SessionRecord {
 
 export interface SentenceStat {
 	attempts: number;
-	/** Pass / hard / untouched are all derived from this against the live threshold. */
-	lastScore: number;
+	/**
+	 * The newest `SCORE_WINDOW` finalScores, oldest first. Pass / hard /
+	 * untouched are derived from the MEAN of this against the live threshold —
+	 * scoring on the newest value alone let a single lucky pass settle a
+	 * sentence as 合格 forever, and let one slip erase nine passes (measured:
+	 * `[40×9, 95]` → 合格, `[95×9, 40]` → 苦手).
+	 */
+	scores: number[];
 	lastPracticedAt: number;
 }
 
@@ -77,6 +90,33 @@ function num(value: unknown): number {
 
 function str(value: unknown): string {
 	return typeof value === 'string' ? value : '';
+}
+
+/**
+ * The stored score window, oldest first, capped at SCORE_WINDOW.
+ *
+ * MIGRATION — `HistoryData.version` stays 1 forever. loadHistory() shrinks to
+ * the empty default on a version mismatch, so bumping it would throw away every
+ * session row and sentence stat the user has accumulated. Instead the OLD shape
+ * is absorbed here: a stat written before the window existed carries a single
+ * `lastScore`, and it reads as a one-element window. `mean([x]) === x`, so the
+ * pass/hard verdict, the dot and the displayed average are all identical across
+ * the deploy — the window only starts changing verdicts from the second attempt
+ * onward. `attempts` is untouched, so のべ文数 does not move either.
+ *
+ * An entry with neither field yields an empty window: the mean of nothing is 0,
+ * which reads as 苦手. That is the safe direction — it cannot manufacture a pass.
+ */
+function readScores(st: Record<string, unknown>): number[] {
+	if (Array.isArray(st.scores)) return st.scores.map(nonNegInt).slice(-SCORE_WINDOW);
+	if (typeof st.lastScore === 'number') return [nonNegInt(st.lastScore)];
+	return [];
+}
+
+/** Clamped 0-100 integer, or 0 for anything non-finite. */
+function score(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+	return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function readStorage(): HistoryData {
@@ -117,7 +157,7 @@ function readStorage(): HistoryData {
 				const st = value as Record<string, unknown>;
 				sentences[id] = {
 					attempts: nonNegInt(st.attempts),
-					lastScore: nonNegInt(st.lastScore),
+					scores: readScores(st),
 					lastPracticedAt: num(st.lastPracticedAt)
 				};
 			}
@@ -154,15 +194,17 @@ export function loadHistory(): HistoryData {
 	return readStorage();
 }
 
-export function recordSentenceAttempt(sentenceId: string, score: number, at: number): void {
+export function recordSentenceAttempt(sentenceId: string, value: number, at: number): void {
 	const data = read();
 	const prev = data.sentences[sentenceId];
+	// A non-finite score would survive Math.round/Math.min as NaN, which
+	// JSON.stringify writes as null: storage would read back 0 while the
+	// cache said NaN, and computeNodeStats would render a literal "NaN%".
+	// A 0-100 clamp is also what keeps the mean inside 0-100.
+	const scores = [...(prev?.scores ?? []), score(value)].slice(-SCORE_WINDOW);
 	data.sentences[sentenceId] = {
 		attempts: (prev?.attempts ?? 0) + 1,
-		// A non-finite score would survive Math.round/Math.min as NaN, which
-		// JSON.stringify writes as null: storage would read back 0 while the
-		// cache said NaN, and computeNodeStats would render a literal "NaN%".
-		lastScore: Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : 0,
+		scores,
 		lastPracticedAt: at
 	};
 	persist(data);
@@ -205,6 +247,12 @@ export function saveHistoryUiState(state: HistoryUiState): void {
 
 export type DotState = 'passed' | 'hard' | 'untouched';
 
+/** Mean of one sentence's score window. An empty window means 0 → 苦手. */
+export function meanScore(scores: readonly number[]): number {
+	if (scores.length === 0) return 0;
+	return scores.reduce((sum, v) => sum + v, 0) / scores.length;
+}
+
 export interface NodeStats {
 	/** Sentence count for the row's display set. */
 	total: number;
@@ -212,7 +260,19 @@ export interface NodeStats {
 	/** Sentences scored at least once (= not untouched). */
 	practiced: number;
 	hard: number;
-	avgLastScore: number | null;
+	/**
+	 * Mean of the per-sentence means — sentences weigh EQUALLY. Pooling every
+	 * sample instead would let one sentence drilled to 10 attempts dominate its
+	 * chapter's average. Null when nothing was practised.
+	 */
+	avgScore: number | null;
+	/**
+	 * The smallest `scores.length` among the practised sentences — the N of the
+	 * row's 直近 N 回. The MINIMUM on purpose: 「平均 87%」 alone cannot say
+	 * whether the evidence is one lucky pass or ten steady ones, and the maximum
+	 * would overstate a row whose other sentences have one attempt each.
+	 */
+	minSamples: number;
 	lastPracticedAt: number | null;
 	/** Empty for chapters; for tracks, one entry per display sentence, in display order. */
 	dots: DotState[];
@@ -222,6 +282,10 @@ export interface NodeStats {
  * Aggregate one row's display set. Pass exactly the sentences the row shows —
  * that is, `getNodeSentences(nodeId)`, so the `N/M` denominator is the real
  * session length and cannot disagree with the dot count in the same row.
+ *
+ * A sentence is 合格 when the MEAN of its window reaches the live threshold,
+ * never on its newest score: one lucky pass must not settle a sentence, and one
+ * slip must not erase nine passes.
  *
  * The array is used exactly as given: the caller supplies the display order,
  * and that order is practice order (pre-order — a node's own track, then each
@@ -238,7 +302,8 @@ export function computeNodeStats(
 	let passed = 0;
 	let practiced = 0;
 	let hard = 0;
-	let scoreSum = 0;
+	let meanSum = 0;
+	let minSamples = Number.POSITIVE_INFINITY;
 	let lastPracticedAt: number | null = null;
 	const dots: DotState[] = [];
 
@@ -248,10 +313,12 @@ export function computeNodeStats(
 			if (!isChapter) dots.push('untouched');
 			continue;
 		}
+		const mean = meanScore(stat.scores);
 		practiced++;
-		scoreSum += stat.lastScore;
+		meanSum += mean;
+		if (stat.scores.length < minSamples) minSamples = stat.scores.length;
 		if (stat.lastPracticedAt > (lastPracticedAt ?? 0)) lastPracticedAt = stat.lastPracticedAt;
-		if (stat.lastScore >= threshold) {
+		if (mean >= threshold) {
 			passed++;
 			if (!isChapter) dots.push('passed');
 		} else {
@@ -265,7 +332,8 @@ export function computeNodeStats(
 		passed,
 		practiced,
 		hard,
-		avgLastScore: practiced > 0 ? Math.round(scoreSum / practiced) : null,
+		avgScore: practiced > 0 ? Math.round(meanSum / practiced) : null,
+		minSamples: practiced > 0 ? minSamples : 0,
 		lastPracticedAt,
 		dots
 	};

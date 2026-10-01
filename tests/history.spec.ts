@@ -341,8 +341,8 @@ test.describe('Practice history', () => {
 			version: 1,
 			sessions: [],
 			sentences: {
-				's-1': { attempts: 1, lastScore: 95, lastPracticedAt: Date.now() },
-				's-2': { attempts: 1, lastScore: 45, lastPracticedAt: Date.now() }
+				's-1': { attempts: 1, scores: [95], lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, scores: [45], lastPracticedAt: Date.now() }
 			}
 		});
 
@@ -377,8 +377,8 @@ test.describe('Practice history', () => {
 			version: 1,
 			sessions: [],
 			sentences: {
-				's-2': { attempts: 1, lastScore: 40, lastPracticedAt: Date.now() },
-				's-1': { attempts: 2, lastScore: 95, lastPracticedAt: Date.now() }
+				's-2': { attempts: 1, scores: [40], lastPracticedAt: Date.now() },
+				's-1': { attempts: 2, scores: [95], lastPracticedAt: Date.now() }
 			}
 		});
 
@@ -394,7 +394,7 @@ test.describe('Practice history', () => {
 	// specificity, so the generated stylesheet's source order decides the winner
 	// (measured: `.bg-border` at offset 15223 beat `.bg-amber-500` at 14881) and
 	// the attribute order in the template decides nothing. Every other dot test
-	// in this file reads `data-dot`, which is computed from `lastScore` alone —
+	// in this file reads `data-dot`, which is computed from the window mean —
 	// the state was always right and only the paint was wrong, so all of them
 	// stayed green.
 	test('each dot state paints its own colour, so 苦手 is not the 未着手 grey', async ({ page }) => {
@@ -412,8 +412,8 @@ test.describe('Practice history', () => {
 			sessions: [],
 			sentences: {
 				// s-1 over the default threshold 80, s-2 under it, s-3 never scored.
-				's-1': { attempts: 1, lastScore: 95, lastPracticedAt: Date.now() },
-				's-2': { attempts: 1, lastScore: 40, lastPracticedAt: Date.now() }
+				's-1': { attempts: 1, scores: [95], lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, scores: [40], lastPracticedAt: Date.now() }
 			}
 		});
 
@@ -461,8 +461,8 @@ test.describe('Practice history', () => {
 			version: 1,
 			sessions: [],
 			sentences: {
-				's-1': { attempts: 1, lastScore: 95, lastPracticedAt: Date.now() },
-				's-2': { attempts: 1, lastScore: 40, lastPracticedAt: Date.now() }
+				's-1': { attempts: 1, scores: [95], lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, scores: [40], lastPracticedAt: Date.now() }
 			}
 		});
 
@@ -506,8 +506,8 @@ test.describe('Practice history', () => {
 			sessions: [row('d0', dayAgo(0)), row('d1', dayAgo(1)), row('d2', dayAgo(2))],
 			sentences: {
 				// Same sentence each day: only its most recent stamp survives.
-				's-1': { attempts: 3, lastScore: 95, lastPracticedAt: now },
-				's-2': { attempts: 3, lastScore: 95, lastPracticedAt: now }
+				's-1': { attempts: 3, scores: [95, 95, 95], lastPracticedAt: now },
+				's-2': { attempts: 3, scores: [95, 95, 95], lastPracticedAt: now }
 			}
 		});
 
@@ -571,18 +571,115 @@ test.describe('Practice history', () => {
 			sessions: [],
 			sentences: {
 				// s-1 today and passing; s-2 yesterday and failing → 苦手 1.
-				's-1': { attempts: 1, lastScore: 95, lastPracticedAt: Date.now() },
-				's-2': { attempts: 1, lastScore: 45, lastPracticedAt: Date.now() - DAY }
+				's-1': { attempts: 1, scores: [95], lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, scores: [45], lastPracticedAt: Date.now() - DAY }
 			}
 		});
 
-		await expect(page.getByTestId('chapter-last').first()).toHaveText('最終 今日 · 苦手 1 文');
-		// The track row carries the date but not the 苦手 count (dots do that).
-		await expect(trackCard(page, 'トラック1').getByTestId('track-last')).toHaveText('最終 今日');
+		// 直近 1 回: both sentences were scored once, so minSamples is 1 and the
+		// row says its evidence is a single attempt instead of hiding it behind
+		// a bare 平均.
+		await expect(page.getByTestId('chapter-last').first()).toHaveText(
+			'最終 今日 · 苦手 1 文 · 直近 1 回'
+		);
+		// The track row carries the date and the window, but not the 苦手 count
+		// (the dots do that).
+		await expect(trackCard(page, 'トラック1').getByTestId('track-last')).toHaveText(
+			'最終 今日 · 直近 1 回'
+		);
 
 		// A never-practised node has nothing to date, so the line is gated on
 		// practiced > 0 — トラック2 holds no sentences at all here.
 		await expect(trackCard(page, 'トラック2').getByTestId('track-last')).toHaveCount(0);
+	});
+
+	// The user-reported defect, end to end through the real row:
+	// 「一回正解しただけで合格判定される！！直近10回の類似度の平均で出すべき！！」
+	// Before the window, the newest score decided everything, so this row read
+	// 2/2 合格 · 100% while one sentence's evidence was nine failures. Every
+	// pre-existing seed in this file carried a SINGLE score, where mean([x])
+	// and lastScore are indistinguishable — which is why 190 E2E tests stayed
+	// green through the defect.
+	test('a sentence is judged on the mean of its last 10 attempts, not the newest', async ({
+		page
+	}) => {
+		const NINE_FAILURES_ONE_PASS = [40, 40, 40, 40, 40, 40, 40, 40, 40, 95];
+		const NINE_PASSES_ONE_SLIP = [95, 95, 95, 95, 95, 95, 95, 95, 95, 40];
+		const now = Date.now();
+
+		await gotoWithSeed(page, SEED);
+		await seedHistory(page, {
+			version: 1,
+			sessions: [],
+			sentences: {
+				// s-1: nine misses then one perfect pass → mean 46 → 苦手.
+				's-1': { attempts: 10, scores: NINE_FAILURES_ONE_PASS, lastPracticedAt: now },
+				// s-2: nine passes then one slip → mean 90 → 合格.
+				's-2': { attempts: 10, scores: NINE_PASSES_ONE_SLIP, lastPracticedAt: now }
+			}
+		});
+
+		// Newest-score scoring would read s-1 合格 (95) and s-2 苦手 (40) — the
+		// exact inversion the user reported. The mean reads them the other way.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 50%');
+		const dots = trackCard(page, 'トラック1').getByTestId('track-dots').locator('span');
+		await expect(dots.nth(0)).toHaveAttribute('data-dot', 'hard');
+		await expect(dots.nth(1)).toHaveAttribute('data-dot', 'passed');
+		// And the window size is stated, so the reader knows what the mean was
+		// taken over.
+		await expect(page.getByTestId('chapter-last').first()).toHaveText(
+			'最終 今日 · 苦手 1 文 · 直近 10 回'
+		);
+	});
+
+	// 直近 N 回 is the MINIMUM window in the row. A maximum would read 10 and
+	// claim evidence the row's second sentence does not have.
+	test('直近 N 回 reports the weakest practised sentence, not the strongest', async ({
+		page
+	}) => {
+		const now = Date.now();
+		await gotoWithSeed(page, SEED);
+		await seedHistory(page, {
+			version: 1,
+			sessions: [],
+			sentences: {
+				's-1': { attempts: 10, scores: Array.from({ length: 10 }, () => 95), lastPracticedAt: now },
+				's-2': { attempts: 1, scores: [95], lastPracticedAt: now }
+			}
+		});
+
+		await expect(page.getByTestId('chapter-last').first()).toHaveText(
+			'最終 今日 · 苦手 0 文 · 直近 1 回'
+		);
+		await expect(trackCard(page, 'トラック1').getByTestId('track-last')).toHaveText(
+			'最終 今日 · 直近 1 回'
+		);
+	});
+
+	// The migration, at the boundary it actually lives: storage written by the
+	// previous release, carrying `lastScore` and no window. Nothing on screen may
+	// move across the deploy, so this seed must read exactly as it always did.
+	// `readScores()` in src/lib/history.ts turns it into `scores: [lastScore]`,
+	// and mean([x]) === x.
+	test('a history written before the window still reads as it did', async ({ page }) => {
+		await gotoWithSeed(page, SEED);
+		await seedHistory(page, {
+			version: 1,
+			sessions: [],
+			sentences: {
+				's-1': { attempts: 1, lastScore: 87, lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, lastScore: 45, lastPracticedAt: Date.now() }
+			}
+		});
+
+		// Unchanged verdicts: 87 passes, 45 does not.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 50%');
+		await expect(page.getByTestId('chapter-last').first()).toHaveText(
+			'最終 今日 · 苦手 1 文 · 直近 1 回'
+		);
+		const dots = trackCard(page, 'トラック1').getByTestId('track-dots').locator('span');
+		await expect(dots.nth(0)).toHaveAttribute('data-dot', 'passed');
+		await expect(dots.nth(1)).toHaveAttribute('data-dot', 'hard');
 	});
 
 	// `historyLimit += 0` left the suite green: no other test ever had 20+ rows
@@ -677,12 +774,12 @@ test.describe('Practice history', () => {
 			version: 1,
 			sessions: [],
 			sentences: {
-				's-1': { attempts: 1, lastScore: 70, lastPracticedAt: Date.now() },
-				's-2': { attempts: 1, lastScore: 70, lastPracticedAt: Date.now() }
+				's-1': { attempts: 1, scores: [70], lastPracticedAt: Date.now() },
+				's-2': { attempts: 1, scores: [70], lastPracticedAt: Date.now() }
 			}
 		});
-		// Pass / hard are derived from lastScore against the LIVE threshold, not
-		// stored — so nothing but the setting moves.
+		// Pass / hard are derived from the score window's MEAN against the LIVE
+		// threshold, not stored — so nothing but the setting moves.
 		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('0/2 合格 · 0%');
 		await expect(trackCard(page, 'トラック1').getByTestId('track-dots').locator('span').first())
 			.toHaveAttribute('data-dot', 'hard');

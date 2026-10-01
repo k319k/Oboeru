@@ -306,11 +306,17 @@
 							{/each}
 						</div>
 					{/if}
-						{#if nodeStats(track.id).practiced > 0}
-							<span class="text-sm text-muted-foreground" data-testid="track-last">
-								最終 {formatRelativeDay(nodeStats(track.id).lastPracticedAt ?? nowMs, nowMs)}
-							</span>
-						{/if}
+{#if nodeStats(track.id).practiced > 0}
+						<!-- 直近 N 回 = minSamples, the SMALLEST window in this row, so the
+						     number never claims more evidence than the row's weakest
+						     sentence has. 直近 1 回 is deliberate: it says the verdict rests
+						     on one attempt, which is exactly what the pre-window version
+						     of this row hid. -->
+						<span class="text-sm text-muted-foreground" data-testid="track-last">
+							最終 {formatRelativeDay(nodeStats(track.id).lastPracticedAt ?? nowMs, nowMs)} · 直近
+							{nodeStats(track.id).minSamples} 回
+						</span>
+					{/if}
 					</div>
 					{#if canPractice(track.id)}
 						<Button
@@ -376,8 +382,15 @@
 							></div>
 						</div>
 						{#if nodeStats(chapter.id).practiced > 0}
-							<span class="truncate text-sm text-muted-foreground" data-testid="chapter-last">
-								最終 {formatRelativeDay(nodeStats(chapter.id).lastPracticedAt ?? nowMs, nowMs)} · 苦手 {nodeStats(chapter.id).hard} 文
+							<!-- Wraps, never truncates. This line grew by `· 直近 N 回` and the
+							     chapter row's text column measures 172px at 390px (the expand
+							     toggle and the 練習 button take the rest), so `truncate`
+							     clipped 30-70px here — 直近 10 回 was invisible on exactly the
+							     row where the evidence matters most. Measured with
+							     tests/../measure script; see the report. -->
+							<span class="text-sm text-muted-foreground" data-testid="chapter-last">
+								最終 {formatRelativeDay(nodeStats(chapter.id).lastPracticedAt ?? nowMs, nowMs)} · 苦手
+								{nodeStats(chapter.id).hard} 文 · 直近 {nodeStats(chapter.id).minSamples} 回
 							</span>
 						{/if}
 					</div>

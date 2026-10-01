@@ -50,11 +50,11 @@ Cache Storage ではない）ため、Service Worker のキャッシュ戦略を
 | 4 | **合格状態は保存しない**。直近 **10 回**の `finalScore` を配列で保存し、合格/苦手/未着手はその**平均**と現在の `threshold` から**導出**する | 直近 1 回だけだと 1 回の正解で合格になり、9 回合格したあとの 1 失敗で不合格に落ちる（実測: `[40×9, 95]` が合格、`[95×9, 40]` が不合格）。記憶学習では 1 回の躂躂 shouldn’t 9 回の成果を相殺しない |
 | 5 | `nodeId` + `nodeName` の両方を保存する。表示は「現在の値 → 保存値 + ` (削除済み)`」の 2 段 | 章を削除しても「`(削除済み)`」だけより「`日本語基礎 (削除済み)`」の方が情報量がある。保存コスト 10KB |
 | 6 | 履歴は**デバイスローカル**。ロードマップ ⑥ の同期対象に**含めない** | 練習実績はマージが不可能（last-write-wins で上書きされる）。メタデータ（章/トラック/文）と違い undo できない。**⑥ の引数** |
-| 7 | **行**の平均スコアは `lastScore` の平均。**履歴ログ行**の平均は `totalScore / attempted`（既存 summary と同じ定義） | `bestScore` の平均では全部 100 に寄って「今の自分の状態」が読めない。2 つの平均は別の物 |
+| 7 | **行**の平均スコアは **`scores` それぞれの平均の平均** (文を等_weightで。決定事項 15 と同じ)。**履歴ログ行**の平均は `totalScore / attempted`（既存 summary と同じ定義） | `bestScore` の平均では全部 100 に寄って「今の自分の状態」が読めない。2 つの平均は別の物 |
 | 8 | 履歴セクションの**開閉状態は localStorage に記憶**する | 既存の `collapsed`（章の開閉、`+page.svelte:19`）は refresh でリセットする中途半端な実装。同じ轍を踏まない |
 | 9 | **行の文数は「そのノードで練習したときのセッション長」と一致させる**。章もトラックも `getNodeSentences`（= サブツリー）基準。`canPractice` も同じ基準なので、`0文` の行に練習ボタンが出る矛盾が起きない（2026-10-01 レビューで発見。従来は章=サブツリー / トラック=直属で別 subset だった） | AGENTS.md が禁じる「`0文` なのに `練習` ボタン」の矛盾。直属文の無い中間トラック（`tests/top.spec.ts:191` が「祖先は全部開始可能」と固定）が realistic な入力で、空のトラックを押すとサブツリー分のセッションが始まるのに `0文` と出ていた |
 | 10 | **復習アクションは付けない**（session 内 summary の既存 `retry-failed-btn` はそのまま） | 用途は苦手文の特定まで。「間違えた文だけやり直す」は既に summary に存在する |
-| 11 | **`SentenceStat` は `lastScore` と `lastPracticedAt` だけ**持つ。`passes` / `bestScore` は持たない | 決定事項 4 で合格は導出するので両方とも死んだフィールドになる。書かれるが読まれないコードは作らない |
+| 11 | **`SentenceStat` は `scores` (直近 10 件) と `lastPracticedAt` だけ**持つ。`passes` / `bestScore` / `lastScore` は持たない | 決定事項 4 で合格は導出するので 3 つとも死んだフィールドになる。書かれるが読まれないコードは作らない (`lastScore` は 2026-10-01 の実装修正で `scores` に置き換わった) |
 | 12 | 履歴セクション見出しの件数は**記録済みセッション件数**。累積の単位は「のべ N 文」 |
 | 13 | 平均は **finalScore**（Jev で救済された値も含む）。合格判定と同じ数値なので「平均 68% → 苦手（閾値 80%）」が整合する | 生の類似度だと漢字の表記ゆらぎを Jev が救った文だけが不 利に扱い、表示された平均が合格判定を説明しない |
 | 14 | 「直近 N 回」を**最終練習日の行に併記**する。N は**練習済みの文の最小サンプル数**（弱い方） | 1 回の平均と 10 回の平均が同じ数字で出ると、1 回の閾値クリアが弱者の証拠だと利用者に伝えられない。最大だと「1 文だけ 10 回・残り 19 文は 1 回」で過大に見える |
@@ -135,7 +135,7 @@ export interface HistoryData {
 | 関数 | 役割 |
 |---|---|
 | `loadHistory(): HistoryData` | 読み込み。JSON 破損 / 非オブジェクト / `version` 不一致は**既定値で縮退**（`{version:1, sessions:[], sentences:{}}`）。セッション列を 500 件に切断、counter は非負整数にクランプ |
-| `recordSentenceAttempt(sentenceId, score, at): void` | 文統計を 1 件 upsert。`attempts++`、`lastScore = score`、`lastPracticedAt = at` |
+| `recordSentenceAttempt(sentenceId, score, at): void` | 文統計を 1 件 upsert。`attempts++`、`scores` に `score` を**追加**して `slice(-SCORE_WINDOW)` (古い順・古いのは捨てる)、`lastPracticedAt = at` |
 | `finalizeSession(record): void` | `sessions` の先頭に `unshift`、500 件超で `slice(0, 500)` |
 | `loadHistoryUiState(): HistoryUiState` | 履歴セクションの開閉状態（別キー `oboeru:history-ui:v1`） |
 | `saveHistoryUiState(state): void` | 開閉状態を書き込む |
@@ -431,7 +431,8 @@ assert していない）。
 - `loadHistory` — ラウンドトリップ / 未記録時の既定 / 破損 JSON / 非オブジェクト / `version` 不一致
 - `loadHistory` — `sessions` が 500 件超なら 500 件に切断し**新しい順**を保つ
 - `loadHistory` — counter の NaN / 負数 / 小数を非負整数にクランプ
-- `recordSentenceAttempt` — 初回転 / `attempts` 増加 / `lastScore` 上書き / `lastPracticedAt` 更新
+- `recordSentenceAttempt` — 初回転 / `attempts` 増加 / `scores` への追記 (古い順) / `SCORE_WINDOW` 超で最古を落とす / `lastPracticedAt` 更新
+- 読み取り側シム — 旧 `lastScore` しか持たないエントリが `scores: [lastScore]` として読め、合格判定・ドット・表示平均が一切変わらないこと
 - `finalizeSession` — 先頭に挿入される / 501 件目で最古が落ちる
 - 全 write API — localStorage が例外を投げても**例外が伝播しない**
 - **キャッシュ** — 2 回続けて `recordSentenceAttempt` を呼んでも之前的な文統計が消えない

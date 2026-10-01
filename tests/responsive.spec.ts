@@ -100,12 +100,15 @@ const HISTORY_CONTENT = {
 const HISTORY_SEED = {
 	version: 1,
 	// Scores chosen against the default threshold of 80: 96/88 pass, 58/71 are
-	// hard, and h-4 has no stat at all so its dot stays untouched.
+	// hard, and h-4 has no stat at all so its dot stays untouched. The window
+	// MEAN is what decides, so each entry carries a full 3- or 2-attempt window
+	// rather than a lone score — and its length (min 1, max 3) also puts a
+	// realistic 直近 N 回 on the rows this seed renders.
 	sentences: {
-		'h-1': { attempts: 3, lastScore: 96, lastPracticedAt: HISTORY_NOW },
-		'h-2': { attempts: 1, lastScore: 58, lastPracticedAt: HISTORY_NOW },
-		'h-3': { attempts: 2, lastScore: 71, lastPracticedAt: HISTORY_NOW - HISTORY_DAY_MS },
-		'h-5': { attempts: 1, lastScore: 88, lastPracticedAt: HISTORY_NOW - HISTORY_DAY_MS }
+		'h-1': { attempts: 3, scores: [96, 96, 96], lastPracticedAt: HISTORY_NOW },
+		'h-2': { attempts: 1, scores: [58], lastPracticedAt: HISTORY_NOW },
+		'h-3': { attempts: 2, scores: [71, 71], lastPracticedAt: HISTORY_NOW - HISTORY_DAY_MS },
+		'h-5': { attempts: 1, scores: [88], lastPracticedAt: HISTORY_NOW - HISTORY_DAY_MS }
 	},
 	sessions: Array.from({ length: 25 }, (_, i) => {
 		// The three newest rows carry the adversarial long name; row 3 onwards
@@ -461,6 +464,36 @@ test.describe('Responsive layout (390px)', () => {
 			Math.round(longRow!.right),
 			'/ history: the truncated name must stay inside the viewport'
 		).toBeLessThanOrEqual(390);
+
+		// The 最終/苦手/直近 line must not CLIP. `expectNoHorizontalOverflow` above
+		// cannot see clipping: `truncate` keeps the page at scrollWidth === clientWidth
+		// while cutting the text off inside the row. The chapter row's text column
+		// measures 172px at 390px, and `最終 今日 · 苦手 2 文 · 直近 1 回` needs 202px —
+		// so `truncate` on this line silently hid 直近 N 回 on every chapter row
+		// (measured 30-70px clipped). It wraps instead. Adding `truncate` back makes
+		// this assertion fail.
+		const lastLines = await page.evaluate(() => {
+			const out: { testid: string; text: string; clipped: number }[] = [];
+			for (const id of ['chapter-last', 'track-last']) {
+				for (const el of Array.from(document.querySelectorAll(`[data-testid="${id}"]`))) {
+					out.push({
+						testid: id,
+						text: el.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+						clipped: el.scrollWidth - el.clientWidth
+					});
+				}
+			}
+			return out;
+		});
+		expect(lastLines.length, 'the 最終 lines must be rendered').toBeGreaterThan(0);
+		for (const line of lastLines) {
+			logEvidence(`\n=== clipped text @390px: ${line.testid} "${line.text}" clipped=${line.clipped}px`);
+			expect(line.clipped, `${line.testid} "${line.text}" is clipped`).toBeLessThanOrEqual(0);
+		}
+		// 直近 N 回 actually reaches the screen on both row kinds (a clipped tail
+		// would leave the text present but invisible).
+		await expect(page.getByTestId('chapter-last').first()).toContainText('直近 1 回');
+		await expect(page.getByTestId('track-last').first()).toContainText('直近 1 回');
 
 		// `(削除済み)` rides OUTSIDE the truncated name: with a 120-char name it is
 		// the only thing telling the user the node is gone.
