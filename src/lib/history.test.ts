@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Sentence } from './types';
-import type { SessionRecord } from './history';
+import type { SessionRecord, SentenceStat } from './history';
 
 function createStorageMock(): Storage {
 	let store: Record<string, string> = {};
@@ -54,6 +54,14 @@ const SENTENCE_FIXTURE: Sentence[] = [
 	{ id: 's1', chapterId: 'ch-1', trackId: 'tr-1', text: 'a', language: 'ja', order: 0 },
 	{ id: 's2', chapterId: 'ch-1', trackId: 'tr-1', text: 'b', language: 'ja', order: 1 }
 ];
+
+function sent(id: string, order: number): Sentence {
+	return { id, chapterId: 'ch-1', trackId: 'tr-1', text: id, language: 'ja', order };
+}
+
+function stat(lastScore: number, at = 1000, attempts = 1): SentenceStat {
+	return { attempts, lastScore, lastPracticedAt: at };
+}
 
 beforeEach(async () => {
 	ls = createStorageMock();
@@ -306,6 +314,59 @@ describe('computeNodeStats', () => {
 		expect(H.computeNodeStats(sentences, false, stats, 80).passed).toBe(1);
 		expect(H.computeNodeStats(sentences, false, stats, 81).hard).toBe(1);
 	});
+
+	it('raises passed and clears hard when the threshold is lowered', () => {
+		const stats = { s1: stat(79), s2: stat(85) };
+		const strict = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80);
+		expect(strict.passed).toBe(1);
+		expect(strict.hard).toBe(1);
+		const relaxed = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 70);
+		expect(relaxed.passed).toBe(2);
+		expect(relaxed.hard).toBe(0);
+	});
+
+	it('returns an all-zero result for an empty display set', () => {
+		expect(H.computeNodeStats([], false, { s1: stat(90) }, 80)).toEqual({
+			total: 0,
+			passed: 0,
+			practiced: 0,
+			hard: 0,
+			avgLastScore: null,
+			lastPracticedAt: null,
+			dots: []
+		});
+	});
+
+	it('ignores orphan stats for sentences that no longer exist', () => {
+		const stats = { s1: stat(90, 1000), gone: stat(10, 9000) };
+		const node = H.computeNodeStats([sent('s1', 1)], false, stats, 80);
+		expect(node.total).toBe(1);
+		expect(node.practiced).toBe(1);
+		expect(node.passed).toBe(1);
+		expect(node.lastPracticedAt).toBe(1000);
+	});
+
+	// The invariant the whole feature rests on: inside one row the `N/M`
+	// denominator and the dot count must describe the same sentences. A track
+	// row is handed its own sentences, so a child track's sentence is outside
+	// both — while the chapter row above it counts that sentence in its total
+	// and deliberately renders no dots at all. Passing `getNodeSentences`'s
+	// subtree to a track row would break exactly this pairing.
+	it('keeps the dot count and the N/M denominator on the same sentence set', () => {
+		const child = { ...sent('s4', 4), trackId: 'tr-2' };
+		const own = [sent('s1', 1), sent('s2', 2)];
+		const stats = { s1: stat(90), s2: stat(30), s4: stat(90) };
+
+		const track = H.computeNodeStats(own, false, stats, 80);
+		expect(track.total).toBe(2);
+		expect(track.dots).toEqual(['passed', 'hard']);
+		expect(track.dots).toHaveLength(track.total);
+
+		const chapter = H.computeNodeStats([...own, child], true, stats, 80);
+		expect(chapter.total).toBe(3);
+		expect(chapter.passed).toBe(2);
+		expect(chapter.dots).toEqual([]);
+	});
 });
 
 describe('computeStreak', () => {
@@ -329,6 +390,12 @@ describe('computeStreak', () => {
 			s3: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 2) }
 		};
 		expect(H.computeStreak(stats, now)).toEqual({ days: 3, totalAttempts: 4 });
+	});
+
+	it('counts a single practised day as 1', () => {
+		const now = at(1000 * DAY, 0);
+		const stats = { s1: { attempts: 1, lastScore: 90, lastPracticedAt: at(now, 0) } };
+		expect(H.computeStreak(stats, now).days).toBe(1);
 	});
 
 	it('stops at the first gap and still counts yesterday as current', () => {
@@ -357,6 +424,12 @@ describe('formatRelativeDay', () => {
 		expect(H.formatRelativeDay(now.getTime(), now.getTime())).toBe('今日');
 		expect(H.formatRelativeDay(now.getTime() - DAY, now.getTime())).toBe('昨日');
 		expect(H.formatRelativeDay(now.getTime() - 5 * DAY, now.getTime())).toBe('5 日前');
+	});
+
+	it('names two timestamps on the same calendar day 今日 regardless of the hour', () => {
+		const morning = new Date(now.getTime());
+		morning.setHours(6, 0, 0, 0);
+		expect(H.formatRelativeDay(morning.getTime(), now.getTime())).toBe('今日');
 	});
 
 	it('never returns a negative day count for a future timestamp', () => {
