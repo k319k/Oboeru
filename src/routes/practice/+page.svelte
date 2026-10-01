@@ -343,8 +343,9 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 	/**
 	 * Persist the finished session. Called from the summary $effect and from
 	 * onDestroy, plus from retryFailedOnly() before it starts the next
-	 * session. Every exit path clears sessionStartedAt, so whichever caller
-	 * runs second no-ops — that is what makes settling in two places safe.
+	 * session. Every exit path either clears sessionStartedAt or writes
+	 * nothing, so whichever caller runs second cannot double-count — that is
+	 * what makes settling in two places safe.
 	 */
 	function settleSession(): void {
 		if (sessionStartedAt === null || !sessionNodeId) return;
@@ -960,9 +961,11 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 		}
 	});
 
-	// Settled again here so a reload or tab close cannot lose a session the
-	// user never reached summary on. After summary this call is a no-op:
-	// settleSession() already cleared sessionStartedAt.
+	// Covers abandoning mid-session via client-side navigation (a link, the
+	// browser Back). onDestroy never fires on a real reload or tab close —
+	// the realm is torn down without running Svelte's destroy hook — which is
+	// why the summary transition also settles. A no-op after summary, where
+	// settleSession() has already cleared sessionStartedAt.
 	onDestroy(() => {
 		settleSession();
 	});
