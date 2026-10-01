@@ -4,7 +4,7 @@
 
 **Goal:** 練習結果（スコア・合格/苦手・最終練習日・過去セッション）を localStorage に永続化し、トップページに行ごとの進捗・ドット・ストリーク・履歴ログを表示する。
 
-**Architecture:** `src/lib/history.ts` を新設し、既存 `src/lib/practice-progress.ts` と同じ契約（自己完結・全操作が `try/catch` でエラーを握り潰す）で永続化層と純粋な集計関数を提供する。書き込みは `practice/+page.svelte` の採点確定点と `summary` 到達時・`onDestroy` の両方、読み取りはトップページのみ。集計は既存の `sentencesByNode` と並列に `displaySentencesByNode`（章=サブツリー/トラック=直属）→ `statsByNode` の 2 段で 1 度だけ計算し、全行が参照する（AGENTS.md の「1 系統」規約）。
+**Architecture:** `src/lib/history.ts` を新設し、既存 `src/lib/practice-progress.ts` と同じ契約（自己完結・全操作が `try/catch` でエラーを握り潰す）で永続化層と純粋な集計関数を提供する。書き込みは `practice/+page.svelte` の採点確定点と `summary` 到達時・`onDestroy` の両方、読み取りはトップページのみ。集計は既存の `sentencesByNode` から `statsByNode` を 1 度だけ計算し、全行が参照する。行の表示集合は `getNodeSentences(nodeId, …)`（= サブツリー）で、`/practice?node=` と同じなので `M` が実セッション長と一致する（AGENTS.md の「1 系統」規約）。
 
 **Tech Stack:** SvelteKit 5（runes: `$state` / `$derived.by` / `$effect` / `onDestroy`）、TypeScript、Tailwind CSS v4、vitest（`src/**/*.test.ts` のみ収集）、Playwright（`tests/**`）。
 
@@ -13,13 +13,13 @@
 - ** 提出は `npm run check` が 0 エラー**。`as any` / `@ts-ignore` / `@ts-expect-error` 禁止
 - ** テストの削除・skip 化・アサーション弱化は禁止**。挙動変更時は正当に更新して報告する
 - ** localStorage キー**: 永続化 `oboeru:history:v1`、UI 状態 `oboeru:history-ui:v1`。既存の `oboeru:v1` / `oboeru:settings:v1` / `oboeru:theme` / sessionStorage `oboeru:progress:v1` を変更しない
-- ** 1 系統の規約**: 章/トラックの行が表示する文数は、既存の `getNodeSentences`（章 = サブツリー）と `s.trackId === trackId`（トラック = 直属）の規則から必ず導出する。別の数え方を混ぜない
+- ** 1 系統の規約**: 章/トラックの行が表示する文数は `getNodeSentences(nodeId, …)` の結果そのもの（= サブツリー）。`/practice?node=` も同じ集合を回るので `M` は実際のセッション長と一致する。`canPractice()` も同じ基準なので `0文` の行に練習ボタンが出ない
 - ** 合格状態は保存しない**。`lastScore` だけ保存し、合格/苦手/未着手は現在の `threshold` から導出する
 - ** `SentenceStat` は `attempts` / `lastScore` / `lastPracticedAt` の 3 フィールドだけ**。`passes` / `bestScore` は持たない
 - ** 保持上限**: `sessions` は新しい順 500 件。超えたら最古を落とす。`sentences` は削除しない
 - ** UI 文言は日本語**。レスポンシブ 390px を維持。`expectTapTargets`（`tests/a11y.spec.ts`）は可視 `button` に高さ 44px を要求する
 - ** 既存 testid `chapter-card-count` / `track-card-count` は残す**。中身の文言だけが `N/M 合格 · X%` に変わる
-- ** _dot 列は 390px で 1 行に約 22 個**。`flex flex-wrap` で折り返す。章行にはドットを出さない
+- **ドット列は 390px で 1 行に約 22 個**。`flex flex-wrap` で折り返す。章行にはドットを出さない
 - ** コメントは書かない**（既存コードのコメントの書き方に合わせる。ただし「why」を説明する設計コメントは AGENTS.md の流儀に従う）
 
 ## ファイル構成
@@ -30,7 +30,7 @@
 | `src/lib/history.test.ts`（新規） | 上記の vitest ユニットテスト |
 | `src/lib/sentences.ts`（変更） | `generateId()` を export して `history.ts` から再利用（1 行） |
 | `src/routes/practice/+page.svelte`（変更） | 採点確定点で文統計を記録、`beginSession()` で開始時刻をスタンプ、`onDestroy` でセッション確定、`:61` の嘘コメントを削除 |
-| `src/routes/+page.svelte`（変更） | `displaySentencesByNode` / `statsByNode` の追加、章行・トラック行の描画更新、ストリークピル、折りたたみ履歴セクション |
+| `src/routes/+page.svelte`（変更） | `statsByNode` の追加、`ownCount` / `chapterTotal` の削除、章行・トラック行の描画更新、ストリークピル、折りたたみ履歴セクション |
 | `tests/helpers.ts`（変更） | `seedHistory(page, data)` を追加 |
 | `tests/top.spec.ts`（変更） | 4 アサーションを新フォーマットへ更新 |
 | `tests/e2e-full.spec.ts`（変更） | 1 アサーションを新フォーマットへ更新 |
@@ -1049,7 +1049,7 @@ git commit -m "feat(practice): record sentence stats and settle the session on u
 
 ### Task 4: トップページの行表示（進捗・ドット）
 
-`displaySentencesByNode` / `statsByNode` を追加し、章行とトラック行を描画し直す。`ownCount()` / `chapterTotal()` はこの新 cache を読む形に置き換える。
+`statsByNode` を追加し、章行とトラック行を描画し直す。`ownCount()` / `chapterTotal()` は削除する（呼び出し元が無くなる）。
 
 **Files:**
 - Modify: `src/routes/+page.svelte`
@@ -1088,36 +1088,26 @@ git commit -m "feat(practice): record sentence stats and settle the session on u
 
 **注意**: 他の `$effect`（`:21-25`）は `chapters` / `sentences` / `tracks` を読むだけなので、この effect は独立してよい。ただし** practise 画面からトップに戻った時に `threshold` が最新になる必要がある**。`/practice` → `/` の遷移は组件を再生成するので effect は再実行される。
 
-- [ ] **Step 3: `displaySentencesByNode` を追加する**
+- [ ] **Step 3: `statsByNode` を追加する**
 
 `src/routes/+page.svelte:59-61` の `nodeSentences()` の直後に追加する。
+**`displaySentencesByNode` のような中間 map は作らない** — `nodeSentences()` が既に
+`getNodeSentences` の結果を持つので、サブツリー基準に統一した以上それがそのまま表示集合になる。
 
 ```ts
 	/**
-	 * The exact sentence set each row shows: a chapter row is its whole
-	 * subtree, a track row is its own sentences. Every number, percentage
-	 * and dot in a row comes from this one map — `getNodeSentences` already
-	 * returns a subtree for tracks (`sentences.ts`), so track rows must
-	 * filter, exactly like the existing ownCount() did.
+	 * One aggregation per row, read by every number, percentage and dot.
+	 * The display set is getNodeSentences(nodeId) — the same sentences
+	 * /practice?node=nodeId walks — so the row's denominator is the real
+	 * session length and canPractice() cannot disagree with it.
 	 */
-	let displaySentencesByNode = $derived.by(() => {
-		const map = new Map<string, Sentence[]>();
-		for (const chapter of rootChapters()) {
-			map.set(chapter.id, nodeSentences(chapter.id));
-			for (const track of flattenTrackTree(chapter.id, tracks)) {
-				map.set(
-					track.id,
-					nodeSentences(track.id).filter((s) => s.trackId === track.id)
-				);
-			}
-		}
-		return map;
-	});
-
 	let statsByNode = $derived.by(() => {
 		const map = new Map<string, NodeStats>();
-		for (const [id, list] of displaySentencesByNode) {
-			map.set(id, computeNodeStats(list, chapters.some((c) => c.id === id), history.sentences, threshold));
+		for (const [id, list] of sentencesByNode) {
+			map.set(
+				id,
+				computeNodeStats(list, chapters.some((c) => c.id === id), history.sentences, threshold)
+			);
 		}
 		return map;
 	});
@@ -1137,39 +1127,18 @@ git commit -m "feat(practice): record sentence stats and settle the session on u
 	}
 ```
 
-- [ ] **Step 4: `ownCount` / `chapterTotal` を新 cache に向ける**
+- [ ] **Step 4: `ownCount` / `chapterTotal` を削除する**
 
-`src/routes/+page.svelte:63-71` の
+`src/routes/+page.svelte:63-71` の 2 関数を丸ごと削除する。マークアップは `progressLabel(nodeStats(id))`
+になり `NodeStats.total` が同じ数値を持つので、呼び出し元が無くなる。
 
-```ts
-	/** A track row counts only its own sentences — descendants have their own rows. */
-	function ownCount(trackId: string): number {
-		return nodeSentences(trackId).filter((s) => s.trackId === trackId).length;
-	}
+`canPractice()`（`:81-83`）は**書き換えない**。`nodeSentences(nodeId).length > 0` は行の `M > 0` と
+完全に一致するので、ここも直すと 2 系統になる。
 
-	/** A chapter row aggregates its whole subtree. */
-	function chapterTotal(chapterId: string): number {
-		return nodeSentences(chapterId).length;
-	}
-```
-
-を
-
-```ts
-	/** A track row counts only its own sentences — descendants have their own rows. */
-	function ownCount(trackId: string): number {
-		return displaySentencesByNode.get(trackId)?.length ?? 0;
-	}
-
-	/** A chapter row aggregates its whole subtree. */
-	function chapterTotal(chapterId: string): number {
-		return displaySentencesByNode.get(chapterId)?.length ?? 0;
-	}
-```
-
-に置き換える。
-
-**注意**: `ownCount` / `chapterTotal` はこの 2 関数は「章行はサブツリー合計、トラック行は直属のみ」の規約を維持する。`canPractice()` は `nodeSentences(nodeId).length > 0` なので**書き換えない**（`canPractice` は「そのノードで練習できる是否有文があるか」で、行に表示する文数とは別。`+page.svelte:81-83` 参照）。
+**なぜサブツリーに統一したか**: 传统は章=サブツリー / トラック=直属（`ownCount`）で別 subset だったため、
+直属文の無い中間トラックが `0文` の横で練習ボタンを出していた（押すとサブツリー分のセッションが始まる）。
+これは AGENTS.md が明文で禁じる「`0文` なのに `練習` ボタン」の矛盾そのもの。
+`tests/top.spec.ts:191` が「祖先は全部開始可能」を意図として固定している realistic な入力で起きていた。
 
 - [ ] **Step 5: 表示用の小道具を追加する**
 
@@ -1681,9 +1650,48 @@ git commit -m "feat(top): add streak pill and collapsible session history"
 			page.getByTestId('chapter-card').filter({ hasText: '1章' }).getByTestId('chapter-card-count')
 		).toContainText('0/2 合格');
 		await expect(trackCard(page, 'トラック1-1').getByTestId('track-card-count')).toContainText('0/1 合格');
-		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toContainText('0/1 合格');
+		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toContainText('0/2 合格');
 	});
 ```
+
+**重要 — このテストは意図反转している**: トラック1 は自分の文 1 文 + 子トラックの 1 文 = **2**。
+旧設計（トラック=直属）は `0/1 合格` を assert していたが、それは行の `M` が実際のセッション長と
+食い違っていた（`トラック1` を押すと 2 文のセッションが始まる）。サブツリー基準に統一したので
+`0/2 合格` が正。**テスト名とコメントも正確に直す**（Assert 弱化ではなく、意図的に変えた挙動の反映）:
+
+```ts
+	test('every row counts the subtree it would actually practise', async ({ page }) => {
+		await gotoWithSeed(page, NESTED_TRACK_SEED);
+
+		// 1章 = 1 (トラック1) + 1 (トラック1-1) = 2.
+		// トラック1 = its own 1 + its child's 1 = 2 — the session started from
+		// トラック1 really does walk both sentences.
+		// トラック1-1 = 1 (leaf).
+		await expect(
+			page.getByTestId('chapter-card').filter({ hasText: '1章' }).getByTestId('chapter-card-count')
+		).toContainText('0/2 合格');
+		await expect(trackCard(page, 'トラック1-1').getByTestId('track-card-count')).toContainText('0/1 合格');
+		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toContainText('0/2 合格');
+	});
+```
+
+さらに `tests/top.spec.ts:191` の `a track is startable when only a descendant track holds sentences` に
+**行の文言のアサーションを追加**する（現状はボタンの数しか見ていないので、今回の矛盾が再発しても
+テストは緑のまま）:
+
+```ts
+		// Subtree-based, not own-sentence-based: every ancestor of the sentence
+		// (the leaf, the empty intermediate track, the chapter) is startable.
+		await expect(page.getByTestId('chapter-card').getByTestId('card-start')).toHaveCount(1);
+		await expect(trackCard(page, '文のないトラック').getByTestId('card-start')).toHaveCount(1);
+		await expect(trackCard(page, '孫のトラック').getByTestId('card-start')).toHaveCount(1);
+
+		// And the empty intermediate track must not read "0文" next to a live
+		// button — its subtree holds s2, so the session started from it is 1 long.
+		await expect(trackCard(page, '文のないトラック').getByTestId('track-card-count')).toContainText(
+			'0/1 合格'
+		);
+	});
 
 **注意**: `toHaveText` ではなく `toContainText` を使う。章行の `chapter-card-count` は言語バッジと同じ `flex` コンテナ内にあり、`toHaveText` は完全一致を要求するため。
 
@@ -1890,7 +1898,7 @@ test.describe('Practice history', () => {
 		await expect(page.getByTestId('history-item').first()).toContainText('2 文 合格');
 	});
 
-	test('track rows render one dot per own sentence in practice order', async ({ page }) => {
+	test('track rows render one dot per subtree sentence in practice order', async ({ page }) => {
 		await gotoWithSeed(page, SEED);
 		await seedHistory(page, {
 			version: 1,
@@ -1905,6 +1913,25 @@ test.describe('Practice history', () => {
 		await expect(dots).toHaveCount(2);
 		await expect(dots.nth(0)).toHaveAttribute('data-dot', 'passed');
 		await expect(dots.nth(1)).toHaveAttribute('data-dot', 'hard');
+	});
+
+	test('an empty intermediate track reads like the session it starts', async ({ page }) => {
+		await gotoWithSeed(page, {
+			chapters: [{ id: 'ch-1', name: '1章', parentId: null, order: 1 }],
+			tracks: [
+				{ id: 't1', chapterId: 'ch-1', name: '空のトラック', order: 1, parentId: null },
+				{ id: 't1-1', chapterId: 'ch-1', name: '孫のトラック', order: 1, parentId: 't1' }
+			],
+			sentences: [
+				{ id: 's2', chapterId: 'ch-1', trackId: 't1-1', text: 'い', language: 'ja', order: 1 }
+			]
+		});
+		// Not "0文" next to a live button — its subtree holds s2, so starting
+		// from it really does run one sentence.
+		const row = page.getByTestId('track-card').filter({ hasText: '空のトラック' });
+		await expect(row.getByTestId('card-start')).toHaveCount(1);
+		await expect(row.getByTestId('track-card-count')).toContainText('0/1 合格');
+		await expect(row.getByTestId('track-dots').locator('span')).toHaveCount(1);
 	});
 
 	test('lowering the threshold raises the pass count without practising', async ({ page }) => {
@@ -2136,7 +2163,7 @@ git commit -m "test(history): cover progress, dots, threshold, streak and the se
 ```md
 - **練習結果の記録** (`src/lib/history.ts`): 文統計は `doTranscribe` の採点確定点 (`practice/+page.svelte:747-755` の直後) で 1 文ごとに `recordSentenceAttempt`、セッション record は **`summary` 到達時（進捗 `$effect` 内）と `onDestroy` の両方**で `finalizeSession` する。`onDestroy` はブラウザの reload / タブを閉じた時には**発火しない**（JS realm が破棄されるだけで Svelte の destroy hook が走らない）ので、summary での確定は必須であり、`onDestroy` は SvelteKit のリンク遷移やブラウザの「戻る」で**セッション途中離脱**した時の担当になる。`settleSession()` が `sessionStartedAt = null` で終わるので二重計上は起きない。`retryFailedOnly()` は `startSession()` を**呼ばない**ので、`beginSession()` で `sessionStartedAt` を再スタンプしないと不正データを書く
 - **合格状態は保存しない。** `SentenceStat` は `attempts` / `lastScore` / `lastPracticedAt` の 3 つだけ。合格/苦手/未着手は `lastScore` と**現在の** `threshold` から導出する (閾値を下げると進捗が動くのが正しい)
-- **章行とトラック行の文数の基準は混ぜない。** 章 = `getNodeSentences` のサブツリー、トラック = `s.trackId === trackId` の直属のみ。`getNodeSentences` は**トラックにもサブツリーを返す** (`sentences.ts`) ので、トラック行は必ず filter する。`displaySentencesByNode` がこの 1 系統を持ち、`statsByNode` がそこから集計する
+- **章行とトラック行の文数の基準は混ぜない — 両方ともサブツリー。** `getNodeSentences(nodeId, …)` の結果をそのまま使い、`/practice?node=` と同じ集合を回るので行の `M` が実セッション長と一致する。`canPractice()` も同じ基準。`getNodeSentences` は**トラックにもサブツリーを返す** (`sentences.ts`) ので、トラック行を直属に絞ると「`0文` なのに `練習` ボタン」の矛盾（AGENTS.md が禁じる）が起きる
 - **履歴はデバイスローカルのまま。** ロードマップ⑥ のクラウド同期対象に**含めない** (練習実績はマージ不能 — last-write-wins で上書きされる)
 ```
 
