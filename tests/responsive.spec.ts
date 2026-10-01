@@ -398,6 +398,114 @@ test.describe('Responsive layout (390px)', () => {
 	});
 
 	/**
+	 * `expectNoHorizontalOverflow` is BLIND to this one, which is why it survived:
+	 * the badge row carries `overflow-hidden`, so a count that does not fit is cut
+	 * inside its own box while `documentElement` stays at scrollWidth === clientWidth.
+	 * Measured before the fix: 2 language badges + 120 sentences → the count text
+	 * column shrank to 115px against a 134px `120/120 合格 · 95%`, so 19px of the
+	 * average — the number the user asked for — was invisible.
+	 *
+	 * So this asserts the CLIP on the count element itself, and separately that the
+	 * page still does not overflow. The second half of the test re-seeds a
+	 * single-language chapter to prove the wrap does not cost a single-language row
+	 * any height (nothing wraps there: badge + count = 160px of the 172px column).
+	 */
+	test('a two-badge chapter row wraps the count instead of clipping the average', async ({
+		page
+	}) => {
+		/** 120 sentences alternating ja/en → two badges, all scored 95. */
+		function mixedContent(languages: ('ja' | 'en')[]) {
+			return {
+				chapters: [{ id: 'ch-1', name: '混在チャプター', parentId: null, order: 1 }],
+				tracks: [{ id: 'tr-1', chapterId: 'ch-1', parentId: null, order: 1, name: 'トラック' }],
+				sentences: Array.from({ length: 120 }, (_, i) => ({
+					id: `s-${i}`,
+					chapterId: 'ch-1',
+					trackId: 'tr-1',
+					text: `文 ${i}`,
+					language: languages[i % languages.length],
+					order: i + 1
+				}))
+			};
+		}
+
+		const readCount = () =>
+			page.evaluate(() => {
+				const el = document.querySelector('[data-testid="chapter-card-count"]');
+				const badges = Array.from(document.querySelectorAll('.language-badge'));
+				const tops = badges.map((b) => Math.round(b.getBoundingClientRect().top));
+				const row = el!.parentElement!;
+				return {
+					text: el!.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+					clipped: el!.scrollWidth - el!.clientWidth,
+					client: el!.clientWidth,
+					scroll: el!.scrollWidth,
+					badgeCount: badges.length,
+					badgesShareOneLine: new Set(tops).size === 1,
+					countBelowBadges:
+						Math.round(el!.getBoundingClientRect().top) > Math.min(...tops),
+					rowHeight: Math.round(row.getBoundingClientRect().height),
+					cardHeight: Math.round(
+						document.querySelector('[data-testid="chapter-card"]')!.getBoundingClientRect().height
+					),
+					docOverflow:
+						document.documentElement.scrollWidth - document.documentElement.clientWidth
+				};
+			});
+
+		const seedAll95 = () =>
+			seedHistory(page, {
+				version: 1,
+				sessions: [],
+				sentences: Object.fromEntries(
+					Array.from({ length: 120 }, (_, i) => [
+						`s-${i}`,
+						{ attempts: 1, scores: [95], lastPracticedAt: Date.now() }
+					])
+				)
+			});
+
+		await gotoWithSeed(page, mixedContent(['ja', 'en']));
+		await seedAll95();
+
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('120/120 合格 · 95%');
+		const mixed = await readCount();
+		logEvidence(
+			`\n=== chapter count clip @390px (2 badges): "${mixed.text}" client=${mixed.client} scroll=${mixed.scroll} clipped=${mixed.clipped} rowH=${mixed.rowHeight} cardH=${mixed.cardHeight}`
+		);
+		// The average is fully visible. 19px of it were cut before the fix.
+		expect(mixed.badgeCount, 'the mixed chapter must render both language badges').toBe(2);
+		expect(mixed.clipped, 'the count text must not be clipped inside the badge row').toBe(0);
+		expect(mixed.scroll).toBe(mixed.client);
+		// The fix's mechanism, not a coincidence: the badges stay on one line and
+		// the count moved below them, so nothing was simply hidden.
+		expect(mixed.badgesShareOneLine).toBe(true);
+		expect(mixed.countBelowBadges).toBe(true);
+		// …and wrapping did not turn into page overflow.
+		expect(mixed.docOverflow).toBe(0);
+
+		// Single-language: one badge, so badges + count still fit on one line and
+		// the row must be exactly as short as it was before the fix.
+		await gotoWithSeed(page, mixedContent(['ja']));
+		await seedAll95();
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('120/120 合格 · 95%');
+		const single = await readCount();
+		logEvidence(
+			`\n=== chapter count clip @390px (1 badge): "${single.text}" clipped=${single.clipped} rowH=${single.rowHeight} cardH=${single.cardHeight}`
+		);
+		expect(single.badgeCount).toBe(1);
+		expect(single.clipped).toBe(0);
+		// One line: 20px. A wrap that fired here would mean the fix costs every
+		// single-language chapter 25px of height for nothing.
+		expect(single.badgesShareOneLine).toBe(true);
+		expect(single.countBelowBadges).toBe(false);
+		expect(single.rowHeight, 'a one-badge row must stay on a single line').toBe(20);
+		expect(single.docOverflow).toBe(0);
+
+		await page.screenshot({ path: `${SCREENSHOT_DIR}/top-two-badge-count.png`, fullPage: true });
+	});
+
+	/**
 	 * The three gates the top-page scans above cannot cover, because they seed
 	 * only `oboeru:v1` and so never render the new UI:
 	 *

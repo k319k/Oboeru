@@ -381,7 +381,17 @@
 					{/if}
 					<div class="flex min-w-0 flex-1 flex-col gap-0.5 px-2">
 						<span class="chapter-name truncate text-base font-semibold">{chapter.name}</span>
-						<div class="flex items-center gap-1.5 overflow-hidden">
+						<!-- `flex-wrap`, deliberately. The badges keep their intrinsic width
+						     and the COUNT drops to its own line when the two badges plus the
+						     count do not fit: this column is 172px at 390px, two badges take
+						     ~52px of it, and `120/120 合格 · 95%` is 134px — so the average,
+						     the number the user asked for, was clipped 19px (measured) with no
+						     page overflow at all, because `overflow-hidden` cuts it inside its own
+						     box. With one badge (160px total) nothing wraps and the row is
+						     byte-identical to before, so a single-language chapter pays nothing
+						     for this. `truncate` stays as the last-resort guard for a count
+						     wider than the whole column (4-digit denominators). -->
+						<div class="flex flex-wrap items-center gap-1.5 overflow-hidden">
 							{#each chapterLanguages(chapter.id) as lang (lang)}
 								{@render languageBadge(lang)}
 							{/each}
