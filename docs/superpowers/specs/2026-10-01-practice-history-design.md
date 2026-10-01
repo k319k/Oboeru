@@ -295,16 +295,20 @@ function beginSession(): void {
 - `startSession()`（`:782-785`）で `beginSession()` を呼ぶ（復元時も新课もここを通る）
 - **`retryFailedOnly()`（`:321-333`）でも `beginSession()` を呼ぶ**。ここが第 1 の罠: `retryFailedOnly` は
   `startSession()` を**呼ばない**（`sessionReady` を触らず `phase = 'show'` を代入するだけ）。
-  ここをспецにしないと再挑戦セッションの `startedAt` / `durationMs` が 1 つ前のセッションの開始時刻の
+  ここを直さないと再挑戦セッションの `startedAt` / `durationMs` が 1 つ前のセッションの開始時刻の
   まま書かれ、ガード（`sessionStartedAt !== null`）を通して**静かに不正データを書く**
-- **確定は `onDestroy` のみ**。`summary` 到達時には確定しない — summary の「間違えた文だけやり直す」が
-  同じマウント内で別セッションを開始するため、summary で確定すると二重計上になる
+- **確定は `summary` 到達時と `onDestroy` の両方**。`onDestroy` だけだと、summary に到達してから
+  リロードやタブを閉じた場合そのセッションが**永久に失われる**（summary で既に
+  `clearPracticeProgress()` を呼ぶので、次のマウントは `completedCount === 0` で early return する）。
+  ロードマップ⑤ は PWA (Android)、⑥ はクラウド同期で、タブを背景に入れるのが既定の挙動
+- 二重計上は起きない。`settleSession()` は末尾で `sessionStartedAt = null` にするので 2 回目の呼び出しは
+  no-op。`retryFailedOnly()` は settle → リセット → `beginSession()` の順
 - `retryFailedOnly()` は先頭で現行セッションを確定してから `:326-331` のリセットを実行し、続けて
   `beginSession()` で再スタンプする
 - `attempted === 0` のセッションは記録しない（開いてすぐ閉じただけの閲覧を履歴に載せない）
 - 記録対象は `sessionNodeId` が解決済みで `sessionStartedAt !== null` のときだけ
 
-**既知の残余**: タブを強制終了すると `onDestroy` が走らないため、**そのセッション行だけ消える**
+**既知の残余**: OS にタブを強制終了させた場合（`onDestroy` も `summary` も走らない）、**そのセッション行だけ消える**
 （文統計は採点ごとに書かれているので失われない）。1 文も採点していないなら残るべきものが無いので実害は無い。
 
 ## エラー処理

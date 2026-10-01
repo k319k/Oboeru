@@ -984,19 +984,43 @@ import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 			recordSentenceAttempt(s.id, finalScore, Date.now());
 ```
 
-- [ ] **Step 7: `onDestroy` でセッションを確定する**
+- [ ] **Step 7: summary 到達時と `onDestroy` の両方でセッションを確定する**
 
-`src/routes/practice/+page.svelte:2` の `import { onMount } from 'svelte';` を
+**なぜ summary でも確定するのか**: `onDestroy` だけだと、summary に到達してからリロードやタブを
+閉じた場合、そのセッションは**永久に失われる**。既存の `$effect` が summary で既に
+`clearPracticeProgress()` を呼ぶので、次の mount は `completedCount === 0` で始まり
+`settleSession()` のガードが早期 return する。ロードマップ⑤ は PWA (Android)、⑥ はクラウド同期で、
+タブを背景に入れるのが既定の挙動なので、これは通常の経路で起きる。
+
+**二重計上は起きない**: `settleSession()` は末尾で `sessionStartedAt = null` にするため、2 回目の
+呼び出しは no-op。`retryFailedOnly()` は settle → カウンタリセット → `beginSession()` の順なので、
+summary で確定していても正しい。
+
+`src/routes/practice/+page.svelte:2` の import を
 
 ```ts
 import { onMount, onDestroy } from 'svelte';
 ```
 
-に 바꾸し、`onMount` ブロック（`:854-907`）の直後に追加する。
+にし、既存の `$effect`（`phase === 'summary'` で `clearPracticeProgress()` を呼ぶところ）に
+`settleSession()` を 1 行足す。
 
 ```ts
-	// The session record is settled here, not at summary: summary's retry
-	// button starts another session inside this mount.
+	$effect(() => {
+		if (!sessionReady) return;
+		if (phase === 'summary') {
+			clearPracticeProgress();
+			settleSession();
+			return;
+		}
+```
+
+さらに `onMount` ブロック（`:854-907`）の直後に追加する。
+
+```ts
+	// Settled at summary as well: onDestroy alone loses a session the user
+	// completed and then reloaded or closed the tab. settleSession() nulls
+	// sessionStartedAt, so the second call is a no-op rather than a double count.
 	onDestroy(() => {
 		settleSession();
 	});
@@ -1957,6 +1981,107 @@ test.describe('Practice history', () => {
 		await expect(page.getByTestId('chapter-card-count').first()).toContainText('0文');
 	});
 });
+```
+
+**Task 3 のレビューで追加された必須アサーション（レビューで欠落と判定された 3 件）** —
+これらは `practice/+page.svelte` の `settleSession()` / `beginSession()` / `nodeName` 経路に対する
+**唯一のカバレッジ**。どれか 1 行を削除しても現状の全スイートは緑のままなので、**このタスクで初めて固定する**。
+
+```ts
+	test('the retry-failed session re-stamps startedAt instead of inheriting the old clock', async ({
+		page
+	}) => {
+		// Arrange: finish a session with ONE failure so 間違えた文だけやり直す appears.
+		await mockTranscribe(page, { 'あああ': 'あああ', 'いいい': 'alas' });
+		await gotoWithSeed(page, SEED);
+		await page.goto('/practice?node=ch-1');
+		await expect(page.getByTestId('record-ready')).toBeVisible();
+
+		for (let i = 0; i < 2; i++) {
+			await page.keyboard.down('Space');
+			await page.waitForTimeout(900);
+			await page.keyboard.up('Space');
+			await expect(page.getByTestId('feedback')).toBeVisible();
+			await page.keyboard.press('Space');
+		}
+		await expect(page.getByTestId('summary')).toBeVisible();
+		await page.keyboard.up('Space');
+
+		// Act: restart with only the failed sentence, then finish it after a real delay.
+		await page.waitForTimeout(1500);
+		await page.getByTestId('retry-failed-btn').click();
+		await expect(page.getByTestId('record-ready')).toBeVisible();
+		await page.keyboard.down('Space');
+		await page.waitForTimeout(900);
+		await page.keyboard.up('Space');
+		await expect(page.getByTestId('feedback')).toBeVisible();
+		await page.keyboard.press('Space');
+		await expect(page.getByTestId('summary')).toBeVisible();
+		await page.keyboard.up('Space');
+
+		// Assert: TWO session rows exist, and the retry's startedAt is ~1.5s later
+		// than the first session's — not a copy of it.
+		const records = await page.evaluate(() =>
+			JSON.parse(localStorage.getItem('oboeru:history:v1') ?? '{}').sessions ?? []
+		);
+		expect(records).toHaveLength(2);
+		expect(records[0].startedAt).toBeGreaterThan(records[1].startedAt);
+		expect(records[0].startedAt - records[1].startedAt).toBeGreaterThan(1000);
+	});
+
+	test('a chapter-started session records the chapter name', async ({ page }) => {
+		await mockTranscribe(page, { 'あああ': 'あああ', 'いいい': 'いいい' });
+		await gotoWithSeed(page, SEED);
+		await page.goto('/practice?node=ch-1');
+		await expect(page.getByTestId('record-ready')).toBeVisible();
+
+		for (let i = 0; i < 2; i++) {
+			await page.keyboard.down('Space');
+			await page.waitForTimeout(900);
+			await page.keyboard.up('Space');
+			await expect(page.getByTestId('feedback')).toBeVisible();
+			await page.keyboard.press('Space');
+		}
+		await expect(page.getByTestId('summary')).toBeVisible();
+		await page.keyboard.up('Space');
+
+		const records = await page.evaluate(() =>
+			JSON.parse(localStorage.getItem('oboeru:history:v1') ?? '{}').sessions ?? []
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0].nodeId).toBe('ch-1');
+		expect(records[0].nodeName).toBe('1章');
+	});
+```
+
+**追加した assertion（summary 確定の分）**: summary 到達後にリロードしてから
+`oboeru:history:v1` を読み、**セッション行が残っている**ことを確認する。これは Task 3 の
+「summary でも確定」追加（`$effect` 内の `settleSession()`） .offset する 1 行を削除しても
+緑のままになるため、同じ理由でここで固定する。
+
+```ts
+	test('a session survives a reload after reaching summary', async ({ page }) => {
+		await mockTranscribe(page, { 'あああ': 'あああ', 'いいい': 'いいい' });
+		await gotoWithSeed(page, SEED);
+		await page.goto('/practice?node=ch-1');
+		await expect(page.getByTestId('record-ready')).toBeVisible();
+		for (let i = 0; i < 2; i++) {
+			await page.keyboard.down('Space');
+			await page.waitForTimeout(900);
+			await page.keyboard.up('Space');
+			await expect(page.getByTestId('feedback')).toBeVisible();
+			await page.keyboard.press('Space');
+		}
+		await expect(page.getByTestId('summary')).toBeVisible();
+		await page.keyboard.up('Space');
+
+		await page.reload();
+		const records = await page.evaluate(() =>
+			JSON.parse(localStorage.getItem('oboeru:history:v1') ?? '{}').sessions ?? []
+		);
+		expect(records).toHaveLength(1);
+		expect(records[0].attempted).toBe(2);
+	});
 ```
 
 **注意**: `mockTranscribe` のシグネチャと `record-ready` / `feedback` / `summary` の testid は `tests/practice.spec.ts` の実物に合わせて調整すること。`tests/practice.spec.ts` の `holdAndRelease` ヘルパー（保持 ≥ 0.7s、`keyboard.up` 前に `keyboard.up('Space')` を必ず呼ぶ）があればそれを使う。**リロード前に `keyboard.up('Space')` を呼ぶこと**（押しっぱなしだと次の down が `event.repeat=true` になり repeat ガードに握り潰される）。`record-ready` の可視待ちを最初の Space keydown の前に必ず入れること（hydration 前に発火した keydown はワンショットで消える）。
