@@ -326,14 +326,8 @@
 						</div>
 					{/if}
 {#if nodeStats(track.id).practiced > 0}
-						<!-- 直近 N 回 = minSamples, the SMALLEST window in this row, so the
-						     number never claims more evidence than the row's weakest
-						     sentence has. 直近 1 回 is deliberate: it says the verdict rests
-						     on one attempt, which is exactly what the pre-window version
-						     of this row hid. -->
 						<span class="text-sm text-muted-foreground" data-testid="track-last">
-							最終 {formatRelativeDay(nodeStats(track.id).lastPracticedAt ?? nowMs, nowMs)} · 直近
-							{nodeStats(track.id).minSamples} 回
+							最終 {formatRelativeDay(nodeStats(track.id).lastPracticedAt ?? nowMs, nowMs)}
 						</span>
 					{/if}
 					</div>
@@ -389,8 +383,11 @@
 						     page overflow at all, because `overflow-hidden` cuts it inside its own
 						     box. With one badge (160px total) nothing wraps and the row is
 						     byte-identical to before, so a single-language chapter pays nothing
-						     for this. `truncate` stays as the last-resort guard for a count
-						     wider than the whole column (4-digit denominators). -->
+						     for this. `truncate` stays on the count because the row
+						     already has `overflow-hidden`, so it can only decide whether
+						     an ellipsis appears — the page never overflows either way.
+						     (It is NOT a 4-digit guard: measured, `1000/1000 合格 · 95%`
+						     is 152px and fits the 172px column with clip 0.) -->
 						<div class="flex flex-wrap items-center gap-1.5 overflow-hidden">
 							{#each chapterLanguages(chapter.id) as lang (lang)}
 								{@render languageBadge(lang)}
@@ -417,16 +414,20 @@
 							></div>
 						</div>
 						{#if nodeStats(chapter.id).practiced > 0}
-							<!-- Wraps, never truncates. This line grew by `· 直近 N 回` and the
-							     chapter row's text column measures 172px at 390px (the expand
-							     toggle and the 練習 button take the rest), so `truncate`
-							     clipped 30-70px here — 直近 10 回 was invisible on exactly the
-							     row where the evidence matters most. Measured at 390px
-							     (doc overflow 0, clip 0, card 92px → 112px); see
-							     .superpowers/sdd/2026-10-01-practice-history-score-window-report.md -->
+							<!-- Wraps, never truncates. The chapter row's text column
+							     measures 172px at 390px (the expand toggle and the 練習
+							     button take the rest); this line is 131px, so it fits on
+							     one line (measured, clip 0, card 92px). It used to carry
+							     `· 直近 1 回`, which needed more than the 172px column and
+							     pushed the line to two (card 112px). `truncate` would be
+							     worse than either: the ancestors are `overflow-hidden`, so
+							     it keeps the page at scrollWidth === clientWidth and cuts
+							     the tail off inside the row with no page-level overflow to
+							     signal it — exactly the failure `expectNoHorizontalOverflow`
+							     cannot see. So it wraps. -->
 							<span class="text-sm text-muted-foreground" data-testid="chapter-last">
 								最終 {formatRelativeDay(nodeStats(chapter.id).lastPracticedAt ?? nowMs, nowMs)} · 苦手
-								{nodeStats(chapter.id).hard} 文 · 直近 {nodeStats(chapter.id).minSamples} 回
+								{nodeStats(chapter.id).hard} 文
 							</span>
 						{/if}
 					</div>

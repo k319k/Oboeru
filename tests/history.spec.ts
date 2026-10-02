@@ -584,17 +584,12 @@ test.describe('Practice history', () => {
 			}
 		});
 
-		// 直近 1 回: both sentences were scored once, so minSamples is 1 and the
-		// row says its evidence is a single attempt instead of hiding it behind
-		// a bare 平均.
-		await expect(page.getByTestId('chapter-last').first()).toHaveText(
-			'最終 今日 · 苦手 1 文 · 直近 1 回'
-		);
-		// The track row carries the date and the window, but not the 苦手 count
-		// (the dots do that).
-		await expect(trackCard(page, 'トラック1').getByTestId('track-last')).toHaveText(
-			'最終 今日 · 直近 1 回'
-		);
+		// No sample-size label: the row says the date and the 苦手 count, nothing
+		// about how deep the evidence is (the 直近 N 回 label was removed as
+		// misleading — see the spec's 決定事項).
+		await expect(page.getByTestId('chapter-last').first()).toHaveText('最終 今日 · 苦手 1 文');
+		// The track row carries the date but not the 苦手 count (the dots do that).
+		await expect(trackCard(page, 'トラック1').getByTestId('track-last')).toHaveText('最終 今日');
 
 		// A never-practised node has nothing to date, so the line is gated on
 		// practiced > 0 — トラック2 holds no sentences at all here.
@@ -639,16 +634,15 @@ test.describe('Practice history', () => {
 		const dots = trackCard(page, 'トラック1').getByTestId('track-dots').locator('span');
 		await expect(dots.nth(0)).toHaveAttribute('data-dot', 'hard');
 		await expect(dots.nth(1)).toHaveAttribute('data-dot', 'passed');
-		// And the window size is stated, so the reader knows what the mean was
-		// taken over.
-		await expect(page.getByTestId('chapter-last').first()).toHaveText(
-			'最終 今日 · 苦手 1 文 · 直近 10 回'
-		);
+		// The verdict came from a 10-deep mean, but the row does not claim a
+		// sample size — the label was removed for claiming one wrongly.
+		await expect(page.getByTestId('chapter-last').first()).toHaveText('最終 今日 · 苦手 1 文');
 	});
 
-	// 直近 N 回 is the MINIMUM window in the row. A maximum would read 10 and
-	// claim evidence the row's second sentence does not have.
-	test('直近 N 回 reports the weakest practised sentence, not the strongest', async ({
+	// A lopsided window must change nothing about what the row reports. This is
+	// the seed that got 直近 N 回 deleted: 19 deep + 1 shallow printed the shallow
+	// one's depth under a 95% that rested on all twenty, i.e. false for 19 of 20.
+	test('the row states no sample size, so a lopsided window is not mislabelled', async ({
 		page
 	}) => {
 		const now = Date.now();
@@ -662,12 +656,15 @@ test.describe('Practice history', () => {
 			}
 		});
 
-		await expect(page.getByTestId('chapter-last').first()).toHaveText(
-			'最終 今日 · 苦手 0 文 · 直近 1 回'
-		);
-		await expect(trackCard(page, 'トラック1').getByTestId('track-last')).toHaveText(
-			'最終 今日 · 直近 1 回'
-		);
+		// Both sentences pass and the row says 2/2 — the only numbers on it are
+		// about the SENTENCES. No 直近 / 回 anywhere on either row kind.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('2/2 合格 · 95%');
+		await expect(page.getByTestId('chapter-last').first()).toHaveText('最終 今日 · 苦手 0 文');
+		await expect(trackCard(page, 'トラック1').getByTestId('track-last')).toHaveText('最終 今日');
+		for (const id of ['chapter-last', 'track-last']) {
+			await expect(page.getByTestId(id).first()).not.toContainText('直近');
+			await expect(page.getByTestId(id).first()).not.toContainText('回');
+		}
 	});
 
 	// The migration, at the boundary it actually lives: storage written by the
@@ -690,9 +687,7 @@ test.describe('Practice history', () => {
 		// = 66 — identical to what the previous release's own numbers produced,
 		// because the pre-window label was never a score at all (it was 1/2).
 		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('1/2 合格 · 66%');
-		await expect(page.getByTestId('chapter-last').first()).toHaveText(
-			'最終 今日 · 苦手 1 文 · 直近 1 回'
-		);
+		await expect(page.getByTestId('chapter-last').first()).toHaveText('最終 今日 · 苦手 1 文');
 		const dots = trackCard(page, 'トラック1').getByTestId('track-dots').locator('span');
 		await expect(dots.nth(0)).toHaveAttribute('data-dot', 'passed');
 		await expect(dots.nth(1)).toHaveAttribute('data-dot', 'hard');

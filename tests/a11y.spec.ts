@@ -76,6 +76,15 @@ const HISTORY_SEED = {
 		}
 	],
 	sentences: {
+		// DELIBERATE legacy shape — do NOT "modernise" this to `scores`. It is the
+		// browser-level proof that the read-side shim (`readScores` in
+		// src/lib/history.ts) leaves the verdict untouched across the deploy:
+		// mean([lastScore]) === lastScore, so every axe scan and tap-target
+		// assertion below runs against storage the previous release wrote. AGENTS.md
+		// says `lastScore` no longer EXISTS in the type; that is about the writer,
+		// not about this fixture. `tests/history.spec.ts` and unit tests cover the
+		// same shim; this one is the only place it is exercised through a real page
+		// load. AGENTS.md's E2E section records the same instruction.
 		's-1': { attempts: 2, lastScore: 92, lastPracticedAt: Date.now() - 86_400_000 },
 		's-2': { attempts: 1, lastScore: 45, lastPracticedAt: Date.now() - 86_400_000 }
 	}

@@ -102,8 +102,8 @@ const HISTORY_SEED = {
 	// Scores chosen against the default threshold of 80: 96/88 pass, 58/71 are
 	// hard, and h-4 has no stat at all so its dot stays untouched. The window
 	// MEAN is what decides, so each entry carries a full 3- or 2-attempt window
-	// rather than a lone score — and its length (min 1, max 3) also puts a
-	// realistic 直近 N 回 on the rows this seed renders.
+	// rather than a lone score — a lopsided depth is exactly the shape that got
+	// the 直近 N 回 label removed, so the seed must not depend on it.
 	sentences: {
 		'h-1': { attempts: 3, scores: [96, 96, 96], lastPracticedAt: HISTORY_NOW },
 		'h-2': { attempts: 1, scores: [58], lastPracticedAt: HISTORY_NOW },
@@ -573,11 +573,11 @@ test.describe('Responsive layout (390px)', () => {
 			'/ history: the truncated name must stay inside the viewport'
 		).toBeLessThanOrEqual(390);
 
-		// The 最終/苦手/直近 line must not CLIP. `expectNoHorizontalOverflow` above
+		// The 最終/苦手 line must not CLIP. `expectNoHorizontalOverflow` above
 		// cannot see clipping: `truncate` keeps the page at scrollWidth === clientWidth
 		// while cutting the text off inside the row. The chapter row's text column
-		// measures 172px at 390px, and `最終 今日 · 苦手 2 文 · 直近 1 回` needs 202px —
-		// so `truncate` on this line silently hid 直近 N 回 on every chapter row
+		// measures 172px at 390px, and this line outgrew it when it carried
+		// `· 直近 1 回` — with `truncate` it then hid its tail on every chapter row
 		// (measured 30-70px clipped). It wraps instead. Adding `truncate` back makes
 		// this assertion fail.
 		const lastLines = await page.evaluate(() => {
@@ -598,10 +598,14 @@ test.describe('Responsive layout (390px)', () => {
 			logEvidence(`\n=== clipped text @390px: ${line.testid} "${line.text}" clipped=${line.clipped}px`);
 			expect(line.clipped, `${line.testid} "${line.text}" is clipped`).toBeLessThanOrEqual(0);
 		}
-		// 直近 N 回 actually reaches the screen on both row kinds (a clipped tail
-		// would leave the text present but invisible).
-		await expect(page.getByTestId('chapter-last').first()).toContainText('直近 1 回');
-		await expect(page.getByTestId('track-last').first()).toContainText('直近 1 回');
+		// The whole 最終 line reaches the screen on both row kinds — a clipped
+		// tail would leave the text present but invisible. `苦手 2 文` is the
+		// widest thing this line can say now that 直近 N 回 is gone.
+		await expect(page.getByTestId('chapter-last').first()).toContainText('苦手');
+		await expect(page.getByTestId('track-last').first()).toContainText('最終');
+		// And it states no sample size, so nothing depends on a window depth.
+		await expect(page.getByTestId('chapter-last').first()).not.toContainText('直近');
+		await expect(page.getByTestId('track-last').first()).not.toContainText('直近');
 
 		// `(削除済み)` rides OUTSIDE the truncated name: with a 120-char name it is
 		// the only thing telling the user the node is gone.

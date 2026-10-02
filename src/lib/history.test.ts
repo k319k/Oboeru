@@ -127,7 +127,10 @@ describe('loadHistory — defaults and validation', () => {
 		expect(data.sessions[0].passedSentences).toBe(2);
 		expect(data.sessions[0].skipped).toBe(0);
 		expect(data.sentences.s1.attempts).toBe(0);
-		expect(data.sentences.s1.scores).toEqual([80, 80, 0]);
+		// The window goes through the SAME `score()` the writer uses, so a
+		// fractional sample rounds rather than floors (80.9 → 81) and a negative
+		// one still floors to 0. See the clamp describe block below.
+		expect(data.sentences.s1.scores).toEqual([80, 81, 0]);
 	});
 
 	it('truncates sessions to the newest 500, keeping newest-first order', () => {
@@ -198,8 +201,9 @@ describe('recordSentenceAttempt', () => {
 	});
 
 	// The window has a bound, on BOTH sides. Without the write-side cap the
-	// persisted array grows without limit (localStorage quota, and the AGENTS.md
-	// ~80KB budget for 1000 sentences); without the read-side cap a hand-edited
+	// persisted array grows without limit (localStorage quota — the spec's
+	// 決定事項 3 measures ~95KB for 1000 fully-drilled sentences in this
+	// shape, against a 5MB budget); without the read-side cap a hand-edited
 	// or future value decides the verdict. Asserting only the re-read shape
 	// would pass with the write cap deleted — loadHistory() re-clips — so the
 	// raw payload is pinned here as well.
@@ -266,7 +270,6 @@ describe('loadHistory — the pre-window shape is absorbed, not discarded', () =
 		expect(node.passed).toBe(1);
 		expect(node.hard).toBe(0);
 		expect(node.avgScore).toBe(87);
-		expect(node.minSamples).toBe(1);
 	});
 
 	it('prefers a real window over a stale lastScore on the same entry', () => {
@@ -301,7 +304,9 @@ describe('loadHistory — the pre-window shape is absorbed, not discarded', () =
 
 	// A window longer than SCORE_WINDOW can only arrive from a hand-edited or
 	// future value; the read side must not hand back more than the verdict uses.
-	it('caps an over-long stored window to the newest SCORE_WINDOW', () => {
+	// The tail is ALSO clamped, so the newest four samples all read 100 rather
+	// than 110/120/130 — see the clamp test below for why the read path clamps.
+	it('caps an over-long stored window to the newest SCORE_WINDOW, clamped', () => {
 		seed({
 			version: 1,
 			sessions: [],
@@ -313,7 +318,80 @@ describe('loadHistory — the pre-window shape is absorbed, not discarded', () =
 				}
 			}
 		});
-		expect(H.loadHistory().sentences.s1.scores).toEqual([40, 50, 60, 70, 80, 90, 100, 110, 120, 130]);
+		expect(H.loadHistory().sentences.s1.scores).toEqual([40, 50, 60, 70, 80, 90, 100, 100, 100, 100]);
+	});
+});
+
+// A score is a percentage, but localStorage is a bag of numbers a hand-edited
+// payload, a future writer or a devtools poke can put anything into. Before the
+// row label started printing the average, an out-of-range value was merely
+// compared to the threshold, so `500` was invisible; it now renders as text.
+describe('loadHistory — a stored score is clamped to 0-100 on the READ path', () => {
+	it('clamps a hand-edited over-100 lastScore instead of rendering 500%', () => {
+		seed({ version: 1, sessions: [], sentences: { s1: { attempts: 1, lastScore: 500, lastPracticedAt: 1 } } });
+		const stats = H.loadHistory().sentences;
+		expect(stats.s1.scores).toEqual([100]);
+		// The rendered label is the mean, so this is where 500 would have shown.
+		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80).avgScore).toBe(100);
+	});
+
+	it('clamps every element of a stored window, on both edges', () => {
+		seed({
+			version: 1,
+			sessions: [],
+			sentences: { s1: { attempts: 3, scores: [-40, 87, 140], lastPracticedAt: 1 } }
+		});
+		expect(H.loadHistory().sentences.s1.scores).toEqual([0, 87, 100]);
+		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, H.loadHistory().sentences, 80).avgScore).toBe(62);
+	});
+
+	// A negative score was already floored at 0 by the old `nonNegInt`, so that
+	// half is not the regression; the ceiling is. Assert both so the direction
+	// cannot quietly flip back to floor-only.
+	it('floors a negative stored score at 0', () => {
+		seed({ version: 1, sessions: [], sentences: { s1: { attempts: 1, scores: [-1], lastPracticedAt: 1 } } });
+		expect(H.loadHistory().sentences.s1.scores).toEqual([0]);
+	});
+});
+
+// `readScores()` branches on `scores` first, so a payload carrying BOTH an empty
+// `scores` and a live legacy `lastScore` used to take the empty array, read as
+// mean 0, and silently turn a pass into 苦手. Unreachable from the current
+// writer (it never writes both), but the read path must not be the weaker one.
+describe('loadHistory — an EMPTY scores array does not shadow a live lastScore', () => {
+	it('falls through to lastScore when scores is present but empty', () => {
+		seed({
+			version: 1,
+			sessions: [],
+			sentences: { s1: { attempts: 1, scores: [], lastScore: 87, lastPracticedAt: 1 } }
+		});
+		const stats = H.loadHistory().sentences;
+		expect(stats.s1.scores).toEqual([87]);
+		// The verdict the legacy entry would have had: 87 >= 80 → 合格. Reading
+		// the empty array instead gives mean 0 → 苦手, a silent lost pass.
+		const node = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80);
+		expect(node.passed).toBe(1);
+		expect(node.hard).toBe(0);
+		expect(node.avgScore).toBe(87);
+	});
+
+	// The counterpart must not change: a NON-EMPTY window still wins over a
+	// stale `lastScore` left on the same entry.
+	it('still prefers a non-empty window over a stale lastScore', () => {
+		seed({
+			version: 1,
+			sessions: [],
+			sentences: { s1: { attempts: 2, scores: [95, 40], lastScore: 95, lastPracticedAt: 1 } }
+		});
+		expect(H.loadHistory().sentences.s1.scores).toEqual([95, 40]);
+	});
+
+	// And an entry with an empty `scores` and NO `lastScore` is still 苦手:
+	// the fall-through must not invent evidence.
+	it('reads a genuinely empty entry as 苦手', () => {
+		seed({ version: 1, sessions: [], sentences: { s1: { attempts: 2, scores: [], lastPracticedAt: 1 } } });
+		expect(H.loadHistory().sentences.s1.scores).toEqual([]);
+		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, H.loadHistory().sentences, 80).hard).toBe(1);
 	});
 });
 
@@ -407,7 +485,6 @@ describe('computeNodeStats', () => {
 		expect(node.hard).toBe(1);
 		expect(node.practiced).toBe(2);
 		expect(node.avgScore).toBe(65);
-		expect(node.minSamples).toBe(1);
 		expect(node.lastPracticedAt).toBe(9);
 		// Input order s3 (40 → hard), s1 (90 → passed), s2 (no stat → untouched).
 		expect(node.dots).toEqual(['hard', 'passed', 'untouched']);
@@ -432,7 +509,6 @@ describe('computeNodeStats', () => {
 		const node = H.computeNodeStats(sentences, true, {}, 80);
 		expect(node.dots).toEqual([]);
 		expect(node.avgScore).toBeNull();
-		expect(node.minSamples).toBe(0);
 		expect(node.lastPracticedAt).toBeNull();
 		expect(node.total).toBe(3);
 	});
@@ -484,24 +560,30 @@ describe('computeNodeStats', () => {
 	});
 
 	// One datum is still one verdict: the mean of [95] is 95, so the first
-	// attempt behaves as it always did. 直近 1 回 in the row is what tells the
-	// user the evidence is thin — not a different verdict.
+	// attempt behaves as it always did. The row says nothing about how thin the
+	// evidence is — that label was removed as misleading (see the spec), not a
+	// different verdict.
 	it('passes a sentence scored exactly once', () => {
 		const stats = { s1: stat([95]) };
 		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80).passed).toBe(1);
 		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80).avgScore).toBe(95);
 	});
 
-	it('reports 直近 N 回 as the WEAKEST practised sentence, not the strongest', () => {
-		// s1 has a full window, s2 only one attempt. 最小値 = 1 (the weak side:
-		// 「1文だけ10回・残り19文は1回」で過大に見えないため). The maximum would
-		// read 10 and claim more evidence than the row can show.
+	// The fixture of the measurement that got the 直近 N 回 label removed: one
+	// lopsided window must not change what the row reports about the other two
+	// sentences. `practiced` is a COUNT of sentences with a stat, never a depth.
+	it('counts a one-attempt sentence as practised, whatever the other depths are', () => {
+		// s1 has a full window, s2 only one attempt, s3 none. Same shape as the
+		// 20-sentence chapter in the review (19 deep, 1 shallow), shrunk to fit
+		// the fixture. Window depth never enters the count.
 		const stats = { s1: stat(repeated(95, 10)), s2: stat([40]) };
 		const node = H.computeNodeStats(SENTENCE_FIXTURE, false, stats, 80);
-		expect(node.minSamples).toBe(1);
 		expect(node.practiced).toBe(2);
-		// And with everything equally deep the minimum is the full window.
-		expect(H.computeNodeStats(SENTENCE_FIXTURE, false, { s1: stat(repeated(95, 10)), s2: stat(repeated(95, 4)) }, 80).minSamples).toBe(4);
+		expect(node.total).toBe(3);
+		// (95 + 40) / 2 = 67.5 → 68, per sentence — s1's ten samples weigh the
+		// same as s2's one.
+		expect(node.avgScore).toBe(68);
+		expect(node.dots).toEqual(['untouched', 'passed', 'hard']);
 	});
 
 	it('averages the per-sentence means, so one drilled sentence cannot dominate', () => {
@@ -522,7 +604,6 @@ describe('computeNodeStats', () => {
 			practiced: 0,
 			hard: 0,
 			avgScore: null,
-			minSamples: 0,
 			lastPracticedAt: null,
 			dots: []
 		});

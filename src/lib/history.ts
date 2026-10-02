@@ -93,7 +93,13 @@ function str(value: unknown): string {
 }
 
 /**
- * The stored score window, oldest first, capped at SCORE_WINDOW.
+ * The stored score window, oldest first, clamped 0-100 and capped at SCORE_WINDOW.
+ *
+ * Every value goes through `score()`, not just the write path. A hand-edited
+ * `lastScore: 500` used to survive the read verbatim: the row label was a pass
+ * ratio, so 500 was merely compared against the threshold and never printed.
+ * It prints the average now, so an unclamped read renders literally `500%`. The
+ * clamp is what keeps the displayed mean inside 0-100 no matter what storage holds.
  *
  * MIGRATION — `HistoryData.version` stays 1 forever. loadHistory() shrinks to
  * the empty default on a version mismatch, so bumping it would throw away every
@@ -108,12 +114,18 @@ function str(value: unknown): string {
  * which reads as 苦手. That is the safe direction — it cannot manufacture a pass.
  */
 function readScores(st: Record<string, unknown>): number[] {
-	if (Array.isArray(st.scores)) return st.scores.map(nonNegInt).slice(-SCORE_WINDOW);
-	if (typeof st.lastScore === 'number') return [nonNegInt(st.lastScore)];
+	if (Array.isArray(st.scores) && st.scores.length > 0) {
+		return st.scores.map(score).slice(-SCORE_WINDOW);
+	}
+	// The legacy branch must fire on an EMPTY `scores` too, not just a missing
+	// one: `{"scores": [], "lastScore": 87}` is reachable from a hand-edited or
+	// future payload, and preferring the empty array read as mean 0 → 苦手,
+	// silently dropping a pass. Unreachable from the current writer, but wrong.
+	if (typeof st.lastScore === 'number') return [score(st.lastScore)];
 	return [];
 }
 
-/** Clamped 0-100 integer, or 0 for anything non-finite. */
+/** Clamped 0-100 integer, or 0 for anything non-finite. The ONLY score clamp. */
 function score(value: unknown): number {
 	if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
 	return Math.max(0, Math.min(100, Math.round(value)));
@@ -266,13 +278,6 @@ export interface NodeStats {
 	 * chapter's average. Null when nothing was practised.
 	 */
 	avgScore: number | null;
-	/**
-	 * The smallest `scores.length` among the practised sentences — the N of the
-	 * row's 直近 N 回. The MINIMUM on purpose: 「平均 87%」 alone cannot say
-	 * whether the evidence is one lucky pass or ten steady ones, and the maximum
-	 * would overstate a row whose other sentences have one attempt each.
-	 */
-	minSamples: number;
 	lastPracticedAt: number | null;
 	/** Empty for chapters; for tracks, one entry per display sentence, in display order. */
 	dots: DotState[];
@@ -303,7 +308,6 @@ export function computeNodeStats(
 	let practiced = 0;
 	let hard = 0;
 	let meanSum = 0;
-	let minSamples = Number.POSITIVE_INFINITY;
 	let lastPracticedAt: number | null = null;
 	const dots: DotState[] = [];
 
@@ -316,7 +320,6 @@ export function computeNodeStats(
 		const mean = meanScore(stat.scores);
 		practiced++;
 		meanSum += mean;
-		if (stat.scores.length < minSamples) minSamples = stat.scores.length;
 		if (stat.lastPracticedAt > (lastPracticedAt ?? 0)) lastPracticedAt = stat.lastPracticedAt;
 		if (mean >= threshold) {
 			passed++;
@@ -333,7 +336,6 @@ export function computeNodeStats(
 		practiced,
 		hard,
 		avgScore: practiced > 0 ? Math.round(meanSum / practiced) : null,
-		minSamples: practiced > 0 ? minSamples : 0,
 		lastPracticedAt,
 		dots
 	};

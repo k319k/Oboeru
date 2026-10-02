@@ -1,5 +1,7 @@
 # 練習履歴の記録とトップページへの表示 — 実装計画
 
+> ⚠ **この計画は一部がsuperseded（上位互換ではない）。** `SentenceStat { attempts, lastScore, … }` / `avgLastScore` / `lastScore >= threshold` / 「保存するのは `lastScore`」という記述は**実装で却下された設計**であり、そのまま実行すると「1 回正解しただけで合格」「9 回合格したあとの 1 失敗で不合格」になる。**正は spec の `docs/superpowers/specs/2026-10-01-practice-history-design.md` の決定事項 4（直近 10 回の平均で導出）/ 7・14（`avgScore` は文ごとの平均の平均）/ 11（`SentenceStat` は `scores` と `lastPracticedAt` だけ）**。以下は履歴として原文のまま残してあり、全面書き直しはしていない。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 練習結果（スコア・合格/苦手・最終練習日・過去セッション）を localStorage に永続化し、トップページに行ごとの進捗・ドット・ストリーク・履歴ログを表示する。
