@@ -1,7 +1,7 @@
 import { test, expect, type Page } from './fixtures';
 import { AxeBuilder } from '@axe-core/playwright';
 import { mkdirSync, appendFileSync } from 'node:fs';
-import { gotoWithSeed } from './helpers';
+import { gotoWithSeed, seedHistory } from './helpers';
 import { mockTtsApi, silentWavBytes } from './tts-mock';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,60 @@ const SEED = {
 		{ id: 's-1', chapterId: 'child-1', text: 'こんにちは。', language: 'ja', order: 1 },
 		{ id: 's-2', chapterId: 'child-1', text: 'お元気ですか。', language: 'ja', order: 2 }
 	]
+};
+
+/**
+ * The top-page scans above seed only `oboeru:v1`, so the streak pill, the
+ * progress bars, the dot rows and the whole history section never reach axe.
+ * Seed a history too. Shape per `src/lib/history.ts`:
+ *   - `child-1` still exists → its row gets a live name,
+ *   - `deleted-node` is gone → the row must fall back to the captured
+ *     `nodeName` and render anyway (history outlives the content tree),
+ *   - `endedEarly` / `skipped` exercise the longest row template.
+ */
+const HISTORY_SEED = {
+	version: 1,
+	sessions: [
+		{
+			id: 'sess-1',
+			nodeId: 'child-1',
+			nodeName: '子チャプター',
+			startedAt: Date.now() - 86_400_000,
+			endedAt: Date.now() - 86_400_000 + 30_000,
+			durationMs: 30_000,
+			attempted: 2,
+			passedSentences: 1,
+			totalScore: 170,
+			skipped: 0,
+			endedEarly: false
+		},
+		{
+			id: 'sess-2',
+			nodeId: 'deleted-node',
+			nodeName: '消した章',
+			startedAt: Date.now() - 172_800_000,
+			endedAt: Date.now() - 172_800_000 + 12_000,
+			durationMs: 12_000,
+			attempted: 1,
+			passedSentences: 0,
+			totalScore: 40,
+			skipped: 1,
+			endedEarly: true
+		}
+	],
+	sentences: {
+		// DELIBERATE legacy shape — do NOT "modernise" this to `scores`. It is the
+		// browser-level proof that the read-side shim (`readScores` in
+		// src/lib/history.ts) leaves the verdict untouched across the deploy:
+		// mean([lastScore]) === lastScore, so every axe scan and tap-target
+		// assertion below runs against storage the previous release wrote. AGENTS.md
+		// says `lastScore` no longer EXISTS in the type; that is about the writer,
+		// not about this fixture. `tests/history.spec.ts` and unit tests cover the
+		// same shim; this one is the only place it is exercised through a real page
+		// load. AGENTS.md's E2E section records the same instruction.
+		's-1': { attempts: 2, lastScore: 92, lastPracticedAt: Date.now() - 86_400_000 },
+		's-2': { attempts: 1, lastScore: 45, lastPracticedAt: Date.now() - 86_400_000 }
+	}
 };
 
 const MANAGE_TABS = [
@@ -292,6 +346,21 @@ test.describe('Accessibility (WCAG AA)', () => {
 		await logTapTarget(page, '.chapter-item .expand-toggle', 'top card ▶ dark');
 		await expectNoSeriousCritical(page, '/ seeded dark');
 		await expectTapTargets(page, '/ seeded dark');
+	});
+
+	test('top page (history seeded, section open) — light & dark', async ({ page }) => {
+		await gotoWithSeed(page, SEED);
+		await seedHistory(page, HISTORY_SEED, { open: true });
+		await expect(page.getByTestId('history-log')).toBeVisible();
+
+		await expectNoSeriousCritical(page, '/ history light');
+		await expectTapTargets(page, '/ history light');
+
+		await page.emulateMedia({ colorScheme: 'dark' });
+		await page.reload();
+		await expect(page.getByTestId('history-log')).toBeVisible();
+		await expectNoSeriousCritical(page, '/ history dark');
+		await expectTapTargets(page, '/ history dark');
 	});
 
 	test('manage tabs ×4 — light & dark (roles, arrow keys)', async ({ page }) => {

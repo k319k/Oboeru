@@ -212,7 +212,9 @@ test('full flow: seed → top → practice complete → manage round-trip → to
 	await expect(page.getByText('E2Eチャプター')).toBeVisible();
 	// Cross-page state: the created sentence counts toward the new chapter
 	const e2eChapter = page.getByTestId('chapter-card').filter({ hasText: 'E2Eチャプター' });
-	await expect(e2eChapter).toContainText('1文');
+	// No percentage: the new chapter has never been practised, so the row shows
+	// the pass count alone (the percentage is the average score — null here).
+	await expect(e2eChapter.getByTestId('chapter-card-count')).toHaveText('0/1 合格');
 });
 
 // ---------------------------------------------------------------------------

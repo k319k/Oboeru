@@ -46,10 +46,18 @@ test.describe('Top page', () => {
 		await expect(page.getByText('First Steps（English）')).toBeVisible();
 	});
 
-	test('shows sentence count per chapter', async ({ page }) => {
+	test('shows the pass count per chapter, and no score before anything is practised', async ({
+		page
+	}) => {
 		await page.goto('/');
-		// Each default chapter has 10 sentences
-		await expect(page.getByText('10文').first()).toBeVisible();
+		// Each default chapter has 10 sentences, none practised yet — a fresh
+		// context has no history, so the row reads "0 of 10 passed" and NOTHING
+		// else. The percentage is the average score (avgScore), and there is no
+		// average before the first scoring: the old "· 0%" was the pass ratio of
+		// a row with no evidence, i.e. a score of 0 asserted about nothing.
+		await expect(page.getByText('0/10 合格').first()).toBeVisible();
+		// …and the percentage really is absent, not merely shortened elsewhere.
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('0/10 合格');
 	});
 
 	// ---------------------------------------------------------------------------
@@ -146,18 +154,22 @@ test.describe('Top page', () => {
 		expect(trackMargin).toBeGreaterThan(chapterMargin);
 	});
 
-	test('chapter count aggregates descendant tracks while a track row shows its own count', async ({
-		page
-	}) => {
+	test('every row counts the subtree it would actually practise', async ({ page }) => {
 		await gotoWithSeed(page, NESTED_TRACK_SEED);
 
-		// Chapter 1章: 1 (トラック1) + 1 (トラック1-1) = 2. Descendants are NOT
-		// double counted on the track row itself.
+		// 1章 = 1 (トラック1) + 1 (トラック1-1) = 2.
+		// トラック1 = its own 1 + its child's 1 = 2 — the session started from
+		// トラック1 really does walk both sentences.
+		// トラック1-1 = 1 (leaf).
 		await expect(
 			page.getByTestId('chapter-card').filter({ hasText: '1章' }).getByTestId('chapter-card-count')
-		).toHaveText('2文');
-		await expect(trackCard(page, 'トラック1-1').getByTestId('track-card-count')).toHaveText('1文');
-		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toHaveText('1文');
+		).toHaveText('0/2 合格');
+		await expect(trackCard(page, 'トラック1-1').getByTestId('track-card-count')).toHaveText(
+			'0/1 合格'
+		);
+		await expect(trackCard(page, 'トラック1').getByTestId('track-card-count')).toHaveText(
+			'0/2 合格'
+		);
 	});
 
 	test('expand/collapse toggle shows and hides child tracks', async ({ page }) => {
@@ -205,6 +217,13 @@ test.describe('Top page', () => {
 		await expect(page.getByTestId('chapter-card').getByTestId('card-start')).toHaveCount(1);
 		await expect(trackCard(page, '文のないトラック').getByTestId('card-start')).toHaveCount(1);
 		await expect(trackCard(page, '孫のトラック').getByTestId('card-start')).toHaveCount(1);
+
+		// And the empty intermediate track must not read "0文" next to a live
+		// button — its subtree holds s2, so the session started from it is 1 long.
+		// No percentage: s2 has never been scored, so there is no average to show.
+		await expect(trackCard(page, '文のないトラック').getByTestId('track-card-count')).toHaveText(
+			'0/1 合格'
+		);
 	});
 
 	test('a node whose subtree holds no sentence has no practice start button', async ({ page }) => {

@@ -311,10 +311,29 @@
 		return chapterId === 'all' ? 'すべて' : getChapterName(chapterId);
 	}
 
+	/**
+	 * The stored voice preference normalised to a value the select can actually
+	 * represent: a name in the allowlist, or '' for the automatic default.
+	 * Retired Google names (ja-JP-Neural2-*) fail the allowlist and have no
+	 * matching Select.Item, so passing one straight through would leave the
+	 * trigger with an unselectable ghost value while the caption showed
+	 * something else. Both the Root and the caption read this, so the internal
+	 * state and the rendered label cannot drift apart.
+	 *
+	 * `resolveVoice` is deliberately NOT reused: it maps an unknown name to
+	 * CURATED_VOICES[0] ('Ludo'), which would collide with the '' entry whose
+	 * caption is "デフォルト (言語に応じて自動)" — two values, one meaning.
+	 */
+	function normalizedVoiceValue(voiceURI: string | null): string {
+		if (!voiceURI) return '';
+		return CURATED_VOICES.some((v) => v.name === voiceURI) ? voiceURI : '';
+	}
+
 	function voiceLabel(voiceURI: string | null): string {
-		if (!voiceURI) return 'デフォルト (言語に応じて自動)';
+		if (!normalizedVoiceValue(voiceURI)) return 'デフォルト (言語に応じて自動)';
 		const voice = CURATED_VOICES.find((v) => v.name === voiceURI);
-		return voice ? `${voice.label} (${voice.languageCode})` : voiceURI;
+		// Non-null: normalizedVoiceValue already proved the name is allowlisted.
+		return voice ? voice.label : 'デフォルト (言語に応じて自動)';
 	}
 
 	// Load data on mount
@@ -1860,7 +1879,7 @@
 				<Label for="voice-select">音声:</Label>
 				<Select.Root
 					type="single"
-					value={settings.voiceURI ?? ''}
+					value={normalizedVoiceValue(settings.voiceURI)}
 					onValueChange={(v: string) => handleVoiceChange(v)}
 				>
 					<Select.Trigger id="voice-select" data-testid="voice-select" class="w-72 data-[size=default]:h-11 sm:data-[size=default]:h-9">
@@ -1868,13 +1887,7 @@
 					</Select.Trigger>
 					<Select.Content>
 						<Select.Item value="">デフォルト (言語に応じて自動)</Select.Item>
-						<Select.Label>日本語</Select.Label>
-						{#each CURATED_VOICES.filter((v) => v.lang === 'ja') as voice (voice.name)}
-							<Select.Item value={voice.name}>{voice.label}</Select.Item>
-						{/each}
-						<Select.Separator />
-						<Select.Label>English</Select.Label>
-						{#each CURATED_VOICES.filter((v) => v.lang === 'en') as voice (voice.name)}
+						{#each CURATED_VOICES as voice (voice.name)}
 							<Select.Item value={voice.name}>{voice.label}</Select.Item>
 						{/each}
 					</Select.Content>

@@ -124,7 +124,14 @@ JS配列への全量蓄積が消え、ピークメモリが約半減。
   自動検証 (`npm run check` / `npm test` / `npx playwright test --workers=1`) は全緑。
   実機ゲート 3 項目 — 既存子チャプターデータの移行結果 / 3 段ネストの並び順 / 管理タブ
   インライン編集の実 IME — はユーザー承認待ちで未実施)
-  → ④AI TTS (**Gemini `gemini-3.8-flash-tts`**) + クラウド音声配信 →
+  → ✓**④AI TTS — 実装完了 (2026-09-29)** (Gemini `google/gemini-3.8-flash-lite-tts` を
+  **OpenRouter 経由**で使用。R2 での事前生成配信は棄却し、音声はクライアント IndexedDB の
+  キャッシュに保持。**実機ゲート未実施** — Android Chrome / iOS Safari での pitch 保持と
+  リロード跨ぎ再生はユーザー承認待ち。自動検証 (`npm run check` / `npm test` /
+  `npx playwright test --workers=1`) は全緑。仕様は
+  `docs/superpowers/specs/2026-09-29-gemini-tts-migration-design.md`、計画は
+  `docs/superpowers/plans/2026-09-29-gemini-tts-migration.md`、実測は `docs/research/` の
+  3 レポート)
   ⑤PWA (Android) → ⑥クラウド同期
 - 順序変更の理由 (旧: ③PWA → ④統合 → ⑤TTS → ⑥同期):
   - 統合 → TTS: 文の粒度とトラック構造が確定しないと「どの粒度で音声を生成・キャッシュするか」
@@ -132,15 +139,47 @@ JS配列への全量蓄積が消え、ピークメモリが約半減。
   - TTS → PWA: 配信先が wasm ストリーミング録音 (現在の `/api/tts` 応答) ではなく
     事前生成音声の URL に変わる。PWA の Service Worker キャッシュ戦略を設計する前に
     キャッシュ対象の正体が確定している必要がある
+    **訂正 (2026-09-29)**: 事前生成 URL にも R2 にもならず、キャッシュは
+    **IndexedDB の生 PCM** になった。⑤ PWA の Service Worker は `/api/tts` の WAV を
+    対象にしなくてよい (IndexedDB は SW からは読めず、Cache Storage とは別系統)
   - TTS → 同期: 生成済み音声が同じ「同期データ」の一員になる。音声の扱い
     (PWA オフライン資産としてローカル保持か、同期対象に含めるか) を統合と併せて決める
   - 同期を最後に置くのは不変 (最終データモデル確定後にしないと二重実装になる)
 - **スタック**: インフラは Cloudflare 全面 (Workers / D1 or KV / R2)。AI (採点等) は
-  OpenRouter またはローカル。TTS はコスト節約のため **④で Gemini `gemini-3.8-flash-tts`
-  (旧案: OpenRouter `Grok Voice TTS 1.0`) で生成1回 → R2 に保存して配信**。
+  OpenRouter またはローカル。TTS も OpenRouter 経由。
   2026-09-27 に公式仕様を確認済み: `POST https://generativelanguage.googleapis.com/v1beta/interactions`
   に `response_format: {type: "audio"}` を投げれば base64 音声 (既定 `audio/wav` = 24kHz/mono/16bit RIFF+PCM) が返る。
   RIFF ヘッダ付きのままで R2 に保存すれば変換ゼロ。複数セグメント結合時のみ `audio/l16` を使い 44 バイトを落とす。
   出力上限 16,384 音声トークン (≈10.9分) かつ入力 8,192 トークンなので長文は文単位分割。1リクエストの複数話者は最大2話者。
   キーは `GEMINI_API_KEY` として `$env/dynamic/private` に保持 (クライアント不露出を維持)。
   **未確認**: Vertex AI 版の有無、3.8 系のレート制限、生成音声の再配信ライセンス条項 → ④の着手時に実測確認する
+- **訂正 (2026-09-29 — 上の記述は ④の実装で置き換わった。「R2」「`GEMINI_API_KEY`」
+  「`gemini-3.8-flash-tts`」を前提に設計し直さないこと)**:
+  - **モデル**: `gemini-3.8-flash-tts` → **`google/gemini-3.8-flash-lite-tts` にピン留め**。
+    flash ではなく lite を選んだ根拠 (日本語 3.8 の品質実測・コスト) は
+    `docs/research/2026-09-28-gemini-38-tts-japanese-evaluation.md` と
+    `docs/research/2026-09-28-gemini-tts-cost-optimization.md`
+  - **キー**: `GEMINI_API_KEY` → **`OPENROUTER_API_KEY`**。Jev 判定と**同じ 1 本**を
+    `$env/dynamic/private` に持つ (クライアント不露出は維持)
+  - **配信**: 「R2 に保存して配信」→ **棄却**。R2 バケットもビルド時プリフェッチも無い。
+    音声は**クライアントの IndexedDB** (`oboeru-tts`、64 MiB 上限の自前 LRU) に生 PCM で
+    保存し、再訪時・リロード跨ぎでもネットワークを叩かない。R2 化の利点だった
+    「2026-12-31 の値上げ前に全生成すれば永久に回避できる」は得られないが、同じ文の
+    2 回目以降の課金はキャッシュで無い
+  - **エンドポイント**: `generativelanguage.googleapis.com` の base64 `audio/wav` ではなく
+    `POST https://openrouter.ai/api/v1/audio/speech` に `response_format: "pcm"` を要求し、
+    `audio/pcm;rate=…;channels=…` を受けてサーバ側で RIFF/WAV 化する (`src/lib/pcm-wav.ts`)
+  - **スタイル指定**: `provider.options['google-ai-studio'].speech_metadata` に置く。
+    top-level `instructions` は 200 を返すが黙って捨てられる
+  - **話速は生成パラメータに無い**。数値レートを受け付けないため、話速は再生時の
+    `playbackRate` (`preservesPitch = true`) で変える — 生成し直さないので課金も容量も
+    変わらない。生成キャッシュキーにも `speakingRate` を含めない
+  - **1 文 = 1 リクエストはそのまま** (応答にタイムスタンプが無いので分割も結合も不可)。
+    ボイスは 1 種 (`Ludo`) — 言語は入力テキストから Gemini 自身が判定する
+  - **課金は従量** (`lite-tts` Standard で 10 秒あたり $0.0015、1 文あたり約 $0.002〜0.005)。
+    実測の内訳と 2027 年の値上げ影響の詳細は `docs/research/2026-09-28-gemini-tts-cost-optimization.md`
+  - **未確認のまま残すもの**: 話速の最適値 (実装の既定は 1.0 = `src/lib/settings.ts` の
+    `DEFAULTS.ttsRate`。試聴は 1 文のみで 0.9 案は未検証)、Vertex AI 版の有無、
+    3.8 系のレート制限 (Google 直叩きの Free Tier 天井は旧 spike で実測済み = 3 req/分・10 req/日、paid tier は支出ベース。**本番経路である OpenRouter 経由の制限は未実測**)、
+    生成音声の再配信ライセンス条項、iOS ITP の 7 日ルールで 8 日以上開かなかった場合の
+    IndexedDB 生存 (PWA 化 = ロードマップ⑤ で解消)

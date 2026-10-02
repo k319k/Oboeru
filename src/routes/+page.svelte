@@ -10,6 +10,18 @@
 	import { ChevronRight, Play } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { Chapter, Sentence, Track } from '$lib/types';
+	import {
+		loadHistory,
+		computeNodeStats,
+		computeStreak,
+		formatRelativeDay,
+		loadHistoryUiState,
+		saveHistoryUiState,
+		type HistoryData,
+		type NodeStats,
+		type SessionRecord
+	} from '$lib/history';
+	import { loadSettings } from '$lib/settings';
 
 	let chapters = $state<Chapter[]>([]);
 	let sentences = $state<Sentence[]>([]);
@@ -18,10 +30,38 @@
 	// Collapsed node IDs (chapter or track). Default: all nodes expanded.
 	let collapsed = $state<Set<string>>(new Set());
 
+	let history = $state<HistoryData>({ version: 1, sessions: [], sentences: {} });
+	let threshold = $state(80);
+	// Captured once per history load so relative dates do not drift mid-render.
+	let nowMs = $state(Date.now());
+	// Derived, not state: the loading effect writes `history` and gets a fresh
+	// object back from loadHistory(), so reading `history` inside that same
+	// effect makes it its own dependency and Svelte throws
+	// effect_update_depth_exceeded during hydration. A derived has no write of
+	// its own, so the streak can never drift from the history it summarises.
+	// Both halves are passed: the sentence stats alone collapse a
+	// repeated-chapter streak to one day (each stat keeps only its most recent
+	// practice), the session rows carry the per-day log.
+	let streak = $derived(computeStreak(history.sentences, history.sessions, nowMs));
+	// The session log is long and secondary, so it starts closed and the
+	// choice is remembered across reloads.
+	let historyOpen = $state(false);
+	let historyLimit = $state(20);
+
 	$effect(() => {
 		chapters = loadChapters();
 		sentences = loadSentences();
 		tracks = loadTracks();
+	});
+
+	// Independent of the content load above: practice and history live in
+	// separate storage keys, so the row's pass/hard verdict follows the
+	// threshold the user last saved rather than a hard-coded 80.
+	$effect(() => {
+		history = loadHistory();
+		threshold = loadSettings().threshold;
+		nowMs = Date.now();
+		historyOpen = loadHistoryUiState().open;
 	});
 
 	// Chapters are roots only — the hierarchy below them belongs to tracks.
@@ -60,14 +100,95 @@
 		return sentencesByNode.get(nodeId) ?? [];
 	}
 
-	/** A track row counts only its own sentences — descendants have their own rows. */
-	function ownCount(trackId: string): number {
-		return nodeSentences(trackId).filter((s) => s.trackId === trackId).length;
+	/**
+	 * One aggregation per row, read by every number, percentage and dot.
+	 * The display set is getNodeSentences(nodeId) — the same sentences
+	 * /practice?node=nodeId walks — so the row's denominator is the real
+	 * session length and canPractice() cannot disagree with it.
+	 */
+	let statsByNode = $derived.by(() => {
+		const map = new Map<string, NodeStats>();
+		for (const [id, list] of sentencesByNode) {
+			map.set(
+				id,
+				computeNodeStats(list, chapters.some((c) => c.id === id), history.sentences, threshold)
+			);
+		}
+		return map;
+	});
+
+	// The miss is unreachable in practice (every rendered row's id is in
+	// sentencesByNode), but a hand-written NodeStats literal here duplicated the
+	// interface field-for-field and could drift the moment a field was added.
+	// computeNodeStats([], false, {}, threshold) is the empty answer by
+	// definition and cannot.
+	function nodeStats(nodeId: string): NodeStats {
+		return statsByNode.get(nodeId) ?? computeNodeStats([], false, {}, threshold);
 	}
 
-	/** A chapter row aggregates its whole subtree. */
-	function chapterTotal(chapterId: string): number {
-		return nodeSentences(chapterId).length;
+	/**
+	 * A share, for the chapter progress BAR's width only. Never a label: a
+	 * percentage of passes says nothing about how well the sentences are being
+	 * read. The text label is `avgScore` — see progressLabel() below.
+	 */
+	function percent(part: number, total: number): number {
+		return total === 0 ? 0 : Math.round((part / total) * 100);
+	}
+
+	/**
+	 * "24/32 合格 · 87%" — `N/M` is the pass count and the percentage is the
+	 * node's AVERAGE SCORE, not a pass ratio. The user's request: 「直近10回
+	 * …の平均で出すべき」. They are different numbers and only one of them
+	 * explains the verdict: six sentences all averaging 89.5 read
+	 * "6/6 合格 · 100%" as a pass ratio, which hides every score below the
+	 * threshold; as an average it reads "6/6 合格 · 90%", and the pair
+	 * "0/6 合格 · 46%" is the only line that says 「直すならここ」.
+	 *
+	 * Nothing practised yet → no percentage at all. `avgScore` is null then, and
+	 * printing "· 0%" would assert a score of 0 for a node nobody has attempted.
+	 *
+	 * The plain "N文" form (a node with no sentences) is unchanged.
+	 */
+	function progressLabel(stats: NodeStats): string {
+		if (stats.total === 0) return `${stats.total}文`;
+		const passed = `${stats.passed}/${stats.total} 合格`;
+		return stats.avgScore === null ? passed : `${passed} · ${stats.avgScore}%`;
+	}
+
+	function toggleHistory(): void {
+		historyOpen = !historyOpen;
+		saveHistoryUiState({ open: historyOpen });
+	}
+
+	function showMoreHistory(): void {
+		historyLimit += 20;
+	}
+
+	/**
+	 * The node's display name and whether it has since been deleted.
+	 *
+	 * Split into two fields rather than one assembled string so `(削除済み)` can
+	 * sit OUTSIDE the truncated name: with a long name the marker is the only
+	 * thing telling the user the chapter is gone, and a whole-line `truncate`
+	 * would cut it off. The live name wins when the node still exists, so a
+	 * rename overwrites the stored one on screen (spec §表示 2段).
+	 */
+	function sessionName(record: SessionRecord): { name: string; deleted: boolean } {
+		const live =
+			tracks.find((t) => t.id === record.nodeId)?.name ??
+			chapters.find((c) => c.id === record.nodeId)?.name;
+		if (live) return { name: live, deleted: false };
+		return { name: record.nodeName, deleted: true };
+	}
+
+	function sessionAverage(record: SessionRecord): number {
+		return record.attempted > 0 ? Math.round(record.totalScore / record.attempted) : 0;
+	}
+
+	function formatStamp(ts: number): string {
+		const d = new Date(ts);
+		const pad = (n: number) => String(n).padStart(2, '0');
+		return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 	}
 
 	/** Languages present in the chapter's subtree, JA first. Chapter rows only. */
@@ -77,7 +198,15 @@
 		return [...langs].sort((a, b) => (a === 'ja' ? -1 : 1));
 	}
 
-	/** A node is startable when its subtree holds at least one sentence. */
+	/**
+	 * A node is startable when its subtree holds at least one sentence.
+	 *
+	 * Subtree-based on purpose, and the row's count is subtree-based too: both
+	 * read `nodeSentences`, so `M > 0` and this predicate can never disagree.
+	 * A track whose sentences all live in a child track starts the child's
+	 * sentences, so it shows `0/1 合格` next to its 練習 button rather than a
+	 * `0文` count that would claim the button has nothing to practise.
+	 */
 	function canPractice(nodeId: string): boolean {
 		return nodeSentences(nodeId).length > 0;
 	}
@@ -107,6 +236,15 @@
 
 <h1 class="mb-1 text-2xl font-bold">おぼえる</h1>
 <p class="mb-6 text-sm text-muted-foreground">カードの練習ボタンですぐに開始できます</p>
+
+{#if streak.totalAttempts > 0}
+	<p
+		class="mb-4 inline-flex min-h-11 max-w-full items-center gap-1.5 self-start rounded-full border border-border px-4 text-sm text-muted-foreground"
+		data-testid="streak-pill"
+	>
+		連続 {streak.days} 日 · のべ {streak.totalAttempts} 文
+	</p>
+{/if}
 
 {#if chapters.length === 0}
 	<div class="py-8 text-center">
@@ -155,9 +293,43 @@
 						<span class="truncate text-base font-semibold" data-testid="track-card-name"
 							>{track.name}</span
 						>
-						<span class="text-sm text-muted-foreground" data-testid="track-card-count"
-							>{ownCount(track.id)}文</span
+						<span class="truncate text-sm text-muted-foreground" data-testid="track-card-count"
+							>{progressLabel(nodeStats(track.id))}</span
 						>
+<!-- Gated on total > 0: a track whose subtree is empty would otherwise render an
+					     empty `role="img"` directly under a row that already reads `0文`,
+					     which is screen-reader noise with no meaning. -->
+					{#if nodeStats(track.id).total > 0}
+						<div
+							class="flex flex-wrap gap-[3px]"
+							role="img"
+							aria-label={`合格 ${nodeStats(track.id).passed} 文 / 苦手 ${nodeStats(track.id).hard} 文 / 未着手 ${nodeStats(track.id).total - nodeStats(track.id).practiced} 文`}
+							data-testid="track-dots"
+						>
+							{#each nodeStats(track.id).dots as dot, i (i)}
+								<!-- All three backgrounds conditional, never one static plus a
+								     conditional. Tailwind puts every colour utility in a single
+								     `utilities` layer at equal specificity, so the winner is the
+								     generated stylesheet's source order — NOT the attribute order
+								     here — and a static `bg-border` lost to `bg-amber-500` in
+								     practice, painting 苦手 the same grey as 未着手. Exactly one
+								     class is ever present. Pinned by tests/history.spec.ts
+								     ("each dot state paints its own colour"). -->
+								<span
+									class="size-[7px] rounded-[2px]"
+									class:bg-border={dot === 'untouched'}
+									class:bg-success={dot === 'passed'}
+									class:bg-amber-500={dot === 'hard'}
+									data-dot={dot}
+								></span>
+							{/each}
+						</div>
+					{/if}
+{#if nodeStats(track.id).practiced > 0}
+						<span class="text-sm text-muted-foreground" data-testid="track-last">
+							最終 {formatRelativeDay(nodeStats(track.id).lastPracticedAt ?? nowMs, nowMs)}
+						</span>
+					{/if}
 					</div>
 					{#if canPractice(track.id)}
 						<Button
@@ -203,14 +375,61 @@
 					{/if}
 					<div class="flex min-w-0 flex-1 flex-col gap-0.5 px-2">
 						<span class="chapter-name truncate text-base font-semibold">{chapter.name}</span>
-						<div class="flex items-center gap-1.5">
+						<!-- `flex-wrap`, deliberately. The badges keep their intrinsic width
+						     and the COUNT drops to its own line when the two badges plus the
+						     count do not fit: this column is 172px at 390px, two badges take
+						     ~52px of it, and `120/120 合格 · 95%` is 134px — so the average,
+						     the number the user asked for, was clipped 19px (measured) with no
+						     page overflow at all, because `overflow-hidden` cuts it inside its own
+						     box. With one badge (160px total) nothing wraps and the row is
+						     byte-identical to before, so a single-language chapter pays nothing
+						     for this. `truncate` stays on the count because the row
+						     already has `overflow-hidden`, so it can only decide whether
+						     an ellipsis appears — the page never overflows either way.
+						     (It is NOT a 4-digit guard: measured, `1000/1000 合格 · 95%`
+						     is 152px and fits the 172px column with clip 0.) -->
+						<div class="flex flex-wrap items-center gap-1.5 overflow-hidden">
 							{#each chapterLanguages(chapter.id) as lang (lang)}
 								{@render languageBadge(lang)}
 							{/each}
-							<span class="text-sm text-muted-foreground" data-testid="chapter-card-count"
-								>{chapterTotal(chapter.id)}文</span
+							<span
+								class="truncate text-sm text-muted-foreground"
+								data-testid="chapter-card-count">{progressLabel(nodeStats(chapter.id))}</span
 							>
 						</div>
+						<div
+							class="h-1 w-full overflow-hidden rounded-full bg-border"
+							aria-hidden="true"
+							data-testid="chapter-progress"
+						>
+							<!-- The BAR is the pass ratio, the LABEL is avgScore. Deliberate:
+							     a bar is a share of a whole, and 「合格した文がどれだけあるか」
+							     is exactly what a share answers. Feeding the average here
+							     would claim 「8割の文が合格」 when it is 「平均 8割」.
+							     history.spec.ts pins the two apart on a row where they
+							     disagree (label 70% / bar 50%). -->
+							<div
+								class="h-full rounded-full bg-success"
+								style:width={`${percent(nodeStats(chapter.id).passed, nodeStats(chapter.id).total)}%`}
+							></div>
+						</div>
+						{#if nodeStats(chapter.id).practiced > 0}
+							<!-- Wraps, never truncates. The chapter row's text column
+							     measures 172px at 390px (the expand toggle and the 練習
+							     button take the rest); this line is 131px, so it fits on
+							     one line (measured, clip 0, card 92px). It used to carry
+							     `· 直近 1 回`, which needed more than the 172px column and
+							     pushed the line to two (card 112px). `truncate` would be
+							     worse than either: the ancestors are `overflow-hidden`, so
+							     it keeps the page at scrollWidth === clientWidth and cuts
+							     the tail off inside the row with no page-level overflow to
+							     signal it — exactly the failure `expectNoHorizontalOverflow`
+							     cannot see. So it wraps. -->
+							<span class="text-sm text-muted-foreground" data-testid="chapter-last">
+								最終 {formatRelativeDay(nodeStats(chapter.id).lastPracticedAt ?? nowMs, nowMs)} · 苦手
+								{nodeStats(chapter.id).hard} 文
+							</span>
+						{/if}
 					</div>
 					{#if canPractice(chapter.id)}
 						<Button
@@ -236,4 +455,85 @@
 			{@render chapterNode(chapter, 0)}
 		{/each}
 	</div>
+{/if}
+
+<!-- History outlives the content tree: deleting every chapter must not delete
+     the record of practising them. -->
+{#if history.sessions.length > 0}
+	{@const visible = history.sessions.slice(0, historyLimit)}
+	<section class="mt-6 border-t border-border pt-4" data-testid="history-section">
+		<h2>
+			<button
+				type="button"
+				class="flex min-h-11 w-full items-center gap-2 text-left text-base font-semibold"
+				aria-expanded={historyOpen}
+				aria-controls="history-log"
+				onclick={toggleHistory}
+				data-testid="history-toggle"
+			>
+				<ChevronRight
+					class={historyOpen
+						? 'h-5 w-5 rotate-90 transition-transform'
+						: 'h-5 w-5 transition-transform'}
+				/>
+				練習履歴 ({history.sessions.length})
+			</button>
+		</h2>
+		{#if historyOpen}
+			<div id="history-log" class="flex flex-col gap-1 pt-2" data-testid="history-log">
+				{#each visible as record (record.id)}
+					{@const session = sessionName(record)}
+					<!-- Two lines, because the row mixes one unbounded field with several
+					     bounded ones. Truncating the whole line would hide the score and
+					     the skip count — the reason a history row exists. Truncating only
+					     the name is safe because everything else on the second line is
+					     short by construction: `MM/DD HH:MM`, two counts, and 途中で終了
+					     (which wraps between kanji anyway). Same treatment as
+					     `chapter-name truncate` / `track-card-name truncate`.
+
+					     What actually prevents the horizontal overflow is `truncate` on
+					     the name — its `overflow: hidden` makes the flex automatic
+					     minimum size 0 (css-flexbox §4.5), so the item may shrink below
+					     its min-content (a 120-char Latin name), and it then clips.
+					     Measured at 390px: dropping all three `min-w-0` here and
+					     keeping only `truncate` still overflows 0px, whereas dropping
+					     only `truncate` overflows ~645px even with every `min-w-0`
+					     present.
+
+					     `min-w-0` is therefore DEFENSIVE, not load-bearing: it changes
+					     nothing while `truncate` is on the same element. Kept because if
+					     the truncation is ever replaced (or moves to an ancestor) the
+					     automatic minimum size comes back and the spill returns with
+					     it. Same wording as AGENTS.md's `level-meter` `min-w-0`. -->
+					<p
+						class="flex min-w-0 flex-col gap-0.5 text-sm text-muted-foreground"
+						data-testid="history-item"
+					>
+						<span class="flex min-w-0 items-center gap-1">
+							<span
+								class="min-w-0 flex-1 truncate font-medium"
+								data-testid="history-item-name">{session.name}</span
+							>
+							{#if session.deleted}<span class="shrink-0">(削除済み)</span>{/if}
+						</span>
+						<span>
+							{formatStamp(record.startedAt)} · {record.passedSentences} 文 合格 · 平均
+							{sessionAverage(record)}% · スキップ
+							{record.skipped}{record.endedEarly ? ' · 途中で終了' : ''}
+						</span>
+					</p>
+				{/each}
+				{#if visible.length < history.sessions.length}
+					<button
+						type="button"
+						class="mt-2 inline-flex min-h-11 items-center rounded-md border border-border px-4 text-sm"
+						onclick={showMoreHistory}
+						data-testid="history-more"
+					>
+						さらに表示 (残り {history.sessions.length - visible.length} 件)
+					</button>
+				{/if}
+			</div>
+		{/if}
+	</section>
 {/if}

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { Volume2, Loader2, Mic, X } from '@lucide/svelte';
 	import { toast, Toaster } from 'svelte-sonner';
@@ -15,6 +15,7 @@
 	import { startRecording } from '$lib/recorder';
 	import { transcribe } from '$lib/transcribe';
 	import { similarity } from '$lib/similarity';
+import { recordSentenceAttempt, finalizeSession } from '$lib/history';
 	import { tokenizeSentence, ProgressAligner } from '$lib/alignment';
 	import { loadSettings } from '$lib/settings';
 	import {
@@ -23,7 +24,7 @@
 		clearPracticeProgress,
 		type PracticeProgress
 	} from '$lib/practice-progress';
-	import type { Sentence, PracticeState, Track } from '$lib/types';
+	import type { Sentence, PracticeState, Track, Chapter } from '$lib/types';
 	import { Button } from '$lib/components/ui/button';
 	import { Progress } from '$lib/components/ui/progress';
 	import {
@@ -58,10 +59,12 @@
 	/** Blob of the failed transcription attempt, kept so 「もう一度採点」 can resend it. */
 	let pendingBlob: Blob | null = $state(null);
 
-	// Session outcome tracking for the summary (memory only, not persisted).
 	let endedEarly: boolean = $state(false);
 	let passedIds: string[] = $state([]);
 	let failedEntries: Sentence[] = $state([]);
+
+	/** Session start, stamped by beginSession(). Persisted with the session record. */
+	let sessionStartedAt: number | null = $state(null);
 
 	// Active recorder while phase === 'recording' (released on phase exit).
 	let rec: {
@@ -104,7 +107,7 @@
 	// Settings snapshot (loaded once when the session starts)
 	let threshold: number = $state(80);
 	let ttsRate: number = $state(1.0);
-	let voiceURI: string | null = $state(null);
+	let voiceName: string | null = $state(null);
 	let retryFrom: 'tts' | 'rerecord' = $state('tts');
 
 	// Breadcrumb of the node the session started from (chapter → ancestors → self).
@@ -117,6 +120,9 @@
 	// Tracks of the practiced chapter (loaded once at session start) — powers
 	// the current-track badge in the header.
 	let tracks: Track[] = $state([]);
+	// Chapters alongside it: settleSession() resolves the session record's node
+	// name, and a chapter-started session has no matching track.
+	let chapters: Chapter[] = $state([]);
 
 	// End-of-session confirmation dialog (終了 button / Esc)
 	let endDialogOpen: boolean = $state(false);
@@ -294,7 +300,7 @@
 			return;
 		}
 		// feedback phase: replay the sentence; the user decides when to move on.
-		void speak(s.text, s.language, { rate: ttsRate, voiceURI }).catch((err: unknown) => {
+		void speak(s.text, s.language, { rate: ttsRate, voiceName }).catch((err: unknown) => {
 			toast.error(
 				`音声再生に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`
 			);
@@ -317,9 +323,10 @@
 		phase = 'summary';
 	}
 
-	/** Restart the session with only the sentences that never passed (memory only). */
+	/** Restart the session with only the sentences that never passed. */
 	function retryFailedOnly(): void {
 		if (failedEntries.length === 0) return;
+		settleSession();
 		sentences = [...failedEntries];
 		currentIndex = 0;
 		resetAttemptState();
@@ -329,7 +336,48 @@
 		passedIds = [];
 		failedEntries = [];
 		endedEarly = false;
+		beginSession();
 		phase = 'show';
+	}
+
+	/**
+	 * Persist the finished session. Called from the summary $effect and from
+	 * onDestroy, plus from retryFailedOnly() before it starts the next
+	 * session. Every exit path either clears sessionStartedAt or writes
+	 * nothing, so whichever caller runs second cannot double-count — that is
+	 * what makes settling in two places safe.
+	 *
+	 * `abandoned` marks the onDestroy caller: the component went away with a
+	 * session still open, which is by definition "ended without reaching
+	 * summary" — the spec's definition of `endedEarly`. The OR cannot
+	 * false-positive: once summary has settled, `sessionStartedAt` is null and
+	 * this returns before writing anything, so `abandoned` only ever reaches a
+	 * record for a session that really did leave early.
+	 */
+	function settleSession(abandoned = false): void {
+		if (sessionStartedAt === null || !sessionNodeId) return;
+		if (completedCount === 0) {
+			sessionStartedAt = null;
+			return;
+		}
+		const endedAt = Date.now();
+		const node =
+			tracks.find((t) => t.id === sessionNodeId) ??
+			chapters.find((c) => c.id === sessionNodeId) ??
+			null;
+		finalizeSession({
+			nodeId: sessionNodeId,
+			nodeName: node?.name ?? '',
+			startedAt: sessionStartedAt,
+			endedAt,
+			durationMs: endedAt - sessionStartedAt,
+			attempted: completedCount,
+			passedSentences: passedIds.length,
+			totalScore,
+			skipped: skippedCount,
+			endedEarly: endedEarly || abandoned
+		});
+		sessionStartedAt = null;
 	}
 
 	// ---------------------------------------------------------------------------
@@ -616,7 +664,7 @@
 
 		// Fire-and-forget prefetch (T3 cache). Prefetch rejects on failure —
 		// swallow here; the tts effect's speak() reports the real error.
-		void prefetchTts(s.text, s.language, { rate: ttsRate, voiceURI }).catch(() => {
+		void prefetchTts(s.text, s.language, { rate: ttsRate, voiceName }).catch(() => {
 			// Non-fatal — speak() surfaces the failure to the user.
 		});
 
@@ -635,12 +683,12 @@
 
 		const next = sentences[currentIndex + 1];
 		if (next) {
-			void prefetchTts(next.text, next.language, { rate: ttsRate, voiceURI }).catch(() => {
+			void prefetchTts(next.text, next.language, { rate: ttsRate, voiceName }).catch(() => {
 				// Non-fatal — the next sentence's speak() reports the failure.
 			});
 		}
 
-		speak(s.text, s.language, { rate: ttsRate, voiceURI })
+		speak(s.text, s.language, { rate: ttsRate, voiceName })
 			.then(() => {
 				if (phase === 'tts') phase = 'hidden';
 			})
@@ -753,6 +801,7 @@
 			} else {
 				if (!failedEntries.some((entry) => entry.id === s.id)) failedEntries.push(s);
 			}
+			recordSentenceAttempt(s.id, finalScore, Date.now());
 			// No dwell: the user advances with the 次へ / もう一度試す button
 			// (or Space / Enter). Time alone never moves the session forward.
 			phase = 'feedback';
@@ -779,7 +828,18 @@
 	// Session restore (T9)
 	// ---------------------------------------------------------------------------
 
+	/**
+	 * Stamp the session start. retryFailedOnly() starts a second session inside
+	 * the same mount without going through startSession(), so both callers
+	 * must re-stamp or the retry's startedAt / durationMs inherit the
+	 * previous session's clock.
+	 */
+	function beginSession(): void {
+		sessionStartedAt = Date.now();
+	}
+
 	function startSession(): void {
+		beginSession();
 		sessionReady = true;
 		phase = 'show';
 	}
@@ -794,6 +854,13 @@
 		totalScore = saved.totalScore;
 		skippedCount = saved.skippedCount;
 		startSession();
+		// startSession() stamps "now", which is wrong for a resumed session: the
+		// user practised before the reload too (their counters are in the row
+		// above), so a stamp from resume time reports a 20-minute session as
+		// lasting four seconds. `savedAt` is when the snapshot was last written,
+		// i.e. the last moment the pre-reload run was known to be alive — the
+		// closest honest lower bound on the start.
+		sessionStartedAt = saved.savedAt;
 	}
 
 	function startFresh(): void {
@@ -820,7 +887,13 @@
 		if (bodyEl) bodyEl.scrollTop = 0;
 	});
 
-	// Track the session in sessionStorage so a reload can offer to resume.
+	// Two jobs in one effect, because both key off the same phase: it snapshots the
+	// session into sessionStorage so a reload can offer to resume, AND it settles
+	// the session record when `summary` arrives. The settle is here (not only in
+	// onDestroy) because onDestroy does not fire on a reload or a tab close —
+// the realm is torn down without running Svelte's destroy hook — and a row
+	// written only on unmount would be lost for every user who reloads from the
+	// summary screen.
 	// A passing feedback rounds forward (the attempt is settled); every other
 	// phase keeps the snapshot at the current sentence — recording /
 	// transcribing therefore round back to the last show origin.
@@ -828,6 +901,7 @@
 		if (!sessionReady) return;
 		if (phase === 'summary') {
 			clearPracticeProgress();
+			settleSession();
 			return;
 		}
 		if (!sessionNodeId) return;
@@ -855,7 +929,7 @@
 		const settings = loadSettings();
 		threshold = settings.threshold;
 		ttsRate = settings.ttsRate;
-		voiceURI = settings.voiceURI;
+		voiceName = settings.voiceURI;
 		retryFrom = settings.retryFrom;
 
 		const rawNodeId = page.url.searchParams.get('node');
@@ -893,6 +967,7 @@
 		currentIndex = 0;
 		sessionNodeId = rawNodeId;
 		tracks = allTracks;
+		chapters = allChapters;
 
 		const saved = loadPracticeProgress(rawNodeId);
 		const hasProgress =
@@ -904,6 +979,19 @@
 		} else {
 			startSession();
 		}
+	});
+
+	// Covers abandoning mid-session via client-side navigation (a link, the
+	// browser Back). onDestroy never fires on a real reload or tab close —
+	// the realm is torn down without running Svelte's destroy hook — which is
+	// why the summary transition also settles. A no-op after summary, where
+	// settleSession() has already cleared sessionStartedAt.
+	//
+	// `true` = abandoned: reaching this hook with a live session means the user
+	// left before summary, so the row is written `endedEarly: true` rather than
+	// claiming a finished run.
+	onDestroy(() => {
+		settleSession(true);
 	});
 </script>
 

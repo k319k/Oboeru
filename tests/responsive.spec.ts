@@ -1,6 +1,6 @@
 import { test, expect, type Page } from './fixtures';
 import { mkdirSync, appendFileSync } from 'node:fs';
-import { gotoWithSeed } from './helpers';
+import { gotoWithSeed, seedHistory } from './helpers';
 import { mockTtsApi } from './tts-mock';
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,86 @@ const TALL_SEED = {
 
 /** A partial transcript → a real word-diff spanning the whole long sentence. */
 const TALL_TRANSCRIPT = TALL_LONG.replace(/[0-9]/g, '').slice(0, Math.floor(TALL_LONG.length * 0.75));
+
+/**
+ * The history section at 390px, with every part of the top page that the
+ * content tree feeds rendered. Four deliberate choices, each one guarding
+ * something the previous seed could not see:
+ *
+ * 1. **25 sessions** — above the UI's initial `historyLimit` of 20, so the
+ *    section renders 20 rows AND the さらに表示 button. Below that the button
+ *    is never in the DOM and its tap target cannot be gated.
+ * 2. **A 120-character unbreakable name on a node that does not exist**
+ *    (`HISTORY_LONG_NAME` / `gone-node`). Japanese wraps between characters, so
+ *    an ordinary name can never reach the horizontal overflow the gate exists
+ *    to catch; only a long Latin token can. A missing node is what forces the
+ *    *stored* name to be the one displayed (and `(削除済み)` to render), so the
+ *    long string is genuinely on screen rather than shadowed by a live name.
+ * 3. **Stale `nodeName`s on the live sessions.** `sessionName` prefers the
+ *    current chapter/track name, so a seed whose stored name equals the live
+ *    one proves nothing — `nodeName: '章'` against a chapter also named `章` is
+ *    dead data. `保存時の旧名` can never be displayed, and the test asserts so.
+ * 4. **Real sentences + sentence stats.** `streak.totalAttempts` is the sum of
+ *    the stats' attempts, so `sentences: {}` left the streak pill unrendered and
+ *    the dot row / progress bar absent. h-1..h-5 give 2 passed / 2 hard /
+ *    1 untouched against the default threshold of 80, so the chapter row's
+ *    progress bar and the track row's dots are both non-empty.
+ */
+const HISTORY_LONG_NAME = 'A'.repeat(120);
+/** Stored but never displayed — the live chapter name wins. */
+const HISTORY_STALE_NAME = '保存時の旧名';
+/** One clock read for every offset, so a midnight crossing cannot skew the day keys. */
+const HISTORY_NOW = Date.now();
+const HISTORY_DAY_MS = 86_400_000;
+
+/** Chapter + track + sentences, so the tree rows have real denominators. */
+const HISTORY_CONTENT = {
+	chapters: [{ id: 'ch-1', name: '現在の章名', parentId: null, order: 1 }],
+	tracks: [{ id: 'tr-1', chapterId: 'ch-1', parentId: null, order: 1, name: '現在のトラック名' }],
+	sentences: [
+		{ id: 'h-1', chapterId: 'ch-1', trackId: 'tr-1', text: 'こんにちは。', language: 'ja', order: 1 },
+		{ id: 'h-2', chapterId: 'ch-1', trackId: 'tr-1', text: 'お元気ですか。', language: 'ja', order: 2 },
+		{ id: 'h-3', chapterId: 'ch-1', trackId: 'tr-1', text: 'また明日。', language: 'ja', order: 3 },
+		{ id: 'h-4', chapterId: 'ch-1', trackId: 'tr-1', text: 'さようなら。', language: 'ja', order: 4 },
+		{ id: 'h-5', chapterId: 'ch-1', trackId: 'tr-1', text: 'Hello there.', language: 'en', order: 5 }
+	]
+};
+
+const HISTORY_SEED = {
+	version: 1,
+	// Scores chosen against the default threshold of 80: 96/88 pass, 58/71 are
+	// hard, and h-4 has no stat at all so its dot stays untouched. The window
+	// MEAN is what decides, so each entry carries a full 3- or 2-attempt window
+	// rather than a lone score — a lopsided depth is exactly the shape that got
+	// the 直近 N 回 label removed, so the seed must not depend on it.
+	sentences: {
+		'h-1': { attempts: 3, scores: [96, 96, 96], lastPracticedAt: HISTORY_NOW },
+		'h-2': { attempts: 1, scores: [58], lastPracticedAt: HISTORY_NOW },
+		'h-3': { attempts: 2, scores: [71, 71], lastPracticedAt: HISTORY_NOW - HISTORY_DAY_MS },
+		'h-5': { attempts: 1, scores: [88], lastPracticedAt: HISTORY_NOW - HISTORY_DAY_MS }
+	},
+	sessions: Array.from({ length: 25 }, (_, i) => {
+		// The three newest rows carry the adversarial long name; row 3 onwards
+		// are live nodes, so both display paths sit inside the 20 rendered.
+		const deleted = i < 3;
+		return {
+			id: 's' + i,
+			nodeId: deleted ? 'gone-node' : i === 3 ? 'tr-1' : 'ch-1',
+			nodeName: deleted ? HISTORY_LONG_NAME : HISTORY_STALE_NAME,
+			startedAt: HISTORY_NOW - i * HISTORY_DAY_MS,
+			endedAt: HISTORY_NOW - i * HISTORY_DAY_MS + 1000,
+			durationMs: 1000,
+			attempted: 1,
+			passedSentences: 1,
+			totalScore: 90,
+			skipped: i === 3 ? 2 : 0,
+			endedEarly: i === 3
+		};
+	})
+};
+
+/** The two buttons the history section owns, measured for a precise failure message. */
+const HISTORY_BUTTONS = ['history-toggle', 'history-more'] as const;
 
 const MANAGE_TABS = [
 	{ id: 'chapters', label: 'チャプター' },
@@ -315,6 +395,247 @@ test.describe('Responsive layout (390px)', () => {
 		expect(singleColumn, '/ seeded: top cards must be single column').toBe(true);
 
 		await page.screenshot({ path: `${SCREENSHOT_DIR}/top-seeded.png`, fullPage: true });
+	});
+
+	/**
+	 * `expectNoHorizontalOverflow` is BLIND to this one, which is why it survived:
+	 * the badge row carries `overflow-hidden`, so a count that does not fit is cut
+	 * inside its own box while `documentElement` stays at scrollWidth === clientWidth.
+	 * Measured before the fix: 2 language badges + 120 sentences → the count text
+	 * column shrank to 115px against a 134px `120/120 合格 · 95%`, so 19px of the
+	 * average — the number the user asked for — was invisible.
+	 *
+	 * So this asserts the CLIP on the count element itself, and separately that the
+	 * page still does not overflow. The second half of the test re-seeds a
+	 * single-language chapter to prove the wrap does not cost a single-language row
+	 * any height (nothing wraps there: badge + count = 160px of the 172px column).
+	 */
+	test('a two-badge chapter row wraps the count instead of clipping the average', async ({
+		page
+	}) => {
+		/** 120 sentences alternating ja/en → two badges, all scored 95. */
+		function mixedContent(languages: ('ja' | 'en')[]) {
+			return {
+				chapters: [{ id: 'ch-1', name: '混在チャプター', parentId: null, order: 1 }],
+				tracks: [{ id: 'tr-1', chapterId: 'ch-1', parentId: null, order: 1, name: 'トラック' }],
+				sentences: Array.from({ length: 120 }, (_, i) => ({
+					id: `s-${i}`,
+					chapterId: 'ch-1',
+					trackId: 'tr-1',
+					text: `文 ${i}`,
+					language: languages[i % languages.length],
+					order: i + 1
+				}))
+			};
+		}
+
+		const readCount = () =>
+			page.evaluate(() => {
+				const el = document.querySelector('[data-testid="chapter-card-count"]');
+				const badges = Array.from(document.querySelectorAll('.language-badge'));
+				const tops = badges.map((b) => Math.round(b.getBoundingClientRect().top));
+				const row = el!.parentElement!;
+				return {
+					text: el!.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+					clipped: el!.scrollWidth - el!.clientWidth,
+					client: el!.clientWidth,
+					scroll: el!.scrollWidth,
+					badgeCount: badges.length,
+					badgesShareOneLine: new Set(tops).size === 1,
+					countBelowBadges:
+						Math.round(el!.getBoundingClientRect().top) > Math.min(...tops),
+					rowHeight: Math.round(row.getBoundingClientRect().height),
+					cardHeight: Math.round(
+						document.querySelector('[data-testid="chapter-card"]')!.getBoundingClientRect().height
+					),
+					docOverflow:
+						document.documentElement.scrollWidth - document.documentElement.clientWidth
+				};
+			});
+
+		const seedAll95 = () =>
+			seedHistory(page, {
+				version: 1,
+				sessions: [],
+				sentences: Object.fromEntries(
+					Array.from({ length: 120 }, (_, i) => [
+						`s-${i}`,
+						{ attempts: 1, scores: [95], lastPracticedAt: Date.now() }
+					])
+				)
+			});
+
+		await gotoWithSeed(page, mixedContent(['ja', 'en']));
+		await seedAll95();
+
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('120/120 合格 · 95%');
+		const mixed = await readCount();
+		logEvidence(
+			`\n=== chapter count clip @390px (2 badges): "${mixed.text}" client=${mixed.client} scroll=${mixed.scroll} clipped=${mixed.clipped} rowH=${mixed.rowHeight} cardH=${mixed.cardHeight}`
+		);
+		// The average is fully visible. 19px of it were cut before the fix.
+		expect(mixed.badgeCount, 'the mixed chapter must render both language badges').toBe(2);
+		expect(mixed.clipped, 'the count text must not be clipped inside the badge row').toBe(0);
+		expect(mixed.scroll).toBe(mixed.client);
+		// The fix's mechanism, not a coincidence: the badges stay on one line and
+		// the count moved below them, so nothing was simply hidden.
+		expect(mixed.badgesShareOneLine).toBe(true);
+		expect(mixed.countBelowBadges).toBe(true);
+		// …and wrapping did not turn into page overflow.
+		expect(mixed.docOverflow).toBe(0);
+
+		// Single-language: one badge, so badges + count still fit on one line and
+		// the row must be exactly as short as it was before the fix.
+		await gotoWithSeed(page, mixedContent(['ja']));
+		await seedAll95();
+		await expect(page.getByTestId('chapter-card-count').first()).toHaveText('120/120 合格 · 95%');
+		const single = await readCount();
+		logEvidence(
+			`\n=== chapter count clip @390px (1 badge): "${single.text}" clipped=${single.clipped} rowH=${single.rowHeight} cardH=${single.cardHeight}`
+		);
+		expect(single.badgeCount).toBe(1);
+		expect(single.clipped).toBe(0);
+		// One line: 20px. A wrap that fired here would mean the fix costs every
+		// single-language chapter 25px of height for nothing.
+		expect(single.badgesShareOneLine).toBe(true);
+		expect(single.countBelowBadges).toBe(false);
+		expect(single.rowHeight, 'a one-badge row must stay on a single line').toBe(20);
+		expect(single.docOverflow).toBe(0);
+
+		await page.screenshot({ path: `${SCREENSHOT_DIR}/top-two-badge-count.png`, fullPage: true });
+	});
+
+	/**
+	 * The three gates the top-page scans above cannot cover, because they seed
+	 * only `oboeru:v1` and so never render the new UI:
+	 *
+	 *   - the seed guards below prove the streak pill, the 20 history rows and
+	 *     さらに表示 are actually on screen (otherwise every other assertion
+	 *     here would pass over zero elements),
+	 *   - `expectNoHorizontalOverflow` proves a 120-character unbreakable node
+	 *     name plus the streak pill cannot spill sideways at 390px. Japanese
+	 *     wraps between characters, so without the Latin token in HISTORY_SEED
+	 *     this gate would be measuring nothing,
+	 *   - `expectTapTargets` (asserting, unlike the a11y.spec.ts copy) proves
+	 *     the history toggle and さらに表示 are >= 44px at 390px.
+	 *
+	 * Reuses this file's own module-private helpers — no duplicated copy of
+	 * `checkTapTargets`, so the existing tap-target tests are untouched.
+	 */
+	test('top page with history open — no overflow, tap targets >= 44px', async ({ page }) => {
+		await gotoWithSeed(page, HISTORY_CONTENT);
+		await seedHistory(page, HISTORY_SEED, { open: true });
+
+		// Setup guards: an empty history renders no section at all, and an empty
+		// `sentences` map leaves the streak pill unrendered (its totalAttempts is
+		// the sum of the stats' attempts). Either way the assertions below would
+		// pass vacuously.
+		await expect(page.getByTestId('history-log')).toBeVisible();
+		await expect(page.getByTestId('history-item')).toHaveCount(20); // historyLimit
+		await expect(page.getByTestId('history-more')).toBeVisible();
+		await expect(page.getByTestId('streak-pill')).toBeVisible();
+		await expect(page.getByTestId('track-dots')).toBeVisible();
+		await expect(page.getByTestId('chapter-progress')).toBeVisible();
+
+		// The headline gate first. Japanese wraps between characters, so only the
+		// Latin token in HISTORY_SEED can ever reach this — which is exactly why
+		// the overflow assertion, not the tap-target one, is what proves the seed
+		// is adversarial.
+		await expectNoHorizontalOverflow(page, '/ history open');
+		await expectTapTargets(page, '/ history open');
+
+		// Then prove the long name is really on screen and really is too long for
+		// its row. A seed whose stored name were shadowed by a live name (or
+		// dropped by a rename) would leave nothing to overflow, and the gate above
+		// would pass for the wrong reason.
+		const longRow = await page.evaluate(() => {
+			const el = document.querySelector('[data-testid="history-item-name"]');
+			if (!el) return null;
+			const r = el.getBoundingClientRect();
+			return {
+				text: el.textContent?.trim() ?? '',
+				clientWidth: el.clientWidth,
+				scrollWidth: el.scrollWidth,
+				right: r.right
+			};
+		});
+		expect(longRow, '/ history: the long node name must be rendered').not.toBeNull();
+		expect(
+			longRow!.text.length,
+			'/ history: the displayed name must be the 120-char stored name, not a live one'
+		).toBe(HISTORY_LONG_NAME.length);
+		expect(
+			longRow!.scrollWidth,
+			'/ history: the long name must genuinely exceed its row (nothing to prove otherwise)'
+		).toBeGreaterThan(longRow!.clientWidth);
+		expect(
+			Math.round(longRow!.right),
+			'/ history: the truncated name must stay inside the viewport'
+		).toBeLessThanOrEqual(390);
+
+		// The 最終/苦手 line must not CLIP. `expectNoHorizontalOverflow` above
+		// cannot see clipping: `truncate` keeps the page at scrollWidth === clientWidth
+		// while cutting the text off inside the row. The chapter row's text column
+		// measures 172px at 390px, and this line outgrew it when it carried
+		// `· 直近 1 回` — with `truncate` it then hid its tail on every chapter row
+		// (measured 30-70px clipped). It wraps instead. Adding `truncate` back makes
+		// this assertion fail.
+		const lastLines = await page.evaluate(() => {
+			const out: { testid: string; text: string; clipped: number }[] = [];
+			for (const id of ['chapter-last', 'track-last']) {
+				for (const el of Array.from(document.querySelectorAll(`[data-testid="${id}"]`))) {
+					out.push({
+						testid: id,
+						text: el.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+						clipped: el.scrollWidth - el.clientWidth
+					});
+				}
+			}
+			return out;
+		});
+		expect(lastLines.length, 'the 最終 lines must be rendered').toBeGreaterThan(0);
+		for (const line of lastLines) {
+			logEvidence(`\n=== clipped text @390px: ${line.testid} "${line.text}" clipped=${line.clipped}px`);
+			expect(line.clipped, `${line.testid} "${line.text}" is clipped`).toBeLessThanOrEqual(0);
+		}
+		// The whole 最終 line reaches the screen on both row kinds — a clipped
+		// tail would leave the text present but invisible. `苦手 2 文` is the
+		// widest thing this line can say now that 直近 N 回 is gone.
+		await expect(page.getByTestId('chapter-last').first()).toContainText('苦手');
+		await expect(page.getByTestId('track-last').first()).toContainText('最終');
+		// And it states no sample size, so nothing depends on a window depth.
+		await expect(page.getByTestId('chapter-last').first()).not.toContainText('直近');
+		await expect(page.getByTestId('track-last').first()).not.toContainText('直近');
+
+		// `(削除済み)` rides OUTSIDE the truncated name: with a 120-char name it is
+		// the only thing telling the user the node is gone.
+		await expect(page.getByTestId('history-item').first()).toContainText('(削除済み)');
+		// Live name wins over the stored one — HISTORY_STALE_NAME must never show.
+		const rows = await page.getByTestId('history-item').allInnerTexts();
+		expect(rows.some((t) => t.includes('現在の章名'))).toBe(true);
+		expect(rows.some((t) => t.includes('現在のトラック名'))).toBe(true);
+		expect(rows.some((t) => t.includes(HISTORY_STALE_NAME))).toBe(false);
+
+		const boxes = await page.evaluate((ids) => {
+			const out: Record<string, { h: number; w: number } | null> = {};
+			for (const id of ids) {
+				const el = document.querySelector(`[data-testid="${id}"]`);
+				const r = el?.getBoundingClientRect();
+				out[id] = r ? { h: Math.round(r.height), w: Math.round(r.width) } : null;
+			}
+			return out;
+		}, HISTORY_BUTTONS);
+		logEvidence(
+			`\n=== history tap targets @390px: ` +
+				HISTORY_BUTTONS.map((id) => `${id}=${boxes[id] ? `${boxes[id]!.w}x${boxes[id]!.h}px` : 'MISSING'}`).join(', ') +
+				` | long name: clientWidth=${longRow!.clientWidth} scrollWidth=${longRow!.scrollWidth} right=${Math.round(longRow!.right)} ===`
+		);
+		for (const id of HISTORY_BUTTONS) {
+			expect(boxes[id], `/ history: [data-testid="${id}"] must be rendered`).not.toBeNull();
+			expect(boxes[id]!.h, `/ history: ${id} height >= 44px`).toBeGreaterThanOrEqual(44);
+		}
+
+		await page.screenshot({ path: `${SCREENSHOT_DIR}/top-history.png`, fullPage: true });
 	});
 
 	test('practice show — no overflow, tap targets >= 44px, skip full-width + header exit', async ({

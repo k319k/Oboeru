@@ -1,52 +1,62 @@
 import { describe, it, expect } from 'vitest';
-import { CURATED_VOICES, DEFAULT_VOICE, resolveVoice, isAllowedVoiceName } from './tts-voices';
+import { CURATED_VOICES, resolveVoice, isAllowedVoiceName } from './tts-voices';
 
 describe('CURATED_VOICES', () => {
-  it('has 6 voices: 3 ja + 3 en, unique names', () => {
-    expect(CURATED_VOICES).toHaveLength(6);
-    const ja = CURATED_VOICES.filter((v) => v.lang === 'ja');
-    const en = CURATED_VOICES.filter((v) => v.lang === 'en');
-    expect(ja).toHaveLength(3);
-    expect(en).toHaveLength(3);
-    const names = CURATED_VOICES.map((v) => v.name);
-    expect(new Set(names).size).toBe(6);
-    expect(names).toContain('ja-JP-Neural2-B');
-    expect(names).toContain('en-US-Neural2-A');
+  it('holds exactly one Gemini voice', () => {
+    expect(CURATED_VOICES).toHaveLength(1);
+    expect(CURATED_VOICES[0].name).toBe('Ludo');
   });
 
-  it('DEFAULT_VOICE names exist in CURATED_VOICES', () => {
-    for (const name of Object.values(DEFAULT_VOICE)) {
-      expect(isAllowedVoiceName(name)).toBe(true);
+  it('exposes only name and label', () => {
+    for (const v of CURATED_VOICES) {
+      expect(Object.keys(v).sort()).toEqual(['label', 'name']);
     }
+  });
+
+  // Named for what it asserts, not for the value: `label` is currently the
+  // latin 'Ludo', so a name claiming a Japanese label would overstate the test.
+  it('has a non-empty display label', () => {
+    expect(CURATED_VOICES[0].label.length).toBeGreaterThan(0);
+  });
+});
+
+describe('isAllowedVoiceName', () => {
+  it('accepts Ludo', () => {
+    expect(isAllowedVoiceName('Ludo')).toBe(true);
+  });
+
+  it('rejects the retired Google Cloud TTS names', () => {
+    for (const name of [
+      'ja-JP-Neural2-B',
+      'ja-JP-Neural2-C',
+      'ja-JP-Neural2-D',
+      'en-US-Neural2-A',
+      'en-US-Neural2-C',
+      'en-US-Neural2-F',
+    ]) {
+      expect(isAllowedVoiceName(name)).toBe(false);
+    }
+  });
+
+  it('rejects garbage', () => {
+    expect(isAllowedVoiceName('some-random-uri')).toBe(false);
   });
 });
 
 describe('resolveVoice', () => {
-  it('uses stored voice when it matches the sentence language', () => {
-    const v = resolveVoice('ja', 'ja-JP-Neural2-C');
-    expect(v.name).toBe('ja-JP-Neural2-C');
+  it('returns Ludo when nothing is stored', () => {
+    expect(resolveVoice(null).name).toBe('Ludo');
+    expect(resolveVoice(undefined).name).toBe('Ludo');
+    expect(resolveVoice('').name).toBe('Ludo');
   });
 
-  it('falls back to default when stored voice is for a different language', () => {
-    const v = resolveVoice('ja', 'en-US-Neural2-A');
-    expect(v.name).toBe(DEFAULT_VOICE.ja);
+  it('returns Ludo when Ludo is stored', () => {
+    expect(resolveVoice('Ludo').name).toBe('Ludo');
   });
 
-  it('falls back to default when stored voice is unknown (old Web Speech URI)', () => {
-    const v = resolveVoice('ja', 'Microsoft Haruka - Japanese (Japan)');
-    expect(v.name).toBe(DEFAULT_VOICE.ja);
-  });
-
-  it('falls back to default when no stored voice', () => {
-    expect(resolveVoice('en', null).name).toBe(DEFAULT_VOICE.en);
-    expect(resolveVoice('en', undefined).name).toBe(DEFAULT_VOICE.en);
-  });
-
-  it('returns a voice with the matching lang in all cases', () => {
-    for (const lang of ['ja', 'en'] as const) {
-      for (const stored of ['ja-JP-Neural2-B', 'en-US-Neural2-F', null, 'garbage-voice']) {
-        expect(resolveVoice(lang, stored).lang).toBe(lang);
-      }
+  it('falls back to Ludo for every stored Google name, so old settings are invalidated', () => {
+    for (const stored of ['ja-JP-Neural2-B', 'en-US-Neural2-F', 'garbage-voice']) {
+      expect(resolveVoice(stored).name).toBe('Ludo');
     }
   });
 });

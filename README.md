@@ -27,27 +27,28 @@ GROQ_API_KEY=ここに取得したキーを貼り付け
 cp .env.example .env
 ```
 
-### GOOGLE_TTS_API_KEY の取得と設定
+### OPENROUTER_API_KEY の取得と設定
 
-音声読み上げ（TTS）に Google Cloud Text-to-Speech API を使います。Neural2 音声は月 100万文字まで無料です（超過時は $16/100万文字）。
+読み上げ（TTS）と採点の Jev 意味一致判定は **OpenRouter の同じキー** を使います（Groq のキーとは別物です）。TTS には Gemini の音声モデル（`google/gemini-3.8-flash-lite-tts`）を、Jev には `typesafe/jev-1.13` を指定します。
 
-1. [Google Cloud Console](https://console.cloud.google.com/) にアクセスし、アカウントを作成（またはログイン）します。
-2. **API とサービス** → **ライブラリ** で **Cloud Text-to-Speech API** を検索し、**有効に** をクリックします。
-3. **API とサービス** → **認証情報** で **認証情報を作成** → **API キー** を選択します。
-4. 作成したキーの **API キーを制限** をクリックし、**アプリケーション制限** → **API キーを制限** で **Cloud Text-to-Speech API** のみに制限することを推奨します。
-5. プロジェクト直下の `.env` ファイルに貼り付けます:
+1. [OpenRouter](https://openrouter.ai/) にアクセスし、アカウントを作成（またはログイン）します。
+2. **Credits** で入金します。TTS は従量課金（`google/gemini-3.8-flash-lite-tts` の Standard tier は **10 秒あたり $0.0015**、1 文あたりおよそ **$0.002〜0.005**）で、入金残高や使用制限に引っかかると読み上げは失敗します（OpenRouter が返す 401 / 402 / 403 は通常サーバーが 502「音声合成に失敗しました」に畳んで返し、自動リトライしません。ただし `402` で `limit_source` が `openrouter_in_flight_budget` のものだけは一時的な混雑とみなして自動リトライします）。
+3. キーの管理ページで API キーを作成し、表示された値をコピーします。
+4. プロジェクト直下の `.env` ファイルに貼り付けます:
 
 ```bash
-GOOGLE_TTS_API_KEY=ここに取得したキーを貼り付け
+OPENROUTER_API_KEY=ここに取得したキーを貼り付け
 ```
 
 Cloudflare Workers を使用している場合は、デプロイ時にシークレットとして登録します:
 
 ```bash
-npx wrangler secret put GOOGLE_TTS_API_KEY
+npx wrangler secret put OPENROUTER_API_KEY
 ```
 
-キーが未設定のまま `/api/tts` を呼び出すと 503 が返り、練習ページでは「TTS API キーが未設定です」というトーストが表示されます。録音練習自体は引き続き利用可能です。
+**同じ文をもう一度練習しても請求は発生しません。** 生成済みの音声 PCM はブラウザの IndexedDB（`oboeru-tts` / 64 MiB 上限・LRU）にキャッシュされ、リロードを跨いでも再生時に使われます。キャッシュが外れるのは容量超過で古い項目から削除された場合か、ブラウザがサイトデータを削除した場合だけです（プライベートモードなど IndexedDB 不可の環境では保存できず、都度生成されます）。
+
+キーが未設定のまま `/api/tts` を呼び出すと 503 が返り、練習ページに「TTS エラー: TTS API キーが未設定です」と表示されて **「もう一度再生」** ボタン（読み上げのやり直し）が出ます。このときはスコアは付かないので、**スキップ** で次の文へ進めて練習を続けられます。録音練習自体はキーが無くても利用できます。
 
 ## 起動とコマンド
 
@@ -70,10 +71,11 @@ npx wrangler secret put GOOGLE_TTS_API_KEY
    npx wrangler login
    ```
 
-2. `GROQ_API_KEY` を Workers のシークレットとして登録します（値は対話的に入力します）:
+2. 2 本のシークレットを Workers に登録します（値は対話的に入力します）:
 
    ```bash
-   npx wrangler secret put GROQ_API_KEY
+   npx wrangler secret put GROQ_API_KEY        # 文字起こし
+   npx wrangler secret put OPENROUTER_API_KEY  # 読み上げ (TTS) と Jev 判定で共有
    ```
 
 3. プロダクションビルドを実行します:
@@ -88,7 +90,7 @@ npx wrangler secret put GOOGLE_TTS_API_KEY
    npx wrangler deploy
    ```
 
-`GROQ_API_KEY` はビルド時に埋め込まれず、実行時に Workers のシークレットから読み込まれます。キーが未設定のまま `/api/transcribe` を呼び出すと 503 が返ります。
+いずれのキーもビルド時に埋め込まれず、実行時に Workers のシークレットから読み込まれます。キーが無いときの挙動は API ごとに違います — `GROQ_API_KEY` が無いと `/api/transcribe` は 503、`OPENROUTER_API_KEY` が無いと `/api/tts`（読み上げ）は 503 ですが、`/api/judge`（Jev 判定）は 200 を返して `{available:false}` を返すので採点は類似度のみで継続します。
 
 ## 使い方
 
@@ -117,8 +119,8 @@ npx wrangler secret put GOOGLE_TTS_API_KEY
 
 ## 制限事項
 
-- **ブラウザ対応**: 読み上げはサーバー経由の Google Cloud TTS（Neural2）を使用するため、Firefox でも安定して動作します。マイク録音（MediaRecorder）はブラウザによって挙動が異なるため、録音機能を利用する場合は Chromium 系ブラウザ（Chrome / Edge）を推奨します。
-- **TTS 品質**: 読み上げ音声は Google Cloud TTS の Neural2 を使用しています。管理画面の設定から「デフォルト（言語に応じて自動）」+ 日本語 3 声 + English 3 声から音声を選択できます。
+- **ブラウザ対応**: 読み上げはサーバー経由の Gemini TTS（OpenRouter 経由）で、Web Speech API を使わないため Firefox でも安定して動作します。マイク録音（MediaRecorder）はブラウザによって挙動が異なるため、録音機能を利用する場合は Chromium 系ブラウザ（Chrome / Edge）を推奨します。
+- **TTS 品質**: 読み上げ音声は Gemini の `Narration` スタイルで生成しています。ボイスは 1 種（`Ludo`）のみで、日本語と英語の両方を扱えます（言語は入力テキストから Gemini 自身が判定します）。話速は再生時の `playbackRate` で変えられるため、話速を変えても再生成（課金）は起きません。
 - **API レート制限**: Groq の無料枠はおおよそ 1 分あたり 20 リクエスト（20 RPM）です。クライアントは 3.5 秒間隔のスロットリングと、429 応答時の指数バックオフ（最大 3 回リトライ）で対応しています。混雑時は「混雑中です。しばらくお待ちください。」と表示されます。
 - **ライブ STT テスト**: E2E テストのうち 1 件は `GROQ_API_KEY` が設定されている場合のみ実行されます。キーがない場合はスキップされます（他のテストはすべてキーなしで通ります）。
 
